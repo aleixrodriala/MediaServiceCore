@@ -18,10 +18,10 @@ internal object YtCfgService {
         if (videoId == null)
             return null
 
-        val root = getYtCfg(AppClient.WEB_EMBED, videoId)
+        val ytCfg = downloadYtCfg(AppClient.WEB_EMBED, videoId)
 
         return traverseObj(
-            root,
+            ytCfg,
             "WEB_PLAYER_CONTEXT_CONFIGS",
             "WEB_PLAYER_CONTEXT_CONFIG_ID_EMBEDDED_PLAYER",
             "encryptedHostFlags"
@@ -30,8 +30,10 @@ internal object YtCfgService {
 
     /**
      * https://github.com/yt-dlp/yt-dlp/blob/48a61d0f38b156785d24df628d42892441e008c4/yt_dlp/extractor/youtube/_base.py#L956
+     *
+     * https://github.com/yt-dlp/yt-dlp/blob/48a61d0f38b156785d24df628d42892441e008c4/yt_dlp/extractor/youtube/_video.py#L3876
      */
-    private fun getYtCfg(client: AppClient, videoId: String?): JsonObject? {
+    private fun downloadYtCfg(client: AppClient, videoId: String?): JsonObject? {
         val configUrl = client.getRefererUrl(videoId) ?: return null
         val wrapper = api.getYtCfg(configUrl, client.userAgent)
         val ytCfgStr = RetrofitHelper.get(wrapper)

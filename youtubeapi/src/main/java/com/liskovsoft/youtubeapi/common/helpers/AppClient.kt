@@ -48,7 +48,7 @@ internal enum class AppClient(
         userAgent = DefaultHeaders.USER_AGENT_WEB, referer = "https://www.youtube.com"),
     // Use WEB_EMBEDDED_PLAYER instead of WEB. Some videos have 403 error on WEB.
     WEB_EMBED(CLIENTS.WEB_EMBEDDED.NAME, CLIENTS.WEB_EMBEDDED.VERSION, CLIENT_NAME_IDS[CLIENTS.WEB_EMBEDDED.NAME],
-        userAgent = DefaultHeaders.USER_AGENT_WEB, referer = "https://www.youtube.com/embed/{video_id}?html5=1"),
+        userAgent = DefaultHeaders.USER_AGENT_WEB, referer = "https://www.youtube.com"),
     // Request contains an invalid argument.
     WEB_CREATOR(CLIENTS.WEB_CREATOR.NAME, CLIENTS.WEB_CREATOR.VERSION, CLIENT_NAME_IDS[CLIENTS.WEB_CREATOR.NAME],
         userAgent = DefaultHeaders.USER_AGENT_WEB, referer = "https://studio.youtube.com"),
@@ -83,10 +83,14 @@ internal enum class AppClient(
     override fun getOsVersion() = "10_15_7" // TODO: change later
 
     fun getRefererUrl(videoId: String?): String? {
-        if (videoId == null)
+        if (videoId == null || referer == null)
             return referer
 
-        return referer?.replace("{video_id}", videoId)
+        return when {
+            this == WEB_EMBED -> "$referer/embed/$videoId?html5=1"
+            isTVClient -> "$referer/watch#/watch?v=$videoId"
+            else -> "$referer/watch?v=$videoId"
+        }
     }
 
     private val browserInfo by lazy { extractBrowserInfo(userAgent) }

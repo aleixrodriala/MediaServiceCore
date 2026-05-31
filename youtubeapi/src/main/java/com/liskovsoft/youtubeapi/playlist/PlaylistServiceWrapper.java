@@ -135,6 +135,10 @@ public class PlaylistServiceWrapper extends PlaylistService {
     }
 
     private void addToCachedPlaylist(String playlistId, String videoId) {
+        if (playlistId == null || playlistId.length() <= 4) { // Skip problematic playlists: Watch later, Likes etc
+            return;
+        }
+
         ItemGroup playlistGroup = PlaylistGroupServiceImpl.findPlaylistGroup(playlistId);
 
         if (playlistGroup == null) {

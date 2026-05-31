@@ -21,7 +21,7 @@ import kotlin.collections.get
 
 @WithGson
 private interface InnertubePlayerApi {
-    @POST()
+    @POST
     fun retrievePlayer(@Url url: String, @HeaderMap headers: Map<String, String>, @Body jsonBody: String): Call<PlayerResult?>
 }
 

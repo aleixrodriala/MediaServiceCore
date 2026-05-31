@@ -89,11 +89,60 @@ internal fun generateRandomString(length: Int): String {
  * ```
  */
 internal fun traverseObj(root: JsonElement?, vararg path: String): JsonElement? {
-    var current = root
+    var current = root ?: return null
+    var i = 0
 
-    for (key in path) {
-        current = current?.asJsonObject?.get(key) ?: return null
+    while (i < path.size) {
+        val key = path[i]
+
+        if (key == "...") {
+            val nextKey = path.getOrNull(i + 1) ?: return current
+            current = findDeep(current, nextKey) ?: return null
+            i += 2
+            continue
+        }
+
+        current = resolveObj(current, key) ?: return null
+        i++
     }
 
     return current
+}
+
+private fun resolveObj(el: JsonElement, key: String): JsonElement? {
+    // array index support
+    key.toIntOrNull()?.let { index ->
+        if (el.isJsonArray) {
+            val arr = el.asJsonArray
+            return if (index in 0 until arr.size()) arr[index] else null
+        }
+        return null
+    }
+
+    // object key
+    if (el.isJsonObject) {
+        return el.asJsonObject.get(key)
+    }
+
+    return null
+}
+
+private fun findDeep(el: JsonElement?, key: String): JsonElement? {
+    if (el == null) return null
+
+    if (el.isJsonObject) {
+        val obj = el.asJsonObject
+
+        obj.get(key)?.let { return it }
+
+        for ((_, value) in obj.entrySet()) {
+            findDeep(value, key)?.let { return it }
+        }
+    } else if (el.isJsonArray) {
+        for (item in el.asJsonArray) {
+            findDeep(item, key)?.let { return it }
+        }
+    }
+
+    return null
 }
