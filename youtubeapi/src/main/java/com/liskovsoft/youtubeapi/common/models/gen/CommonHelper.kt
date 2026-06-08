@@ -266,7 +266,7 @@ internal fun LockupItem.getPercentWatched() = getOverlays()?.firstNotNullOfOrNul
 internal fun LockupItem.isEmpty() = getPercentWatched() == 100 && getBadgeText() == null
 internal fun LockupItem.getFeedbackTokens() =
     metadata?.lockupMetadataViewModel?.menuButton?.buttonViewModel?.onTap?.innertubeCommand?.showSheetCommand?.getFeedbackTokens()
-internal fun LockupItem.getChannelId() = contentId ?: rendererContext?.getBrowseId()
+internal fun LockupItem.getChannelId() = rendererContext?.getBrowseId()
 private fun LockupItem.getBadge() = getOverlays()?.firstNotNullOfOrNull { it?.thumbnailOverlayBadgeViewModel?.thumbnailBadges
     ?: it?.thumbnailBottomOverlayViewModel?.badges }?.firstNotNullOfOrNull { it?.thumbnailBadgeViewModel }
 private fun LockupItem.getOverlays() = getThumbnailView()?.overlays
