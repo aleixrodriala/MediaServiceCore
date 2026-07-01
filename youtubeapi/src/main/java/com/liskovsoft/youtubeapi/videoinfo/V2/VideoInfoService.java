@@ -329,6 +329,25 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return;
         }
 
+        // Mobile fast-start (NewTube touch flavor): the two fixes below are synchronous network
+        // round-trips that gate first-playable-return. The subtitle-enrichment fetch uses the
+        // web-pot WEB client, which regenerates the botguard PO-token (~1s) on every cold start;
+        // the extended-HLS/storyboard fix is an extra IOS round-trip. Neither affects the base
+        // playable formats or the video's OWN caption tracks - both are already present from the
+        // winning fast client (e.g. ANDROID_VR). They only enrich the auto-translate target-language
+        // list and the seek-preview storyboard. Defer both to a background thread so they never gate
+        // first frame; the translation-language result also warms mCachedTranslationLanguages so
+        // subsequent videos in the session apply it synchronously without any fetch. TV (flag unset)
+        // keeps the original synchronous behaviour byte-for-byte.
+        if (sPreferNoPotClient) {
+            applyFixesAsync(result, videoId, clickTrackingParams);
+            return;
+        }
+
+        applyFixesSync(result, videoId, clickTrackingParams);
+    }
+
+    private void applyFixesSync(VideoInfo result, String videoId, String clickTrackingParams) {
         if (shouldObtainExtendedFormats(result) || result.isStoryboardBroken()) {
             Log.d(TAG, "Enable high bitrate formats...");
             mAuthBlock = false;
@@ -362,6 +381,60 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 result.setTranslationLanguages(mCachedTranslationLanguages);
             }
         }
+    }
+
+    /**
+     * Mobile fast-start: run applyFixesSync's network fetches OFF the cold-start critical path.
+     * If the translation-language cache is already warm from an earlier video this session, apply it
+     * synchronously (no fetch). Otherwise defer the web-pot WEB subtitle-enrichment fetch and the IOS
+     * extended-HLS/storyboard fetch to the shared background executor; their results warm the cache
+     * and best-effort update this VideoInfo, so first frame is never gated by PO-token regeneration.
+     * The video's own caption tracks and playable formats are already set from the winning client,
+     * so base subtitles/CC still render immediately; only the extra auto-translate language list for
+     * this first video may be smaller (it becomes full for later videos once the cache is warm).
+     * WEB and IOS are not auth-supported (see AppClient.isAuthSupported), so these fetches run
+     * unauthenticated regardless of mAuthBlock - the worker never touches that shared field.
+     */
+    private void applyFixesAsync(VideoInfo result, String videoId, String clickTrackingParams) {
+        final boolean warmCache = mCachedTranslationLanguages != null && mCachedTranslationLanguages.size() >= 100;
+
+        // Warm cache: apply immediately, no network round-trip needed.
+        if (warmCache && needMoreSubtitles(result)) {
+            result.setTranslationLanguages(mCachedTranslationLanguages);
+        }
+
+        final boolean needSubs = !warmCache && needMoreSubtitles(result);
+        final boolean needExtended = shouldObtainExtendedFormats(result) || result.isStoryboardBroken();
+
+        if (!needSubs && !needExtended) {
+            return;
+        }
+
+        getInfoExecutor().submit(() -> {
+            try {
+                if (needExtended) {
+                    Log.d(TAG, "Enable high bitrate formats (deferred)...");
+                    VideoInfoHls videoInfoHls = getVideoInfoIOSHls(videoId, clickTrackingParams);
+                    if (videoInfoHls != null && shouldObtainExtendedFormats(result)) {
+                        result.setHlsManifestUrl(videoInfoHls.getHlsManifestUrl());
+                    }
+                    if (videoInfoHls != null && result.isStoryboardBroken()) {
+                        result.setStoryboardSpec(videoInfoHls.getStoryboardSpec());
+                    }
+                }
+
+                if (needSubs) {
+                    Log.d(TAG, "Enable full list of auto generated subtitles (deferred)...");
+                    VideoInfo webInfo = getVideoInfo(AppClient.WEB, videoId, clickTrackingParams);
+                    if (webInfo != null && webInfo.getTranslationLanguages() != null) {
+                        mCachedTranslationLanguages = webInfo.getTranslationLanguages();
+                        result.setTranslationLanguages(mCachedTranslationLanguages);
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "applyFixesAsync enrichment failed: %s", e.getMessage());
+            }
+        });
     }
 
     /**
