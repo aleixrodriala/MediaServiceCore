@@ -18,7 +18,13 @@ import com.liskovsoft.youtubeapi.videoinfo.models.VideoInfo;
 import com.liskovsoft.youtubeapi.videoinfo.models.VideoInfoHls;
 import com.liskovsoft.youtubeapi.videoinfo.models.VideoInfoReel;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import retrofit2.Call;
 
@@ -42,10 +48,37 @@ public class VideoInfoService extends VideoInfoServiceBase {
             AppClient.TV_SIMPLY, // hangs?
             //AppClient.ANDROID_SDK_LESS, // doesn't require pot (hangs on cronet!)
     };
+    // === Mobile fast-start (NewTube touch flavor) =========================================
+    // When enabled by the mobile flavor, getVideoInfo tries a no-PO-token / no-cipher client
+    // (ANDROID_VR) FIRST, then ANDROID_REEL, then the rest of the list, keeping WEB_EMBED as the
+    // last-resort fallback so restricted / age-gated videos still play. This skips the ~2.7s of
+    // self-inflicted PO-token + signature work that WEB_EMBED (the default first client) incurs on
+    // every cold start. TV builds never enable this flag, so they keep the WEB_EMBED-first order
+    // and unbounded (no-timeout) behaviour byte-for-byte.
+    private static volatile boolean sPreferNoPotClient;
+    private static final AppClient PREFERRED_FIRST_CLIENT = AppClient.ANDROID_VR;
+    // Short per-attempt timeout guarding a hanging fast client (ANDROID_VR "often hangs?"). Applied
+    // ONLY to fast (non-web-pot) clients on the mobile path; web-pot clients (WEB_EMBED) run
+    // unbounded because their PO-token generation can legitimately take several seconds. The base
+    // OkHttp read/connect timeout is 20s with no overall call timeout, so without this a hang would
+    // stall TTFF ~20s+ instead of failing over.
+    private static final long CLIENT_ATTEMPT_TIMEOUT_MS = 7_000;
+    private static ExecutorService sInfoExecutor;
+
+    /**
+     * Enabled once from the mobile flavor (MobileMainApplication). Makes getVideoInfo prefer a
+     * no-PO-token/no-cipher client first for faster cold-start TTFF. Never called on TV.
+     */
+    public static void setPreferNoPotClient(boolean prefer) {
+        sPreferNoPotClient = prefer;
+    }
+
     @Nullable
     private AppClient mActualInfoType = null;
     @Nullable
     private AppClient mNextInfoType = null;
+    // Guards the one-time restore of the persisted "winning" fast client at cold start (mobile only).
+    private boolean mInfoTypeRestored;
     private boolean mAuthBlock;
     private List<TranslationLanguage> mCachedTranslationLanguages;
     private boolean mIsUnplayable;
@@ -67,7 +100,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return null;
         }
 
-        //initInfoTypeIfNeeded();
+        restoreVideoInfoTypeIfNeeded();
 
         AppService.instance().resetClientPlaybackNonce(); // unique value per each video info
 
@@ -79,6 +112,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
             Log.e(TAG, "Can't get video info. videoId: %s", videoId);
             return null;
         }
+
+        Log.d(TAG, "getVideoInfo: winning client=%s videoId=%s", result.getClient(), videoId);
 
         applyFixesIfNeeded(result, videoId, clickTrackingParams);
 
@@ -114,11 +149,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
     private VideoInfo firstInfoWith(String videoId, String clickTrackingParams, InfoTester infoTester) {
         //final AppClient beginType = getDefaultClient();
-        final AppClient beginType = mNextInfoType != null ? mNextInfoType : VIDEO_INFO_TYPE_LIST[0];
+        // Mobile fast-start: when no client is remembered from a previous video, start at the
+        // no-pot/no-cipher client instead of WEB_EMBED. Helpers.getNextValue wraps around the list,
+        // so starting at ANDROID_VR still visits every client (WEB_EMBED becomes the last fallback).
+        // TV (flag unset) keeps VIDEO_INFO_TYPE_LIST[0] (WEB_EMBED) as before.
+        final AppClient defaultBegin = sPreferNoPotClient ? PREFERRED_FIRST_CLIENT : VIDEO_INFO_TYPE_LIST[0];
+        final AppClient beginType = mNextInfoType != null ? mNextInfoType : defaultBegin;
         AppClient nextType = beginType;
 
         do {
-            VideoInfo result = getVideoInfoWithRentFix(nextType, videoId, clickTrackingParams);
+            VideoInfo result = getVideoInfoWithTimeout(nextType, videoId, clickTrackingParams);
 
             if (result != null && infoTester.test(result)) {
                 return result;
@@ -128,6 +168,43 @@ public class VideoInfoService extends VideoInfoServiceBase {
         } while (nextType != beginType);
 
         return null;
+    }
+
+    /**
+     * Mobile-only guard: run a fast (non-web-pot) client attempt with a short timeout so a hanging
+     * ANDROID_VR fails over to the next client quickly instead of blocking on the 20s OkHttp read
+     * timeout. TV (flag unset) and web-pot clients (WEB_EMBED fallback for restricted videos, whose
+     * PO-token generation can legitimately take several seconds) run unbounded exactly as before.
+     */
+    private VideoInfo getVideoInfoWithTimeout(AppClient client, String videoId, String clickTrackingParams) {
+        if (!sPreferNoPotClient || client.isWebPotRequired()) {
+            return getVideoInfoWithRentFix(client, videoId, clickTrackingParams);
+        }
+
+        Future<VideoInfo> future = getInfoExecutor().submit(() -> getVideoInfoWithRentFix(client, videoId, clickTrackingParams));
+
+        try {
+            return future.get(CLIENT_ATTEMPT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            Log.e(TAG, "getVideoInfo timed out for client %s after %s ms, failing over...", client, CLIENT_ATTEMPT_TIMEOUT_MS);
+            future.cancel(true);
+            return null;
+        } catch (Exception e) {
+            Log.e(TAG, "getVideoInfo failed for client %s (%s), failing over...", client, e.getMessage());
+            return null;
+        }
+    }
+
+    private static ExecutorService getInfoExecutor() {
+        if (sInfoExecutor == null) {
+            sInfoExecutor = Executors.newCachedThreadPool(r -> {
+                Thread t = new Thread(r, "VideoInfoAttempt");
+                t.setDaemon(true);
+                return t;
+            });
+        }
+
+        return sInfoExecutor;
     }
 
     //private void initInfoTypeIfNeeded() {
@@ -287,17 +364,35 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
     }
 
-    //private void restoreVideoInfoType() {
-    //    int videoInfoType = getData().getVideoInfoType();
-    //    if (videoInfoType != -1) {
-    //        mActualInfoType = videoInfoType < AppClient.values().length ? AppClient.values()[videoInfoType] : null;
-    //        if (!Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(mActualInfoType)) {
-    //            resetInfoTypeToDefault();
-    //        }
-    //    } else {
-    //        resetInfoTypeToDefault();
-    //    }
-    //}
+    /**
+     * Mobile-only: at the first getVideoInfo of the process, restore the "winning" fast client from a
+     * previous session so subsequent cold starts skip straight to it (persisted by
+     * persistRecentTypeIfNeeded). Only a fast (non-web-pot) client is restored: a one-off restricted
+     * video that fell back to WEB_EMBED must not poison the fast path for normal videos. TV never
+     * enables the flag, so TV restore stays disabled (WEB_EMBED-first order unchanged).
+     */
+    private void restoreVideoInfoTypeIfNeeded() {
+        if (!sPreferNoPotClient || mInfoTypeRestored || mNextInfoType != null) {
+            return;
+        }
+
+        // Prefs may not be ready on the very first call; try again on the next one.
+        if (!GlobalPreferences.isInitialized()) {
+            return;
+        }
+
+        mInfoTypeRestored = true;
+
+        int videoInfoType = getData().getVideoInfoType();
+        if (videoInfoType < 0 || videoInfoType >= AppClient.values().length) {
+            return;
+        }
+
+        AppClient restored = AppClient.values()[videoInfoType];
+        if (!restored.isWebPotRequired() && Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(restored)) {
+            mNextInfoType = restored;
+        }
+    }
 
     private void resetInfoTypeToDefault() {
         mNextInfoType = null;
