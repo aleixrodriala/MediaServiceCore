@@ -38,11 +38,24 @@ import io.reactivex.Observable;
 
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class YouTubeMediaItemService implements MediaItemService {
     private static final String TAG = YouTubeMediaItemService.class.getSimpleName();
     private static YouTubeMediaItemService sInstance;
     private MediaItemFormatInfo mCachedFormatInfo;
+
+    // Mobile single-flight for format info. When enabled, concurrent getFormatInfo() calls for the SAME
+    // videoId collapse into ONE network fetch (the first caller fetches; the rest block on a per-videoId
+    // lock and then read the freshly cached result). This is what makes the mobile "prefetch at tap" win
+    // real: the tap-time prefetch and the player's own end-of-onCreate fetch share a single round-trip
+    // instead of racing into two. Off by default -> TV keeps the exact original single-fetch path.
+    private static boolean sSingleFlightEnabled;
+    private final ConcurrentHashMap<String, Object> mFormatInfoLocks = new ConcurrentHashMap<>();
+
+    public static void setSingleFlightEnabled(boolean enabled) {
+        sSingleFlightEnabled = enabled;
+    }
 
     private YouTubeMediaItemService() {
     }
@@ -76,6 +89,30 @@ public class YouTubeMediaItemService implements MediaItemService {
             return cachedFormatInfo;
         }
 
+        // TV path: unchanged single fetch.
+        if (!sSingleFlightEnabled || videoId == null) {
+            return fetchFormatInfo(videoId, clickTrackingParams);
+        }
+
+        // Mobile path: collapse concurrent fetches for the same videoId into one round-trip.
+        Object lock = getFormatInfoLock(videoId);
+        synchronized (lock) {
+            try {
+                // Another caller for this videoId may have just populated the cache while we waited.
+                MediaItemFormatInfo cached = getCachedFormatInfo(videoId);
+                if (cached != null) {
+                    return cached;
+                }
+
+                return fetchFormatInfo(videoId, clickTrackingParams);
+            } finally {
+                // Only remove our own lock so a concurrent leader for a different videoId isn't disturbed.
+                mFormatInfoLocks.remove(videoId, lock);
+            }
+        }
+    }
+
+    private MediaItemFormatInfo fetchFormatInfo(String videoId, String clickTrackingParams) {
         checkSigned();
 
         VideoInfo videoInfo = getVideoInfoService().getVideoInfo(videoId, clickTrackingParams);
@@ -85,6 +122,16 @@ public class YouTubeMediaItemService implements MediaItemService {
         setCachedFormatInfo(formatInfo, clickTrackingParams);
 
         return formatInfo;
+    }
+
+    private Object getFormatInfoLock(String videoId) {
+        Object lock = mFormatInfoLocks.get(videoId);
+        if (lock == null) {
+            Object created = new Object();
+            Object prev = mFormatInfoLocks.putIfAbsent(videoId, created);
+            lock = prev != null ? prev : created;
+        }
+        return lock;
     }
 
     //@Override
