@@ -39,6 +39,19 @@ import io.reactivex.Observable;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import android.net.Uri;
+
+import com.liskovsoft.mediaserviceinterfaces.data.MediaFormat;
+import com.liskovsoft.sharedutils.cronet.CronetManager;
+import com.liskovsoft.sharedutils.prefs.GlobalPreferences;
+
+import org.chromium.net.CronetEngine;
+import org.chromium.net.CronetException;
+import org.chromium.net.UrlRequest;
+import org.chromium.net.UrlResponseInfo;
 
 public class YouTubeMediaItemService implements MediaItemService {
     private static final String TAG = YouTubeMediaItemService.class.getSimpleName();
@@ -55,6 +68,102 @@ public class YouTubeMediaItemService implements MediaItemService {
 
     public static void setSingleFlightEnabled(boolean enabled) {
         sSingleFlightEnabled = enabled;
+    }
+
+    // Mobile TTFF: the instant format info arrives (usually while the player Activity is still
+    // inflating / building the DASH manifest), open a throwaway request to the per-video
+    // googlevideo host through the SAME singleton Cronet engine ExoPlayer's CronetDataSourceFactory
+    // wraps. Cronet pools QUIC/H2 sessions per host inside the engine, so the DNS + TLS/QUIC
+    // handshake is already done when the first real media request goes out. Best-effort: any
+    // failure is swallowed. Off by default -> TV path unchanged.
+    private static boolean sPreconnectMediaHost;
+    private static volatile String sLastWarmedHost;
+    private static ExecutorService sPreconnectExecutor;
+
+    public static void setPreconnectMediaHost(boolean enabled) {
+        sPreconnectMediaHost = enabled;
+    }
+
+    private static void preconnectMediaHost(MediaItemFormatInfo formatInfo) {
+        if (!sPreconnectMediaHost || formatInfo == null) {
+            return;
+        }
+
+        try {
+            String url = firstStreamUrl(formatInfo);
+            String host = url != null ? Uri.parse(url).getHost() : null;
+            if (host == null || host.equals(sLastWarmedHost)) {
+                return; // nothing to warm, or the session to this host is already warm
+            }
+
+            if (!GlobalPreferences.isInitialized()) {
+                return;
+            }
+
+            CronetEngine engine = CronetManager.getEngine(GlobalPreferences.sInstance.getContext());
+            if (engine == null) {
+                return;
+            }
+
+            if (sPreconnectExecutor == null) {
+                sPreconnectExecutor = Executors.newSingleThreadExecutor(r -> {
+                    Thread t = new Thread(r, "MediaHostPreconnect");
+                    t.setDaemon(true);
+                    return t;
+                });
+            }
+
+            sLastWarmedHost = host;
+            UrlRequest request = engine.newUrlRequestBuilder(
+                    "https://" + host + "/generate_204", new NoopUrlCallback(), sPreconnectExecutor).build();
+            request.start();
+            Log.d(TAG, "preconnecting media host: %s", host);
+        } catch (Throwable e) {
+            Log.d(TAG, "media host preconnect skipped: %s", e.getMessage());
+        }
+    }
+
+    private static String firstStreamUrl(MediaItemFormatInfo formatInfo) {
+        List<MediaFormat> adaptive = formatInfo.getAdaptiveFormats();
+        if (adaptive != null && !adaptive.isEmpty() && adaptive.get(0).getUrl() != null) {
+            return adaptive.get(0).getUrl();
+        }
+        if (formatInfo.getServerAbrStreamingUrl() != null) {
+            return formatInfo.getServerAbrStreamingUrl();
+        }
+        List<MediaFormat> regular = formatInfo.getUrlFormats();
+        if (regular != null && !regular.isEmpty() && regular.get(0).getUrl() != null) {
+            return regular.get(0).getUrl();
+        }
+        return formatInfo.getDashManifestUrl();
+    }
+
+    private static class NoopUrlCallback extends UrlRequest.Callback {
+        @Override
+        public void onRedirectReceived(UrlRequest request, UrlResponseInfo info, String newLocationUrl) {
+            request.followRedirect();
+        }
+
+        @Override
+        public void onResponseStarted(UrlRequest request, UrlResponseInfo info) {
+            request.read(java.nio.ByteBuffer.allocateDirect(1024));
+        }
+
+        @Override
+        public void onReadCompleted(UrlRequest request, UrlResponseInfo info, java.nio.ByteBuffer byteBuffer) {
+            byteBuffer.clear();
+            request.read(byteBuffer);
+        }
+
+        @Override
+        public void onSucceeded(UrlRequest request, UrlResponseInfo info) {
+            // connection is warm; nothing to do
+        }
+
+        @Override
+        public void onFailed(UrlRequest request, UrlResponseInfo info, CronetException error) {
+            // best-effort warm; ignore
+        }
     }
 
     private YouTubeMediaItemService() {
@@ -120,6 +229,9 @@ public class YouTubeMediaItemService implements MediaItemService {
         MediaItemFormatInfo formatInfo = YouTubeMediaItemFormatInfo.from(videoInfo);
 
         setCachedFormatInfo(formatInfo, clickTrackingParams);
+
+        // Mobile: warm the media host while the player is still preparing (no-op unless enabled).
+        preconnectMediaHost(formatInfo);
 
         return formatInfo;
     }
