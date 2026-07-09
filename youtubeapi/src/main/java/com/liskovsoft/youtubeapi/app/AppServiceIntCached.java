@@ -12,6 +12,17 @@ import com.liskovsoft.youtubeapi.common.helpers.AppConstants;
 public class AppServiceIntCached extends AppServiceInt {
     private static final String TAG = AppServiceIntCached.class.getSimpleName();
     private static final long CACHE_REFRESH_PERIOD_MS = 10 * 60 * 60 * 1_000; // check updated core files every 10 hours
+
+    // Mobile fast-start: reuse the persisted, extractor-validated app info at cold process start while
+    // it's still inside the 10h refresh window, instead of paying the youtube.com round-trip that
+    // otherwise sits serially inside the FIRST getVideoInfo of every process. Self-healing: the
+    // persisted copy is nulled by firstValidExtractor when its playerUrl stops validating, which
+    // forces the network path on the next start. Off by default -> TV behavior byte-for-byte unchanged.
+    private static volatile boolean sPersistedAppInfoEnabled;
+
+    public static void setPersistedAppInfoEnabled(boolean enabled) {
+        sPersistedAppInfoEnabled = enabled;
+    }
     private AppInfoCached mAppInfo;
     private ClientDataCached mClientData;
     private PlayerDataExtractor mPlayerDataExtractor;
@@ -30,6 +41,21 @@ public class AppServiceIntCached extends AppServiceInt {
     private AppInfo getAppInfoSync(String userAgent) {
         if (mAppInfo != null && System.currentTimeMillis() - mAppInfoUpdateTimeMs < CACHE_REFRESH_PERIOD_MS) {
             return mAppInfo;
+        }
+
+        // Mobile: adopt the persisted copy at cold start if it's still fresh. Anchoring
+        // mAppInfoUpdateTimeMs to the ORIGINAL fetch time keeps the 10h policy absolute -
+        // the in-memory check above expires at the true boundary and refreshes over network.
+        if (sPersistedAppInfoEnabled && mAppInfo == null) {
+            AppInfoCached persisted = getData().getAppInfo();
+            if (check(persisted) && persisted.getTimestampMs() > 0
+                    && System.currentTimeMillis() - persisted.getTimestampMs() < CACHE_REFRESH_PERIOD_MS) {
+                Log.d(TAG, "using persisted app info (age %s min)",
+                        (System.currentTimeMillis() - persisted.getTimestampMs()) / 60_000);
+                mAppInfo = persisted;
+                mAppInfoUpdateTimeMs = persisted.getTimestampMs();
+                return mAppInfo;
+            }
         }
 
         Log.d(TAG, "updateAppInfoData");
