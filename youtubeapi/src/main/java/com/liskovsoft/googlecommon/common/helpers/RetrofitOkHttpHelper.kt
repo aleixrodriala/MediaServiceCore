@@ -10,8 +10,12 @@ import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.util.concurrent.TimeUnit
 
 internal object RetrofitOkHttpHelper {
+    // Open-path stall bound: /player + /next gate every video open (and each failover-ring step),
+    // so a stalled host must fail in 8s instead of the shared 20s OkHttp defaults.
+    private const val OPEN_PATH_TIMEOUT_MS = 8_000
     private val authSkipList = mutableListOf<Request>()
 
     @JvmStatic
@@ -66,8 +70,28 @@ internal object RetrofitOkHttpHelper {
     private fun createClient(): OkHttpClient {
         val builder = OkHttpManager.instance().client.newBuilder()
         addCommonHeaders(builder)
+        addOpenPathTimeout(builder)
         //addCronetInterceptor(builder)
         return builder.build()
+    }
+
+    /**
+     * Per-request timeout bound for the video-open critical path. Every youtubeapi Retrofit
+     * instance rides this one client (auth and non-auth requests alike - auth is applied per
+     * request in [addCommonHeaders]), so tightening connect/read here covers both. Write timeout
+     * and every other endpoint keep the shared OkHttpCommons defaults untouched.
+     */
+    private fun addOpenPathTimeout(builder: OkHttpClient.Builder) {
+        builder.addInterceptor { chain ->
+            val path = chain.request().url().encodedPath()
+            if (path.contains("/youtubei/v1/player") || path.contains("/youtubei/v1/next")) {
+                chain.withConnectTimeout(OPEN_PATH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .withReadTimeout(OPEN_PATH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .proceed(chain.request())
+            } else {
+                chain.proceed(chain.request())
+            }
+        }
     }
 
     private fun addCommonHeaders(builder: OkHttpClient.Builder) {

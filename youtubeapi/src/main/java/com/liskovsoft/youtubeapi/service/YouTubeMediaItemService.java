@@ -66,6 +66,20 @@ public class YouTubeMediaItemService implements MediaItemService {
     private static boolean sSingleFlightEnabled;
     private final ConcurrentHashMap<String, Object> mFormatInfoLocks = new ConcurrentHashMap<>();
 
+    // Mobile dedupe for UNPLAYABLE results (age-gated/removed videos). An unplayable result contains
+    // no media, so isCacheActual() can never accept it: the tap-time prefetch walks the whole client
+    // failover ring, stores the result, and then the player's own (sequential, so single-flight can't
+    // collapse it) fetch misses the cache and re-walks the entire ring a second time (measured: 16
+    // /player calls per age-gated open instead of 8). Remember WHICH videoId the last fetch was for
+    // and WHEN, and serve the stored unplayable result to same-videoId callers for a short window.
+    // The auto-skip-on-unplayable UX is unchanged: the second caller gets the identical unplayable
+    // object it would have re-fetched. Gated on sSingleFlightEnabled -> TV path byte-for-byte intact.
+    // Deliberately NOT applied to "future live translation" results (no media but not unplayable):
+    // those must keep being re-polled. Total failures (null result) aren't cached either.
+    private static final long UNPLAYABLE_REUSE_MS = 30_000;
+    private String mCachedFormatInfoVideoId;
+    private long mCachedFormatInfoTimeMs;
+
     public static void setSingleFlightEnabled(boolean enabled) {
         sSingleFlightEnabled = enabled;
     }
@@ -239,6 +253,11 @@ public class YouTubeMediaItemService implements MediaItemService {
         MediaItemFormatInfo formatInfo = YouTubeMediaItemFormatInfo.from(videoInfo);
 
         setCachedFormatInfo(formatInfo, clickTrackingParams);
+
+        // Keyed on the REQUESTED videoId (some unplayable responses lack videoDetails, so the
+        // result's own getVideoId() can be null) for the unplayable-reuse window below.
+        mCachedFormatInfoVideoId = videoId;
+        mCachedFormatInfoTimeMs = android.os.SystemClock.elapsedRealtime();
 
         // Mobile: warm the media host while the player is still preparing (no-op unless enabled).
         preconnectMediaHost(formatInfo);
@@ -707,13 +726,30 @@ public class YouTubeMediaItemService implements MediaItemService {
 
     public void invalidateCache() {
         mCachedFormatInfo = null;
+        mCachedFormatInfoVideoId = null; // also ends the unplayable-reuse window
     }
 
     private MediaItemFormatInfo getCachedFormatInfo(String videoId) {
-        return  mCachedFormatInfo != null &&
-                mCachedFormatInfo.getVideoId() != null &&
-                mCachedFormatInfo.getVideoId().equals(videoId) &&
-                mCachedFormatInfo.isCacheActual() ? mCachedFormatInfo : null;
+        MediaItemFormatInfo cached = mCachedFormatInfo;
+
+        if (cached == null || videoId == null) {
+            return null;
+        }
+
+        if (videoId.equals(cached.getVideoId()) && cached.isCacheActual()) {
+            return cached;
+        }
+
+        // Mobile-only (see UNPLAYABLE_REUSE_MS): a just-fetched unplayable result answers repeat
+        // requests for the same videoId briefly, so prefetch-then-load doesn't walk the failover
+        // ring twice per age-gated open. invalidateCache() (account/sign-in changes) clears it.
+        if (sSingleFlightEnabled && cached.isUnplayable()
+                && videoId.equals(mCachedFormatInfoVideoId)
+                && android.os.SystemClock.elapsedRealtime() - mCachedFormatInfoTimeMs <= UNPLAYABLE_REUSE_MS) {
+            return cached;
+        }
+
+        return null;
     }
 
     private void setCachedFormatInfo(MediaItemFormatInfo formatInfo, String clickTrackingParams) {
