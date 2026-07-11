@@ -3,13 +3,19 @@ apply plugin: 'kotlin-android'
 apply plugin: 'com.android.library'
 
 android {
+    namespace 'com.liskovsoft.youtubeapi'
+
     compileSdkVersion project.ext.compileSdkVersion
-    buildToolsVersion project.ext.buildToolsVersion
     testOptions.unitTests.includeAndroidResources = true
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    // Kotlin 2.x defaults to the toolchain JDK (17); keep bytecode aligned with javac (1.8).
+    kotlinOptions {
+        jvmTarget = '1.8'
     }
 
     defaultConfig {
@@ -22,10 +28,6 @@ android {
         // more info: https://developer.android.com/training/testing/unit-testing/instrumented-unit-tests
         // small tests: https://stackoverflow.com/questions/4671923/what-is-the-purpose-of-smalltest-mediumtest-and-largetest-annotations-in-an
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-
-        // More info: http://myhexaville.com/2017/03/10/android-multidex/
-        // Additionally, you should extend your application from MultiDexApplication
-        multiDexEnabled = true
 
         // consumerProguardFiles 'proguard-rules.txt' // embed this file to aar
     }
@@ -90,7 +92,7 @@ dependencies {
     // Add kotlin support libs
     implementation 'androidx.core:core-ktx:' + kotlinCoreXVersion
     implementation 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:' + kotlinVersion
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:' + kotlinVersion
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:' + kotlinxVersion // was wrongly keyed to kotlinVersion
 
     // https://github.com/florianingerl/com.florianingerl.util.regex
     implementation 'com.github.florianingerl.util:regex:' + florianingerlRegexVersion
