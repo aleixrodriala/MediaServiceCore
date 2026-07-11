@@ -64,6 +64,17 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // stall TTFF ~20s+ instead of failing over.
     private static final long CLIENT_ATTEMPT_TIMEOUT_MS = 7_000;
     private static ExecutorService sInfoExecutor;
+    // Phone ring trim (NewTube touch flavor): the tail of VIDEO_INFO_TYPE_LIST is four TV-app
+    // fallback clients that only earn their keep on TV boxes; on a phone they just lengthen the
+    // failover walk of a hard video (4 extra /player round-trips per sweep). Gated the same way as
+    // the other mobile-only switches in this file (static setter called once from
+    // MobileMainApplication); VIDEO_INFO_TYPE_LIST itself stays untouched to keep the upstream
+    // merge surface clean (upstream churns that list on every YouTube breakage). AppClient.TV is
+    // NOT skipped: it's the ring's only auth-capable client (fixes "please sign in").
+    private static volatile boolean sSkipTvFallbackClients;
+    private static final AppClient[] TV_FALLBACK_CLIENTS = {
+            AppClient.TV_LEGACY, AppClient.TV_DOWNGRADED, AppClient.TV_EMBED, AppClient.TV_SIMPLY
+    };
 
     /**
      * Enabled once from the mobile flavor (MobileMainApplication). Makes getVideoInfo prefer a
@@ -71,6 +82,18 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setPreferNoPotClient(boolean prefer) {
         sPreferNoPotClient = prefer;
+    }
+
+    /**
+     * Enabled once from the mobile flavor (MobileMainApplication). Makes the failover ring skip
+     * the TV-only fallback clients ({@link #TV_FALLBACK_CLIENTS}). Never called on TV.
+     */
+    public static void setSkipTvFallbackClients(boolean skip) {
+        sSkipTvFallbackClients = skip;
+    }
+
+    private static boolean isSkippedClient(AppClient client) {
+        return sSkipTvFallbackClients && Helpers.equalsAny(client, (Object[]) TV_FALLBACK_CLIENTS);
     }
 
     @Nullable
@@ -137,17 +160,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
         return getVideoInfo(AppClient.TV, videoId, clickTrackingParams);
     }
 
+    /**
+     * Walks the client ring ONCE from the remembered/preferred begin client and returns the first
+     * PLAYABLE result. The first non-null (necessarily unplayable) result seen along the way is
+     * remembered and returned as a fallback when the whole ring yields nothing playable, so the
+     * caller still gets an "unplayable" reason to show. Same outcome as the old two-pass sweep
+     * (pass 1: first playable, pass 2: first non-null) at half the worst-case /player call count.
+     */
     private VideoInfo firstPlayable(String videoId, String clickTrackingParams) {
-        VideoInfo result = firstInfoWith(videoId, clickTrackingParams, info -> !info.isUnplayable());
-
-        return result != null ? result : firstInfoWith(videoId, clickTrackingParams, info -> true);
-    }
-
-    private interface InfoTester {
-        boolean test(VideoInfo info);
-    }
-
-    private VideoInfo firstInfoWith(String videoId, String clickTrackingParams, InfoTester infoTester) {
         //final AppClient beginType = getDefaultClient();
         // Mobile fast-start: when no client is remembered from a previous video, start at the
         // no-pot/no-cipher client instead of WEB_EMBED. Helpers.getNextValue wraps around the list,
@@ -156,18 +176,40 @@ public class VideoInfoService extends VideoInfoServiceBase {
         final AppClient defaultBegin = sPreferNoPotClient ? PREFERRED_FIRST_CLIENT : VIDEO_INFO_TYPE_LIST[0];
         final AppClient beginType = mNextInfoType != null ? mNextInfoType : defaultBegin;
         AppClient nextType = beginType;
+        VideoInfo firstUnplayable = null;
+        int attempt = 0;
 
         do {
-            VideoInfo result = getVideoInfoWithTimeout(nextType, videoId, clickTrackingParams);
+            // Phone ring trim: TV-only fallback clients are skipped. The walk itself continues
+            // unconditionally, so the do/while still terminates when it wraps back to beginType
+            // even if beginType is a skipped client (e.g. a stale mNextInfoType from
+            // nextVideoInfoType landing on a TV_* entry).
+            if (!isSkippedClient(nextType)) {
+                attempt++;
+                VideoInfo result = getVideoInfoWithTimeout(nextType, videoId, clickTrackingParams);
+                boolean playable = result != null && !result.isUnplayable();
 
-            if (result != null && infoTester.test(result)) {
-                return result;
+                // Failover walks leave one logcat line per extra /player attempt (happy path =
+                // one attempt = silent) so ring behavior is measurable in verify runs/forensics.
+                // NetPath itself lives in the common module, which youtubeapi can't see -> raw tag.
+                if (attempt > 1) {
+                    android.util.Log.d("NetPath", "player-ring " + nextType + " attempt=" + attempt
+                            + " playable=" + (playable ? "y" : "n"));
+                }
+
+                if (playable) {
+                    return result;
+                }
+
+                if (firstUnplayable == null && result != null) {
+                    firstUnplayable = result;
+                }
             }
 
             nextType = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, nextType);
         } while (nextType != beginType);
 
-        return null;
+        return firstUnplayable;
     }
 
     /**
@@ -462,7 +504,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
 
         AppClient restored = AppClient.values()[videoInfoType];
-        if (!restored.isWebPotRequired() && Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(restored)) {
+        // Skipped (TV-only) clients aren't restored either: a winner persisted before the phone
+        // ring trim existed must not make the ring begin at a client it would skip anyway.
+        if (!restored.isWebPotRequired() && !isSkippedClient(restored) && Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(restored)) {
             mNextInfoType = restored;
         }
     }
