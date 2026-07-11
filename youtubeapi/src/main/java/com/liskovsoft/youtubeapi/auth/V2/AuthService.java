@@ -83,11 +83,21 @@ public class AuthService {
 
     public AccessToken getAccessTokenWait(String deviceCode) throws InterruptedException {
         AccessToken tokenResult = null;
+        RuntimeException lastError = null;
 
         for (int i = 0; i < REFRESH_TOKEN_ATTEMPTS; i++) {
             Thread.sleep(REFRESH_TOKEN_ATTEMPT_INTERVAL_MS);
 
-            tokenResult = getAccessToken(deviceCode);
+            try {
+                tokenResult = getAccessToken(deviceCode);
+            } catch (RuntimeException e) {
+                // The user is away in the browser approving the code, and Android cuts the
+                // backgrounded app's network (DNS/timeout errors) until they return. The device
+                // code stays valid server-side, so a failed tick must not end the sign-in.
+                Log.e(TAG, "Token poll attempt %s failed, will retry: %s", i, e);
+                lastError = e;
+                continue;
+            }
 
             if (tokenResult != null && tokenResult.getRefreshToken() != null) {
                 break;
@@ -101,7 +111,7 @@ public class AuthService {
                     deviceCode,
                     mAppService.getClientId(),
                     mAppService.getClientSecret(),
-                    tokenResult != null ? tokenResult.getError() : "");
+                    tokenResult != null ? tokenResult.getError() : String.valueOf(lastError));
 
             Log.e(TAG, msg);
             throw new IllegalStateException(msg);

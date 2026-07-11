@@ -90,6 +90,14 @@ public class YouTubeAccountManager {
 
                 persistRefreshToken(token.getRefreshToken());
 
+                // persistRefreshToken swallows failures (e.g. the accounts fetch returning null),
+                // which used to end in success UX over an empty account store. Only complete if
+                // the token really landed in an account; otherwise surface a retryable error.
+                if (findAccountByToken(token.getRefreshToken()) == null) {
+                    RxHelper.onError(emitter, "Sign in failed: the account could not be saved");
+                    return;
+                }
+
                 emitter.onComplete();
             } catch (InterruptedException e) {
                 // NOP
@@ -177,6 +185,17 @@ public class YouTubeAccountManager {
     public Account getSelectedAccount() {
         for (Account account : mAccounts) {
             if (account != null && account.isSelected()) {
+                return account;
+            }
+        }
+
+        return null;
+    }
+
+    @Nullable
+    private Account findAccountByToken(String refreshToken) {
+        for (Account account : mAccounts) {
+            if (account instanceof YouTubeAccount && Helpers.equals(((YouTubeAccount) account).getRefreshToken(), refreshToken)) {
                 return account;
             }
         }
