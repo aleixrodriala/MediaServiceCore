@@ -127,7 +127,9 @@ public class JsonPathTypeAdapter<T> {
                 jsonVal = parser.read(path);
                 break;
             } catch (PathNotFoundException e) {
-                Log.d(TAG, type.getSimpleName() + ": Path not found: " + path);
+                // NEWTUBE(request-hygiene): expected on every absent OPTIONAL field - a single
+                // player/next response has hundreds, and the logger has no level gate, so the old
+                // per-miss Log.d flooded logcat (~6.4k lines / 2.5min) in RELEASE builds too.
             }
         }
 

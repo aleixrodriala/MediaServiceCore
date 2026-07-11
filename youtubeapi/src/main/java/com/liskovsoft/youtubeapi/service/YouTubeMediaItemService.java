@@ -115,7 +115,7 @@ public class YouTubeMediaItemService implements MediaItemService {
 
             sLastWarmedHost = host;
             UrlRequest request = engine.newUrlRequestBuilder(
-                    "https://" + host + "/generate_204", new NoopUrlCallback(), sPreconnectExecutor).build();
+                    "https://" + host + "/generate_204", new NoopUrlCallback(host), sPreconnectExecutor).build();
             request.start();
             Log.d(TAG, "preconnecting media host: %s", host);
         } catch (Throwable e) {
@@ -139,6 +139,13 @@ public class YouTubeMediaItemService implements MediaItemService {
     }
 
     private static class NoopUrlCallback extends UrlRequest.Callback {
+        private final String mHost;
+        private final long mStartMs = android.os.SystemClock.elapsedRealtime();
+
+        NoopUrlCallback(String host) {
+            mHost = host;
+        }
+
         @Override
         public void onRedirectReceived(UrlRequest request, UrlResponseInfo info, String newLocationUrl) {
             request.followRedirect();
@@ -157,7 +164,10 @@ public class YouTubeMediaItemService implements MediaItemService {
 
         @Override
         public void onSucceeded(UrlRequest request, UrlResponseInfo info) {
-            // connection is warm; nothing to do
+            // Connection is warm. One line under the NetPath tag so the drive session can tell
+            // whether the first media chunk pays a handshake (warm-complete vs first-chunk order).
+            android.util.Log.d("NetPath", "warm " + mHost + " +"
+                    + (android.os.SystemClock.elapsedRealtime() - mStartMs) + "ms");
         }
 
         @Override
@@ -503,6 +513,15 @@ public class YouTubeMediaItemService implements MediaItemService {
 
     @Override
     public List<PlaylistInfo> getPlaylistsInfo(String videoId) {
+        // NEWTUBE(request-hygiene): /playlist/get_add_to_playlist requires auth - signed-out it
+        // 401s on EVERY watch-page open (the player UI polls it for the add-to-playlist button
+        // state). No playlists exist without an account, so return empty instead of firing a
+        // guaranteed-failing request. All consumers (button state, video menu, playlist dialogs)
+        // handle an empty list as "not in any playlist".
+        if (!getSignInService().isSigned()) {
+            return java.util.Collections.emptyList();
+        }
+
         checkSigned();
 
         return getPlaylistService().getPlaylistsInfo(videoId);
