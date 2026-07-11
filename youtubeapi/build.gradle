@@ -36,16 +36,6 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
-
-    // gradle 4.6 migration: disable dimensions mechanism
-    // more: https://proandroiddev.com/advanced-android-flavors-part-4-a-new-version-fc2ad80c01bb
-    flavorDimensions "default"
-
-    productFlavors {
-        stbeta {}
-        ststable {}
-        stfdroid {}
-    }
 }
 
 dependencies {
@@ -90,9 +80,12 @@ dependencies {
     //implementation(name: 'j2v8-6.2.1', ext: 'aar')
     //implementation files('libs/j2v8-6.2.1-fixed.aar')
     // https://stackoverflow.com/questions/60878599/error-building-android-library-direct-local-aar-file-dependencies-are-not-supp
-    stbetaImplementation project(':j2v8')
-    ststableImplementation project(':j2v8')
-    stfdroidImplementation 'com.eclipsesource.j2v8:j2v8:' + j2v8Version + '@aar'
+    // NEWTUBE(phone-only): j2v8 (V8 JS engine) is used by src/main sig/nsig/po-token extractors
+    // (SigExtractor/PlayerDataExtractor/nsigsolver/potokennp2), so it is required at compile AND
+    // runtime for playback. It was previously flavor-scoped (stbeta/ststable project(':j2v8'),
+    // stfdroid maven @aar); the stmobile build consumed the ststable variant's :j2v8 via
+    // matchingFallbacks. With the flavors gone, pull it unconditionally.
+    implementation project(':j2v8')
 
     // Add kotlin support libs
     implementation 'androidx.core:core-ktx:' + kotlinCoreXVersion
