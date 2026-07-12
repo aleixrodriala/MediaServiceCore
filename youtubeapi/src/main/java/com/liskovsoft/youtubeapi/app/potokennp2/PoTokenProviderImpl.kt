@@ -150,6 +150,46 @@ internal object PoTokenProviderImpl : PoTokenProvider {
         return PoTokenResult(videoId, visitorData, playerPot, streamingPot)
     }
 
+    private var appStreamingPot: String? = null
+    private var appStreamingPotVisitor: String? = null
+
+    /**
+     * Streaming pot bound to the CALLER-supplied visitorData (the app's InnerTube visitor
+     * session) instead of the WebView's own. googlevideo validates the URL `pot` param against
+     * the visitor session that minted the URLs, and non-web clients' /player calls run under
+     * the app session — the standard web streaming pot (bound to the WebView's visitorData)
+     * does NOT validate their URLs (verified on-device: the ~60s pot-less grace wall 403s
+     * continued with the web pot attached). Reuses the warm generator (~10ms per mint); caches
+     * one pot per visitorData (the app visitor rotates with the ~10h app-info refresh).
+     */
+    fun getAppClientStreamingPot(visitorData: String): String? {
+        if (!isWebPotSupported || visitorData.isEmpty()) {
+            return null
+        }
+
+        synchronized(WebPoTokenGenLock) {
+            if (appStreamingPotVisitor == visitorData && appStreamingPot != null
+                && webPoTokenGenerator?.isExpired() == false) {
+                return appStreamingPot
+            }
+        }
+
+        // Ensure the generator is initialized. This also mints the web streaming pot first,
+        // preserving the "exactly one streaming pot before any other token" init ordering.
+        getWebClientPoToken("") ?: return null
+
+        return synchronized(WebPoTokenGenLock) {
+            try {
+                appStreamingPot = webPoTokenGenerator?.generatePoToken(visitorData)
+                appStreamingPotVisitor = visitorData
+                appStreamingPot
+            } catch (e: Throwable) {
+                Log.e(TAG, "getAppClientStreamingPot failed: ${e.message}")
+                null
+            }
+        }
+    }
+
     override fun getWebEmbedClientPoToken(videoId: String): PoTokenResult? = null
 
     override fun getAndroidClientPoToken(videoId: String): PoTokenResult? = null
@@ -163,5 +203,7 @@ internal object PoTokenProviderImpl : PoTokenProvider {
     fun resetCache() {
         webPoTokenVisitorData = null
         webPoTokenStreamingPot = null
+        appStreamingPot = null
+        appStreamingPotVisitor = null
     }
 }

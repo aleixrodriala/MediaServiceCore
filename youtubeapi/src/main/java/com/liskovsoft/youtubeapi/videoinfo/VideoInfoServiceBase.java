@@ -45,6 +45,18 @@ public abstract class VideoInfoServiceBase {
         if (videoInfo.isLive()) {
             Log.d(TAG, "Enable seeking support on live streams...");
             videoInfo.sync(getDashInfo(videoInfo));
+
+            // Live segments 403 instantly (no grace window) without a pot on strict networks —
+            // ride the pot on the manifest URL as a path param (see appendPotToManifestUrls).
+            // Must be the STREAMING/GVS (session) pot — the content/player pot on the manifest
+            // changed nothing (segments kept 403ing; verified on-device 2026-07-12). Web clients
+            // get their web session pot; non-web clients fall back to the app-visitor pot.
+            String manifestPot = PoTokenGate.getPoToken(videoInfo.getClient());
+            if (manifestPot == null) {
+                manifestPot = PoTokenGate.getMediaSessionPoToken();
+            }
+            videoInfo.appendPotToManifestUrls(manifestPot);
+            Log.d(TAG, "Live manifest pot: " + (manifestPot != null ? "applied" : "unavailable"));
         }
 
         videoInfo.setVisitorCookie(getData().getVisitorCookie());
@@ -77,6 +89,18 @@ public abstract class VideoInfoServiceBase {
 
         String poToken = PoTokenGate.getPoToken(videoInfo.getClient(), videoInfo.getVideoDetails().getVideoId());
         videoInfo.setPoToken(poToken);
+        if (poToken == null) {
+            // BEST-EFFORT ONLY. Non-web clients mint no pot, and pot-enforcing (carrier CGNAT)
+            // networks 403 their streams after ~60s of served media. Attaching a web-minted pot
+            // here does NOT lift that wall (verified on-device with both the web-visitor and the
+            // app-visitor streaming pot — Pixel 9 / Telefonica LTE, 2026-07-12): only URLs minted
+            // by an ATTESTED web /player flow survive, which is why the phone flavor runs
+            // WEB_EMBED-first again (MobileMainApplication). Kept because it's ~10ms when warm,
+            // provably harmless (the param is ignored where not enforced), and may satisfy
+            // networks with laxer checks. The /player request body stays client-consistent.
+            poToken = PoTokenGate.getMediaSessionPoToken();
+            Log.d(TAG, "Media pot fallback for client " + videoInfo.getClient() + ": " + (poToken != null ? "applied" : "unavailable"));
+        }
         applySessionPoToken(urlHolders, poToken);
     }
 

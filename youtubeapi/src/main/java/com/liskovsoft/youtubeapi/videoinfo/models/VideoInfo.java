@@ -156,6 +156,25 @@ public class VideoInfo {
         mDashManifestUrl = dashManifestUrl;
     }
 
+    /**
+     * Live googlevideo SEGMENTS are pot-enforced with NO grace window on strict (carrier CGNAT)
+     * networks: manifests load (200) but every segment 403s instantly. Path-style googlevideo
+     * URLs take parameters as /key/value path pairs, so the pot rides the MANIFEST URL as
+     * "/pot/&lt;token&gt;" (the yt-dlp-proven form) and the manifest then mints attested segment
+     * URLs. Idempotent; pot tokens are base64url so they're path-safe as-is.
+     */
+    public void appendPotToManifestUrls(String poToken) {
+        if (poToken == null || poToken.isEmpty()) {
+            return;
+        }
+        if (mHlsManifestUrl != null && !mHlsManifestUrl.contains("/pot/")) {
+            mHlsManifestUrl += "/pot/" + poToken;
+        }
+        if (mDashManifestUrl != null && !mDashManifestUrl.contains("/pot/")) {
+            mDashManifestUrl += "/pot/" + poToken;
+        }
+    }
+
     public void setHlsManifestUrl(String hlsManifestUrl) {
         mHlsManifestUrl = hlsManifestUrl;
     }

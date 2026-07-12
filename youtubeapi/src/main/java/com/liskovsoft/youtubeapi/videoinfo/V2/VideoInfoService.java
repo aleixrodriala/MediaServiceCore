@@ -92,6 +92,32 @@ public class VideoInfoService extends VideoInfoServiceBase {
         sSkipTvFallbackClients = skip;
     }
 
+    /**
+     * Called once from the mobile flavor (MobileMainApplication). Initializes the WebView pot
+     * generator in the background so the media-URL pot fallback
+     * ({@link PoTokenGate#getMediaSessionPoToken}) finds it warm on the first video open.
+     * Never called on TV.
+     */
+    public static void warmUpPoTokenGate() {
+        PoTokenGate.warmUp();
+    }
+
+    // Mobile live routing: WEB_EMBED (the ring head) answers live videos with an HLS-only
+    // response (no dashManifestUrl -> no LiveDashManifestParser DVR window), and on
+    // pot-enforcing networks its HLS segments 403 instantly — with or without a client-side
+    // pot on the manifest/segment URLs (both verified on-device, Pixel 9 2026-07-12). When
+    // enabled, a playable live result WITHOUT a dash manifest is held as fallback and the walk
+    // continues toward a client that provides one (ANDROID_VR/TV). Costs one extra /player
+    // round-trip per live open. TV never sets this -> TV behavior unchanged.
+    private static volatile boolean sPreferDashManifestForLive;
+
+    /**
+     * Enabled once from the mobile flavor (MobileMainApplication). Never called on TV.
+     */
+    public static void setPreferDashManifestForLive(boolean prefer) {
+        sPreferDashManifestForLive = prefer;
+    }
+
     private static boolean isSkippedClient(AppClient client) {
         return sSkipTvFallbackClients && Helpers.equalsAny(client, (Object[]) TV_FALLBACK_CLIENTS);
     }
@@ -177,6 +203,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         final AppClient beginType = mNextInfoType != null ? mNextInfoType : defaultBegin;
         AppClient nextType = beginType;
         VideoInfo firstUnplayable = null;
+        VideoInfo liveWithoutDash = null;
         int attempt = 0;
 
         do {
@@ -198,7 +225,17 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 }
 
                 if (playable) {
-                    return result;
+                    // Mobile live routing (see sPreferDashManifestForLive): hold an HLS-only live
+                    // result and keep walking toward a dash-manifest client.
+                    if (sPreferDashManifestForLive && result.isLive() && result.getDashManifestUrl() == null) {
+                        if (liveWithoutDash == null) {
+                            liveWithoutDash = result;
+                            android.util.Log.d("NetPath", "player-ring " + nextType
+                                    + " live-no-dash, walking on");
+                        }
+                    } else {
+                        return result;
+                    }
                 }
 
                 if (firstUnplayable == null && result != null) {
@@ -209,7 +246,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
             nextType = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, nextType);
         } while (nextType != beginType);
 
-        return firstUnplayable;
+        // Nobody offered a dash manifest for this live stream: the held HLS-only result is
+        // still strictly better than an unplayable verdict.
+        return liveWithoutDash != null ? liveWithoutDash : firstUnplayable;
     }
 
     /**
