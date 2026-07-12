@@ -315,14 +315,33 @@ public class YouTubeMPDBuilder implements MPDBuilder {
         startTag("", "AdaptationSet");
         attribute("", "id", id);
         attribute("", "mimeType", mimeType);
+
+        // The stored audio "language" is a display string like "en\u2010us (dubbed-auto)" (unicode
+        // hyphen from YouTubeHelper.exoNameFix, variant kind from the url's xtags acont).
+        // Written verbatim into lang it defeats BCP-47 matching, and stamping every set with
+        // Role=main leaves players no way to tell the original from the auto-dubs - a default
+        // selection can land on any dub. Split it instead: clean code -> lang, display
+        // string -> label, variant kind -> Role (only the original keeps "main").
+        String role = "main";
         if (language != null) {
-            attribute("", "lang", language);
+            String langCode = language;
+            int mark = language.lastIndexOf(" (");
+            if (mark > 0 && language.endsWith(")")) {
+                langCode = language.substring(0, mark);
+                String acont = language.substring(mark + 2, language.length() - 1);
+                attribute("", "label", language);
+                if (!"original".equals(acont)) {
+                    role = "descriptive".equals(acont) ? "description"
+                            : "secondary".equals(acont) ? "alternate" : "dub";
+                }
+            }
+            attribute("", "lang", langCode.replace("\u2010", "-")); // undo exoNameFix
         }
         attribute("", "subsegmentAlignment", "true");
 
         startTag("", "Role");
         attribute("", "schemeIdUri", "urn:mpeg:DASH:role:2011");
-        attribute("", "value", "main");
+        attribute("", "value", role);
         endTag("", "Role");
     }
 
