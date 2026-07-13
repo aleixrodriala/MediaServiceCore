@@ -201,50 +201,68 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // TV (flag unset) keeps VIDEO_INFO_TYPE_LIST[0] (WEB_EMBED) as before.
         final AppClient defaultBegin = sPreferNoPotClient ? PREFERRED_FIRST_CLIENT : VIDEO_INFO_TYPE_LIST[0];
         final AppClient beginType = mNextInfoType != null ? mNextInfoType : defaultBegin;
-        AppClient nextType = beginType;
+
+        // NEWTUBE(ring-memory): visit order = begin, then the most recent WINNING client, then the
+        // rest of the ring from begin onward. Error-reload walks deliberately begin AFTER the last
+        // winner (applyNoPlaybackFix suspects its URLs), but on enforcing networks that winner is
+        // often the only playable client at all - observed on-device: EVERY reload of a 45s error
+        // cycle burned 8 playable=n /player calls (~2.3s) before re-finding TV at the ring's end.
+        // Probing the last winner second bounds that walk at 2 calls. Ring semantics otherwise
+        // unchanged: every non-skipped client is still visited at most once per walk.
+        java.util.List<AppClient> visitOrder = new java.util.ArrayList<>();
+        visitOrder.add(beginType);
+        final AppClient lastWinner = mActualInfoType;
+        if (lastWinner != null && lastWinner != beginType) {
+            visitOrder.add(lastWinner);
+        }
+        for (AppClient type = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, beginType); type != beginType;
+                type = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, type)) {
+            if (type != lastWinner) {
+                visitOrder.add(type);
+            }
+        }
+
         VideoInfo firstUnplayable = null;
         VideoInfo liveWithoutDash = null;
         int attempt = 0;
 
-        do {
-            // Phone ring trim: TV-only fallback clients are skipped. The walk itself continues
-            // unconditionally, so the do/while still terminates when it wraps back to beginType
-            // even if beginType is a skipped client (e.g. a stale mNextInfoType from
-            // nextVideoInfoType landing on a TV_* entry).
-            if (!isSkippedClient(nextType)) {
-                attempt++;
-                VideoInfo result = getVideoInfoWithTimeout(nextType, videoId, clickTrackingParams);
-                boolean playable = result != null && !result.isUnplayable();
+        for (AppClient nextType : visitOrder) {
+            // Phone ring trim: TV-only fallback clients are skipped (a stale mNextInfoType from
+            // nextVideoInfoType may land on a TV_* entry; it's simply not probed).
+            if (isSkippedClient(nextType)) {
+                continue;
+            }
 
-                // Failover walks leave one logcat line per extra /player attempt (happy path =
-                // one attempt = silent) so ring behavior is measurable in verify runs/forensics.
-                // NetPath itself lives in the common module, which youtubeapi can't see -> raw tag.
-                if (attempt > 1) {
-                    android.util.Log.d("NetPath", "player-ring " + nextType + " attempt=" + attempt
-                            + " playable=" + (playable ? "y" : "n"));
-                }
+            attempt++;
+            VideoInfo result = getVideoInfoWithTimeout(nextType, videoId, clickTrackingParams);
+            boolean playable = result != null && !result.isUnplayable();
 
-                if (playable) {
-                    // Mobile live routing (see sPreferDashManifestForLive): hold an HLS-only live
-                    // result and keep walking toward a dash-manifest client.
-                    if (sPreferDashManifestForLive && result.isLive() && result.getDashManifestUrl() == null) {
-                        if (liveWithoutDash == null) {
-                            liveWithoutDash = result;
-                            android.util.Log.d("NetPath", "player-ring " + nextType
-                                    + " live-no-dash, walking on");
-                        }
-                    } else {
-                        return result;
+            // Failover walks leave one logcat line per extra /player attempt (happy path =
+            // one attempt = silent) so ring behavior is measurable in verify runs/forensics.
+            // NetPath itself lives in the common module, which youtubeapi can't see -> raw tag.
+            if (attempt > 1) {
+                android.util.Log.d("NetPath", "player-ring " + nextType + " attempt=" + attempt
+                        + " playable=" + (playable ? "y" : "n"));
+            }
+
+            if (playable) {
+                // Mobile live routing (see sPreferDashManifestForLive): hold an HLS-only live
+                // result and keep walking toward a dash-manifest client.
+                if (sPreferDashManifestForLive && result.isLive() && result.getDashManifestUrl() == null) {
+                    if (liveWithoutDash == null) {
+                        liveWithoutDash = result;
+                        android.util.Log.d("NetPath", "player-ring " + nextType
+                                + " live-no-dash, walking on");
                     }
-                }
-
-                if (firstUnplayable == null && result != null) {
-                    firstUnplayable = result;
+                } else {
+                    return result;
                 }
             }
 
-            nextType = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, nextType);
-        } while (nextType != beginType);
+            if (firstUnplayable == null && result != null) {
+                firstUnplayable = result;
+            }
+        }
 
         // Nobody offered a dash manifest for this live stream: the held HLS-only result is
         // still strictly better than an unplayable verdict.
