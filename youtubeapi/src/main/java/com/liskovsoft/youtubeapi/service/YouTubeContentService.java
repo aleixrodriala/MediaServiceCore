@@ -226,9 +226,16 @@ class YouTubeContentService implements ContentService {
 
     @Override
     public MediaGroup getGroup(MediaItem mediaItem) {
-        return mediaItem.getReloadPageKey() != null ?
-                getBrowseService2().getGroup(mediaItem.getReloadPageKey(), mediaItem.getType(), mediaItem.getTitle()) :
-                getBrowseService2().getChannelAsGrid(mediaItem.getChannelId());
+        if (mediaItem.getReloadPageKey() != null) {
+            return getBrowseService2().getGroup(mediaItem.getReloadPageKey(), mediaItem.getType(), mediaItem.getTitle());
+        }
+
+        String playlistId = mediaItem.getPlaylistId();
+        if (playlistId != null && mediaItem.getVideoId() == null) {
+            return getBrowseService2().getPlaylist(playlistId, mediaItem.getTitle());
+        }
+
+        return getBrowseService2().getChannelAsGrid(mediaItem.getChannelId());
     }
 
     @Override

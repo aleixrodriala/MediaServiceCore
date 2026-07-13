@@ -264,6 +264,32 @@ internal open class BrowseService2 {
         return getChannelVideosTV(channelId) ?: getChannelVideosWeb(channelId)
     }
 
+    /**
+     * Load a playlist URL that contains only a list id (no selected video). Watch-next metadata
+     * cannot serve this shape because it requires a video id, so browse the playlist's VL page
+     * directly instead. Prefer the TV playlist renderer because it preserves each video's
+     * playlist navigation data and exposes the continuation token needed by the shared
+     * channel-uploads screen.
+     */
+    fun getPlaylist(playlistId: String?, playlistTitle: String?): MediaGroup? {
+        if (playlistId == null) {
+            return null
+        }
+
+        val browseId = playlistId.takeIf { it.startsWith("VL") } ?: "VL$playlistId"
+        val options = MediaGroupOptions.create(MediaGroup.TYPE_CHANNEL_UPLOADS)
+
+        val tvResult = mBrowseApi.getBrowseResultTV(BrowseApiHelper.getChannelQuery(options.clientTV, browseId))
+        RetrofitHelper.get(tvResult)?.let {
+            BrowseMediaGroupTV(it, options).apply { title = it.getTitle() ?: playlistTitle }
+        }?.takeIf { !it.isEmpty }?.let { return it }
+
+        val webResult = mBrowseApi.getBrowseResult(BrowseApiHelper.getChannelQuery(AppClient.WEB, browseId))
+        return RetrofitHelper.get(webResult)?.let {
+            BrowseMediaGroup(it, options).apply { if (title.isNullOrEmpty()) title = playlistTitle }
+        }?.takeIf { !it.isEmpty }
+    }
+
     private fun getChannelVideosTV(channelId: String?): MediaGroup? {
         if (channelId == null) {
             return null
