@@ -81,7 +81,9 @@ internal object CLIENTS {
         VERSION = "1.65.10",
         SDK_VERSION = 32,
         OS_NAME = "Android",
-        OS_VERSION = "12",
+        // Keep the JSON client context consistent with the official VR user agent.
+        // YouTube's current ANDROID_VR profile identifies this build as Android 12L.
+        OS_VERSION = "12L",
         DEVICE_MAKE = "Oculus",
         DEVICE_MODEL = "Quest 3",
         USER_AGENT = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"

@@ -1,7 +1,6 @@
 package com.liskovsoft.youtubeapi.app
 
 import com.liskovsoft.sharedutils.mylogger.Log
-import com.liskovsoft.youtubeapi.app.AppService
 import com.liskovsoft.youtubeapi.app.potoken.PoTokenService
 import com.liskovsoft.youtubeapi.app.potokencloud.PoTokenCloudService
 import com.liskovsoft.youtubeapi.app.potokennp2.PoTokenProviderImpl
@@ -67,37 +66,18 @@ internal object PoTokenGate {
     }
 
     /**
-     * GVS/session pot for the googlevideo MEDIA URLS of clients whose /player flow mints no
-     * pot (isWebPotRequired=false: ANDROID_VR/TV/IOS/...). Carrier CGNAT IPs enforce a pot on
-     * every client's media URLs — each pot-less stream serves ~60s of media, then 403s
-     * (Source error → visible reload, repeating until a web-pot client wins the ring).
-     * Residential IPs rarely enforce, which is why TV boxes and the emulator never hit this.
-     * The pot MUST be minted against the APP's visitorData (the session the non-web /player
-     * calls run under — see QueryBuilder's appService.visitorData fallback): the WebView's own
-     * streaming pot does not validate these URLs (verified on-device).
-     * Best-effort: never throws. Blocks only while the WebView generator initializes
-     * (~1.5–2.5s cold, ~10ms per token once warm) — warmUp() at app start hides the cold case.
-     */
-    @JvmStatic
-    fun getMediaSessionPoToken(): String? {
-        return try {
-            PoTokenProviderImpl.getAppClientStreamingPot(AppService.instance().visitorData ?: "")
-        } catch (e: Throwable) {
-            Log.e(TAG, "getMediaSessionPoToken failed: ${e.message}")
-            null
-        }
-    }
-
-    /**
-     * Fire-and-forget WebView-generator init + app-visitor pot mint so the first
-     * getMediaSessionPoToken() on the open path finds everything warm. Call once at app start,
-     * off the critical path. (getMediaSessionPoToken never throws; reading the app visitorData
-     * may block on the persisted-app-info load, which is fine on this background thread.)
+     * Fire-and-forget WebView/BotGuard initialization so the first web-family /player request
+     * finds the generator warm. This intentionally mints only Web tokens; a Web token must never
+     * be attached to Android/TV/iOS media URLs as a cross-platform fallback.
      */
     @JvmStatic
     fun warmUp() {
         Thread({
-            getMediaSessionPoToken()
+            try {
+                getWebSessionPoToken()
+            } catch (e: Throwable) {
+                Log.e(TAG, "warmUp failed: ${e.message}")
+            }
         }, "PoTokenWarmUp").start()
     }
 
@@ -111,6 +91,19 @@ internal object PoTokenGate {
             client.isWebPotRequired -> getWebVisitorData()
             else -> null
         }
+    }
+
+    /**
+     * A non-Web /player request may still use the anonymous Web visitor identity obtained before
+     * that request (as current extractors do). This deliberately returns only visitorData; it does
+     * not expose or attach the Web PO token to another platform. Keep the visitor sourced directly
+     * from this token session: independently fetching/caching a second Web visitor reintroduced the
+     * deep-range 403 on the Pixel 9.
+     */
+    @JvmStatic
+    fun getWebVisitorDataForPlayer(): String? {
+        getWebSessionPoToken()
+        return getWebVisitorData()
     }
 
     @JvmStatic

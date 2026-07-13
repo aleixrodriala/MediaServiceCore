@@ -49,12 +49,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
             //AppClient.ANDROID_SDK_LESS, // doesn't require pot (hangs on cronet!)
     };
     // === Mobile fast-start (NewTube touch flavor) =========================================
-    // When enabled by the mobile flavor, getVideoInfo tries a no-PO-token / no-cipher client
-    // (ANDROID_VR) FIRST, then ANDROID_REEL, then the rest of the list, keeping WEB_EMBED as the
-    // last-resort fallback so restricted / age-gated videos still play. This skips the ~2.7s of
-    // self-inflicted PO-token + signature work that WEB_EMBED (the default first client) incurs on
-    // every cold start. TV builds never enable this flag, so they keep the WEB_EMBED-first order
-    // and unbounded (no-timeout) behaviour byte-for-byte.
+    // When enabled by the mobile flavor, getVideoInfo tries the repaired no-PO-token / no-cipher
+    // ANDROID_VR client FIRST. Its fallback tail is Web-family-first so restricted / made-for-kids
+    // videos do not wander through unrelated platform identities, and an error-driven reload starts
+    // directly in that Web partition. This skips roughly one second of median cold-start latency in
+    // the Pixel 9 sample while retaining attested Web recovery. TV builds never enable this flag, so
+    // they keep the WEB_EMBED-first order and unbounded (no-timeout) behaviour byte-for-byte.
     private static volatile boolean sPreferNoPotClient;
     private static final AppClient PREFERRED_FIRST_CLIENT = AppClient.ANDROID_VR;
     // Short per-attempt timeout guarding a hanging fast client (ANDROID_VR "often hangs?"). Applied
@@ -75,20 +75,18 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private static final AppClient[] TV_FALLBACK_CLIENTS = {
             AppClient.TV_LEGACY, AppClient.TV_DOWNGRADED, AppClient.TV_EMBED, AppClient.TV_SIMPLY
     };
-    // Attested-web-first fallback (NewTube touch flavor): on pot-enforcing carrier networks
-    // googlevideo integrity-enforces media URLs, and ONLY an attested web /player flow
-    // (isWebPotRequired clients: WEB_EMBED/WEB/WEB_SAFARI/GEO/MWEB) mints URLs that survive past
-    // the ~60s grace; a non-attested win (ANDROID_VR/ANDROID_REEL/TV/IOS) serves ~60s then 403s
-    // forever (the reload-storm signature). The list order tries the non-attested clients FIRST
-    // in the fallback tail (WEB_EMBED -> VR -> REEL -> TV -> WEB -> ...), so a video WEB_EMBED
-    // can't serve wins on a 403-prone client before the other attested clients are ever probed.
-    // When enabled, the rest-of-ring tail is stable-partitioned attested-first, so such a video
-    // gets an attested (surviving) URL from WEB/WEB_SAFARI on the FIRST open - before any storm
-    // starts - and only genuinely web-unplayable videos (auth-walled -> TV, SABR-only -> VR) fall
-    // through to the non-attested clients. beginType + last-winner probing are untouched, so the
-    // happy path (WEB_EMBED wins at attempt 1) and the ring-memory walk-length bound are unchanged.
-    // VIDEO_INFO_TYPE_LIST stays byte-identical (upstream merge surface). TV never sets this.
+    // Web-family-first fallback (NewTube touch flavor): GVS acceptance is client/session-specific,
+    // not a transport or carrier-CGNAT property. On-device isolation found that iOS and the old
+    // Android VR request could return signed URLs whose init ranges worked but deep ranges got 403;
+    // sibling Web clients remained healthy. Android VR is repaired separately by using the same
+    // fresh Web-derived visitor identity as current extractors. This partition is still valuable:
+    // after WEB_EMBED cannot serve a video, probe WEB/WEB_SAFARI/GEO/MWEB before falling through to
+    // platform clients with different token requirements. During recovery, also defer the suspect
+    // last winner so it cannot immediately win again. VIDEO_INFO_TYPE_LIST stays byte-identical for
+    // upstream compatibility, and TV never enables this behavior.
     private static volatile boolean sPreferAttestedWebFallback;
+    @Nullable
+    private static volatile AppClient sDebugForcedClient;
 
     /**
      * Enabled once from the mobile flavor (MobileMainApplication). Makes getVideoInfo prefer a
@@ -108,19 +106,35 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
     /**
      * Enabled once from the mobile flavor (MobileMainApplication). Makes the failover walk probe
-     * the attested web clients (isWebPotRequired) before the non-attested ones, so a video the
-     * begin client can't serve gets a 403-resistant attested URL instead of a 403-prone
-     * ANDROID_VR/TV/IOS one. See {@link #sPreferAttestedWebFallback}. Never called on TV.
+     * Web-family clients (isWebPotRequired) before platform fallbacks with different identity and
+     * token requirements. See {@link #sPreferAttestedWebFallback}. Never called on TV.
      */
     public static void setPreferAttestedWebFallback(boolean prefer) {
         sPreferAttestedWebFallback = prefer;
     }
 
+    /** Debug-playground hook. The mobile app calls this only from a debuggable build. */
+    public static boolean setDebugForcedClient(@Nullable String clientName) {
+        if (clientName == null || clientName.trim().isEmpty()) {
+            sDebugForcedClient = null;
+            return true;
+        }
+        try {
+            AppClient client = AppClient.valueOf(clientName.trim().toUpperCase(java.util.Locale.US));
+            if (!Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(client)) {
+                return false;
+            }
+            sDebugForcedClient = client;
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
     /**
-     * Called once from the mobile flavor (MobileMainApplication). Initializes the WebView pot
-     * generator in the background so the media-URL pot fallback
-     * ({@link PoTokenGate#getMediaSessionPoToken}) finds it warm on the first video open.
-     * Never called on TV.
+     * Called once from the mobile flavor (MobileMainApplication). Initializes the WebView/BotGuard
+     * generator in the background so the first Web-family request finds it warm. Never called on
+     * TV, and deliberately does not mint a cross-platform token for Android/TV/iOS clients.
      */
     public static void warmUpPoTokenGate() {
         PoTokenGate.warmUp();
@@ -150,6 +164,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private AppClient mActualInfoType = null;
     @Nullable
     private AppClient mNextInfoType = null;
+    // mNextInfoType is also used for the persisted-client cold-start hint. Keep an explicit bit so
+    // only an error-driven cursor invokes recovery ordering and defers the previous winner.
+    private boolean mRecoveryWalk;
     // Guards the one-time restore of the persisted "winning" fast client at cold start (mobile only).
     private boolean mInfoTypeRestored;
     private boolean mAuthBlock;
@@ -180,6 +197,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
         mAuthBlock = true;
 
         VideoInfo result = firstPlayable(videoId, clickTrackingParams);
+
+        // An error cursor and a persisted cold-start hint are both one-shot on mobile. Leaving either
+        // set after a successful failover made every later open start from stale routing state.
+        // TV keeps its historical behavior.
+        if (sPreferAttestedWebFallback) {
+            mNextInfoType = null;
+            mRecoveryWalk = false;
+        }
 
         if (result == null) {
             Log.e(TAG, "Can't get video info. videoId: %s", videoId);
@@ -220,42 +245,24 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private VideoInfo firstPlayable(String videoId, String clickTrackingParams) {
         //final AppClient beginType = getDefaultClient();
         // Mobile fast-start: when no client is remembered from a previous video, start at the
-        // no-pot/no-cipher client instead of WEB_EMBED. Helpers.getNextValue wraps around the list,
-        // so starting at ANDROID_VR still visits every client (WEB_EMBED becomes the last fallback).
-        // TV (flag unset) keeps VIDEO_INFO_TYPE_LIST[0] (WEB_EMBED) as before.
+        // no-pot/no-cipher client instead of WEB_EMBED. buildVisitOrder keeps this fast head but
+        // puts the Web family immediately behind it. TV (flag unset) keeps the raw ring as before.
         final AppClient defaultBegin = sPreferNoPotClient ? PREFERRED_FIRST_CLIENT : VIDEO_INFO_TYPE_LIST[0];
         final AppClient beginType = mNextInfoType != null ? mNextInfoType : defaultBegin;
 
-        // NEWTUBE(ring-memory): visit order = begin, then the most recent WINNING client, then the
-        // rest of the ring from begin onward. Error-reload walks deliberately begin AFTER the last
-        // winner (applyNoPlaybackFix suspects its URLs), but on enforcing networks that winner is
-        // often the only playable client at all - observed on-device: EVERY reload of a 45s error
-        // cycle burned 8 playable=n /player calls (~2.3s) before re-finding TV at the ring's end.
-        // Probing the last winner second bounds that walk at 2 calls. Ring semantics otherwise
-        // unchanged: every non-skipped client is still visited at most once per walk.
-        java.util.List<AppClient> visitOrder = new java.util.ArrayList<>();
-        visitOrder.add(beginType);
         final AppClient lastWinner = mActualInfoType;
-        if (lastWinner != null && lastWinner != beginType) {
-            visitOrder.add(lastWinner);
-        }
-        // Rest-of-ring tail. With attested-web-first (mobile, pot-enforcing networks) the tail is
-        // stable-partitioned so isWebPotRequired clients (WEB/WEB_SAFARI/GEO/MWEB - whose attested
-        // URLs survive the 60s integrity wall) are probed before the non-attested VR/REEL/TV/IOS
-        // (whose URLs 403 after ~60s). Relative order within each group is the LIST order, so the
-        // upstream-tuned preference is preserved inside each half. TV keeps the plain LIST order.
-        java.util.List<AppClient> tail = new java.util.ArrayList<>();
-        java.util.List<AppClient> nonAttestedTail = sPreferAttestedWebFallback
-                ? new java.util.ArrayList<>() : tail;
-        for (AppClient type = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, beginType); type != beginType;
-                type = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, type)) {
-            if (type != lastWinner) {
-                (type.isWebPotRequired() ? tail : nonAttestedTail).add(type);
+        final boolean recoveryWalk = mRecoveryWalk;
+        java.util.List<AppClient> visitOrder;
+        if (sDebugForcedClient != null) {
+            visitOrder = java.util.Collections.singletonList(sDebugForcedClient);
+            android.util.Log.d("NetPath", "player-ring forced-client=" + sDebugForcedClient);
+        } else {
+            visitOrder = buildVisitOrder(
+                    beginType, lastWinner, sPreferAttestedWebFallback, recoveryWalk);
+            if (recoveryWalk) {
+                android.util.Log.d("NetPath", "player-ring recovery begin=" + beginType
+                        + " suspect=" + lastWinner + " first=" + visitOrder.get(0));
             }
-        }
-        visitOrder.addAll(tail);
-        if (nonAttestedTail != tail) {
-            visitOrder.addAll(nonAttestedTail);
         }
 
         VideoInfo firstUnplayable = null;
@@ -303,6 +310,80 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // Nobody offered a dash manifest for this live stream: the held HLS-only result is
         // still strictly better than an unplayable verdict.
         return liveWithoutDash != null ? liveWithoutDash : firstUnplayable;
+    }
+    /**
+     * Pure visit-order builder, split out so the 403 recovery semantics can be unit-tested without
+     * network calls. TV's ring-memory order stays byte-for-byte equivalent: begin, last winner,
+     * then the rest of the ring. On the mobile web-first path the WHOLE order is partitioned, not
+     * merely the tail; otherwise a non-web last winner bypasses the preference and wins again. The
+     * one exception is the normal ANDROID_VR fast head: preserve it at attempt 1 and partition only
+     * its tail, yielding VR -> Web family -> other platforms. During an error recovery the whole
+     * order is partitioned and the suspect last winner is left at its natural wraparound position,
+     * after its sibling Web clients, rather than being promoted back to attempt 2.
+     */
+    static List<AppClient> buildVisitOrder(AppClient beginType, @Nullable AppClient lastWinner,
+            boolean preferWebFamily, boolean recoveryWalk) {
+        java.util.List<AppClient> rawOrder = new java.util.ArrayList<>();
+        rawOrder.add(beginType);
+
+        boolean deferLastWinner = preferWebFamily && recoveryWalk;
+        if (!deferLastWinner && lastWinner != null && lastWinner != beginType) {
+            rawOrder.add(lastWinner);
+        }
+
+        for (AppClient type = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, beginType); type != beginType;
+                type = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, type)) {
+            if (deferLastWinner || type != lastWinner) {
+                rawOrder.add(type);
+            }
+        }
+
+        if (!preferWebFamily) {
+            return rawOrder;
+        }
+
+        boolean keepVrFastHead = !recoveryWalk && beginType == PREFERRED_FIRST_CLIENT;
+        java.util.List<AppClient> result = new java.util.ArrayList<>();
+        if (keepVrFastHead || recoveryWalk) {
+            if (keepVrFastHead) {
+                result.add(PREFERRED_FIRST_CLIENT);
+                // A previous Web winner is the best fallback hint; otherwise use the canonical
+                // ring order, whose WEB_EMBED head handles the broadest set in device tests.
+                if (lastWinner != null && lastWinner.isWebPotRequired()) {
+                    result.add(lastWinner);
+                }
+            }
+
+            for (AppClient type : VIDEO_INFO_TYPE_LIST) {
+                if (type.isWebPotRequired() && type != lastWinner) {
+                    result.add(type);
+                }
+            }
+            // On recovery, a failed Web winner is retried only after every sibling Web client.
+            if (recoveryWalk && lastWinner != null && lastWinner.isWebPotRequired()) {
+                result.add(lastWinner);
+            }
+
+            for (AppClient type : rawOrder) {
+                if (!type.isWebPotRequired() && (!keepVrFastHead || type != PREFERRED_FIRST_CLIENT)) {
+                    result.add(type);
+                }
+            }
+            return result;
+        }
+
+        java.util.List<AppClient> web = new java.util.ArrayList<>();
+        java.util.List<AppClient> nonWeb = new java.util.ArrayList<>();
+        for (AppClient type : rawOrder) {
+            if (type.isWebPotRequired()) {
+                web.add(type);
+            } else {
+                nonWeb.add(type);
+            }
+        }
+        result.addAll(web);
+        result.addAll(nonWeb);
+        return result;
     }
 
     /**
@@ -353,6 +434,18 @@ public class VideoInfoService extends VideoInfoServiceBase {
     public void switchNextFormat() {
         //initInfoTypeIfNeeded();
 
+        // ANDROID_VR deliberately shares the Web token session's visitor identity, but it is still
+        // a distinct /player/GVS platform. Clear that visitor session and continue into the Web
+        // recovery partition; treating the cache clear as the whole fix just remints the failed VR
+        // route. A Web-family winner can retry itself after a genuine Web token refresh as before.
+        if (!mIsUnplayable && mActualInfoType == AppClient.ANDROID_VR) {
+            PoTokenGate.resetCache();
+            nextVideoInfoType();
+            android.util.Log.d("NetPath", "player-ring circuit-break suspect=" + mActualInfoType
+                    + " next=" + mNextInfoType);
+            return;
+        }
+
         // Try to reset pot cache for the last video
         if (!mIsUnplayable && mActualInfoType != null && PoTokenGate.resetCache(mActualInfoType)) {
             return;
@@ -379,6 +472,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
     private void nextVideoInfoType() {
         mNextInfoType = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, mActualInfoType);
+        mRecoveryWalk = true;
     }
 
     private VideoInfo getVideoInfoWithRentFix(AppClient client, String videoId, String clickTrackingParams) {
@@ -398,8 +492,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
         if (client == AppClient.INITIAL) {
             result = InitialResponseService.getVideoInfo(videoId, mAuthBlock);
         } else {
-            String videoInfoQuery = VideoInfoApiHelper.getVideoInfoQuery(client, videoId, clickTrackingParams);
-            result = getVideoInfo(client, videoInfoQuery);
+            VideoInfoApiHelper.PlayerRequest request =
+                    VideoInfoApiHelper.getVideoInfoRequest(client, videoId, clickTrackingParams);
+            result = getVideoInfo(client, request);
         }
 
         if (result != null) {
@@ -409,16 +504,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
         return result;
     }
 
-    private VideoInfo getVideoInfo(AppClient client, String videoInfoQuery) {
+    private VideoInfo getVideoInfo(AppClient client, VideoInfoApiHelper.PlayerRequest request) {
         boolean auth = client.isAuthSupported() && mAuthBlock;
 
         if (client.isReelClient()) {
-            Call<VideoInfoReel> wrapper = mVideoInfoApi.getVideoInfoReel(videoInfoQuery, mAppService.getVisitorData(),
+            Call<VideoInfoReel> wrapper = mVideoInfoApi.getVideoInfoReel(request.query, request.visitorData,
                     client.getUserAgent(), client.getInnerTubeName(), client.getClientVersion());
             return getVideoInfoReel(wrapper, auth);
         }
 
-        Call<VideoInfo> wrapper = mVideoInfoApi.getVideoInfo(videoInfoQuery, mAppService.getVisitorData(),
+        Call<VideoInfo> wrapper = mVideoInfoApi.getVideoInfo(request.query, request.visitorData,
                 client.getUserAgent(), client.getInnerTubeName(), client.getClientVersion());
         return getVideoInfo(wrapper, auth);
     }
@@ -448,12 +543,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     private VideoInfoHls getVideoInfoIOSHls(String videoId, String clickTrackingParams) {
-        String videoInfoQuery = VideoInfoApiHelper.getVideoInfoQuery(AppClient.IOS, videoId, clickTrackingParams);
-        return getVideoInfoHls(AppClient.IOS, videoInfoQuery);
+        VideoInfoApiHelper.PlayerRequest request =
+                VideoInfoApiHelper.getVideoInfoRequest(AppClient.IOS, videoId, clickTrackingParams);
+        return getVideoInfoHls(AppClient.IOS, request);
     }
 
-    private VideoInfoHls getVideoInfoHls(AppClient client, String videoInfoQuery) {
-        Call<VideoInfoHls> wrapper = mVideoInfoApi.getVideoInfoHls(videoInfoQuery, mAppService.getVisitorData(),
+    private VideoInfoHls getVideoInfoHls(AppClient client, VideoInfoApiHelper.PlayerRequest request) {
+        Call<VideoInfoHls> wrapper = mVideoInfoApi.getVideoInfoHls(request.query, request.visitorData,
                 client.getUserAgent(), client.getInnerTubeName(), client.getClientVersion());
 
         return RetrofitHelper.get(wrapper, client.isAuthSupported() && mAuthBlock);
@@ -606,6 +702,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
     private void resetInfoTypeToDefault() {
         mNextInfoType = null;
+        mRecoveryWalk = false;
         mActualInfoType = VIDEO_INFO_TYPE_LIST[0];
         persistVideoInfoType();
     }
