@@ -75,6 +75,20 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private static final AppClient[] TV_FALLBACK_CLIENTS = {
             AppClient.TV_LEGACY, AppClient.TV_DOWNGRADED, AppClient.TV_EMBED, AppClient.TV_SIMPLY
     };
+    // Attested-web-first fallback (NewTube touch flavor): on pot-enforcing carrier networks
+    // googlevideo integrity-enforces media URLs, and ONLY an attested web /player flow
+    // (isWebPotRequired clients: WEB_EMBED/WEB/WEB_SAFARI/GEO/MWEB) mints URLs that survive past
+    // the ~60s grace; a non-attested win (ANDROID_VR/ANDROID_REEL/TV/IOS) serves ~60s then 403s
+    // forever (the reload-storm signature). The list order tries the non-attested clients FIRST
+    // in the fallback tail (WEB_EMBED -> VR -> REEL -> TV -> WEB -> ...), so a video WEB_EMBED
+    // can't serve wins on a 403-prone client before the other attested clients are ever probed.
+    // When enabled, the rest-of-ring tail is stable-partitioned attested-first, so such a video
+    // gets an attested (surviving) URL from WEB/WEB_SAFARI on the FIRST open - before any storm
+    // starts - and only genuinely web-unplayable videos (auth-walled -> TV, SABR-only -> VR) fall
+    // through to the non-attested clients. beginType + last-winner probing are untouched, so the
+    // happy path (WEB_EMBED wins at attempt 1) and the ring-memory walk-length bound are unchanged.
+    // VIDEO_INFO_TYPE_LIST stays byte-identical (upstream merge surface). TV never sets this.
+    private static volatile boolean sPreferAttestedWebFallback;
 
     /**
      * Enabled once from the mobile flavor (MobileMainApplication). Makes getVideoInfo prefer a
@@ -90,6 +104,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setSkipTvFallbackClients(boolean skip) {
         sSkipTvFallbackClients = skip;
+    }
+
+    /**
+     * Enabled once from the mobile flavor (MobileMainApplication). Makes the failover walk probe
+     * the attested web clients (isWebPotRequired) before the non-attested ones, so a video the
+     * begin client can't serve gets a 403-resistant attested URL instead of a 403-prone
+     * ANDROID_VR/TV/IOS one. See {@link #sPreferAttestedWebFallback}. Never called on TV.
+     */
+    public static void setPreferAttestedWebFallback(boolean prefer) {
+        sPreferAttestedWebFallback = prefer;
     }
 
     /**
@@ -215,11 +239,23 @@ public class VideoInfoService extends VideoInfoServiceBase {
         if (lastWinner != null && lastWinner != beginType) {
             visitOrder.add(lastWinner);
         }
+        // Rest-of-ring tail. With attested-web-first (mobile, pot-enforcing networks) the tail is
+        // stable-partitioned so isWebPotRequired clients (WEB/WEB_SAFARI/GEO/MWEB - whose attested
+        // URLs survive the 60s integrity wall) are probed before the non-attested VR/REEL/TV/IOS
+        // (whose URLs 403 after ~60s). Relative order within each group is the LIST order, so the
+        // upstream-tuned preference is preserved inside each half. TV keeps the plain LIST order.
+        java.util.List<AppClient> tail = new java.util.ArrayList<>();
+        java.util.List<AppClient> nonAttestedTail = sPreferAttestedWebFallback
+                ? new java.util.ArrayList<>() : tail;
         for (AppClient type = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, beginType); type != beginType;
                 type = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, type)) {
             if (type != lastWinner) {
-                visitOrder.add(type);
+                (type.isWebPotRequired() ? tail : nonAttestedTail).add(type);
             }
+        }
+        visitOrder.addAll(tail);
+        if (nonAttestedTail != tail) {
+            visitOrder.addAll(nonAttestedTail);
         }
 
         VideoInfo firstUnplayable = null;
