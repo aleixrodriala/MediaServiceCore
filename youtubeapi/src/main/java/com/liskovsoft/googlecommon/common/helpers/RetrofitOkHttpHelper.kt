@@ -21,9 +21,11 @@ internal object RetrofitOkHttpHelper {
     // so a stalled host must fail in 8s instead of the shared 20s OkHttp defaults.
     private const val OPEN_PATH_TIMEOUT_MS = 8_000
     private const val PLAYER_PATH = "/youtubei/v1/player"
+    private const val NEXT_PATH = "/youtubei/v1/next"
     private const val YOUTUBE_ORIGIN = "https://www.youtube.com"
     private val authSkipList = mutableListOf<Request>()
     private val playerRequestIds = AtomicLong()
+    private val nextRequestIds = AtomicLong()
 
     @JvmStatic
     val authHeaders = mutableMapOf<String, String>()
@@ -142,16 +144,19 @@ internal object RetrofitOkHttpHelper {
             }
 
             val finalRequest = requestBuilder.build()
-            if (isPlayerEndpoint(finalRequest)) {
-                proceedLoggedPlayerRequest(chain, finalRequest)
-            } else {
-                chain.proceed(finalRequest)
+            when {
+                isPlayerEndpoint(finalRequest) -> proceedLoggedPlayerRequest(chain, finalRequest)
+                isNextEndpoint(finalRequest) -> proceedLoggedNextRequest(chain, finalRequest)
+                else -> chain.proceed(finalRequest)
             }
         }
     }
 
     internal fun isPlayerEndpoint(request: Request): Boolean =
         request.url.encodedPath.endsWith(PLAYER_PATH)
+
+    internal fun isNextEndpoint(request: Request): Boolean =
+        request.url.encodedPath.endsWith(NEXT_PATH)
 
     /** Safe /player request/response fingerprint: useful in field logs, contains no credentials. */
     private fun proceedLoggedPlayerRequest(
@@ -169,6 +174,11 @@ internal object RetrofitOkHttpHelper {
             "player-http[S] rid=$id video=${body.videoId} client=${request.header("X-Youtube-Client-Name")}" +
                 " cver=${request.header("X-Youtube-Client-Version")}" +
                 " visitor=${fingerprint(visitor)} pot=${yn(body.hasPoToken)}" +
+                " auth=${yn(request.header("Authorization") != null)}" +
+                " cookie=${yn(request.header("Cookie") != null)}" +
+                " authUser=${yn(request.header("X-Goog-AuthUser") != null)}" +
+                " contentOk=${yn(body.contentCheckOk)} racyOk=${yn(body.racyCheckOk)}" +
+                " sts=${yn(body.hasSignatureTimestamp)} ua=${fingerprint(request.header("User-Agent"))}" +
                 " origin=${if (origin == YOUTUBE_ORIGIN) "youtube" else if (origin == null) "none" else "other"}" +
                 " referer=${if (referer == null) "none" else "present"}" +
                 " key=${yn(request.url.queryParameter("key") != null)}",
@@ -180,7 +190,7 @@ internal object RetrofitOkHttpHelper {
             android.util.Log.d(
                 "NetPath",
                 "player-http[C] rid=$id video=${body.videoId} code=${response.code}" +
-                    " ms=$elapsed protocol=${response.protocol}",
+                    " ms=$elapsed ${responseSummary(response)}",
             )
             if (!response.isSuccessful) {
                 val errorText = try {
@@ -206,7 +216,65 @@ internal object RetrofitOkHttpHelper {
         }
     }
 
-    private data class PlayerBodyInfo(val videoId: String, val hasPoToken: Boolean)
+    /** Safe /next timing shows whether an apparent playback loop is fetching suggestions. */
+    private fun proceedLoggedNextRequest(
+        chain: okhttp3.Interceptor.Chain,
+        request: Request,
+    ): okhttp3.Response {
+        val id = nextRequestIds.incrementAndGet()
+        val startedMs = android.os.SystemClock.elapsedRealtime()
+        val body = inspectPlayerBody(request)
+        android.util.Log.d(
+            "NetPath",
+            "next-http[S] nid=$id video=${body.videoId}" +
+                " client=${request.header("X-Youtube-Client-Name")}" +
+                " cver=${request.header("X-Youtube-Client-Version")}" +
+                " visitor=${fingerprint(request.header("X-Goog-Visitor-Id"))}" +
+                " auth=${yn(request.header("Authorization") != null)}" +
+                " cookie=${yn(request.header("Cookie") != null)}",
+        )
+        try {
+            val response = chain.proceed(request)
+            val elapsed = android.os.SystemClock.elapsedRealtime() - startedMs
+            android.util.Log.d(
+                "NetPath",
+                "next-http[C] nid=$id video=${body.videoId} code=${response.code}" +
+                    " ms=$elapsed ${responseSummary(response)}",
+            )
+            return response
+        } catch (error: IOException) {
+            val elapsed = android.os.SystemClock.elapsedRealtime() - startedMs
+            android.util.Log.w(
+                "NetPath",
+                "next-http[E] nid=$id video=${body.videoId} ms=$elapsed " +
+                    "${error.javaClass.simpleName}: ${printable(error.message ?: "", 160)}",
+            )
+            throw error
+        }
+    }
+
+    private fun responseSummary(response: okhttp3.Response): String {
+        var redirects = 0
+        var prior = response.priorResponse
+        while (prior != null) {
+            redirects++
+            prior = prior.priorResponse
+        }
+        val contentType = response.header("Content-Type")?.substringBefore(';') ?: "none"
+        val contentLength = response.header("Content-Length") ?: "unknown"
+        val encoding = response.header("Content-Encoding") ?: "identity"
+        val tls = response.handshake?.tlsVersion?.javaName ?: "none"
+        return "protocol=${response.protocol} tls=$tls host=${response.request.url.host}" +
+            " redirects=$redirects ctype=$contentType clen=$contentLength encoding=$encoding"
+    }
+
+    private data class PlayerBodyInfo(
+        val videoId: String,
+        val hasPoToken: Boolean,
+        val contentCheckOk: Boolean,
+        val racyCheckOk: Boolean,
+        val hasSignatureTimestamp: Boolean,
+    )
 
     private fun inspectPlayerBody(request: Request): PlayerBodyInfo {
         return try {
@@ -215,9 +283,15 @@ internal object RetrofitOkHttpHelper {
             val body = buffer.readUtf8()
             val videoId = Regex("\\\"videoId\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
                 .find(body)?.groupValues?.getOrNull(1) ?: "?"
-            PlayerBodyInfo(videoId, Regex("\\\"poToken\\\"\\s*:").containsMatchIn(body))
+            PlayerBodyInfo(
+                videoId,
+                Regex("\\\"poToken\\\"\\s*:").containsMatchIn(body),
+                Regex("\\\"contentCheckOk\\\"\\s*:\\s*true").containsMatchIn(body),
+                Regex("\\\"racyCheckOk\\\"\\s*:\\s*true").containsMatchIn(body),
+                Regex("\\\"signatureTimestamp\\\"\\s*:").containsMatchIn(body),
+            )
         } catch (_: Exception) {
-            PlayerBodyInfo("?", false)
+            PlayerBodyInfo("?", false, false, false, false)
         }
     }
 

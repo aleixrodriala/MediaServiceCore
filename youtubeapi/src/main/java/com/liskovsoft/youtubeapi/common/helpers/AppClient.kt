@@ -33,7 +33,7 @@ internal enum class AppClient(
 ): MediaItemFormatInfo.ClientInfo {
     // Doesn't support 8AEB2AMB param if X-Goog-Pageid is set!
     TV(CLIENTS.TV.NAME, CLIENTS.TV.VERSION, CLIENT_NAME_IDS[CLIENTS.TV.NAME],
-        userAgent = DefaultHeaders.USER_AGENT_TV, referer = "https://www.youtube.com/tv", postDataBrowse = POST_DATA_BROWSE_TV),
+        userAgent = DefaultHeaders.USER_AGENT_COBALT_CURRENT, referer = "https://www.youtube.com/tv", postDataBrowse = POST_DATA_BROWSE_TV),
     TV_LEGACY(TV, postDataBrowse = POST_DATA_BROWSE_TV_LEGACY),
     TV_EMBED(CLIENTS.TV_EMBEDDED.NAME, CLIENTS.TV_EMBEDDED.VERSION, CLIENT_NAME_IDS[CLIENTS.TV_EMBEDDED.NAME],
         userAgent = DefaultHeaders.USER_AGENT_TV, referer = "https://www.youtube.com/tv", clientScreen = CLIENT_SCREEN_EMBED, postDataBrowse = POST_DATA_BROWSE_TV),
@@ -42,7 +42,7 @@ internal enum class AppClient(
         userAgent = DefaultHeaders.USER_AGENT_TV, referer = "https://www.youtube.com/tv", postDataBrowse = POST_DATA_BROWSE_TV),
     TV_KIDS("TVHTML5_KIDS", "3.20231113.03.00", null, userAgent = DefaultHeaders.USER_AGENT_TV,
         referer = "https://www.youtube.com/tv/kids", postDataBrowse = POST_DATA_BROWSE_TV),
-    TV_DOWNGRADED(TV, clientVersion = "5.20251105", userAgent = DefaultHeaders.USER_AGENT_COBALT_DOWNGRADED),
+    TV_DOWNGRADED(TV, clientVersion = "5.20260707", userAgent = DefaultHeaders.USER_AGENT_COBALT_DOWNGRADED),
     // 8AEB2AMB - web client premium formats?
     WEB(CLIENTS.WEB.NAME, CLIENTS.WEB.VERSION, CLIENT_NAME_IDS[CLIENTS.WEB.NAME],
         userAgent = DefaultHeaders.USER_AGENT_WEB, referer = "https://www.youtube.com"),

@@ -101,8 +101,8 @@ internal object CLIENTS {
 
     val TV = CLIENT(
         NAME = "TVHTML5",
-        VERSION = "7.20260311.12.00",
-        USER_AGENT = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
+        VERSION = "7.20260707.07.00",
+        USER_AGENT = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
     )
 
     val TV_SIMPLY = CLIENT(

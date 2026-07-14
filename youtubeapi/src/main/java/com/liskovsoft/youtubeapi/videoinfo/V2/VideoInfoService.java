@@ -9,9 +9,11 @@ import com.liskovsoft.youtubeapi.app.AppService;
 import com.liskovsoft.youtubeapi.app.PoTokenGate;
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitHelper;
+import com.liskovsoft.googlecommon.common.helpers.RetrofitOkHttpHelper;
 import com.liskovsoft.youtubeapi.service.internal.MediaServiceData;
 import com.liskovsoft.youtubeapi.innertube.initialresponse.InitialResponseService;
 import com.liskovsoft.youtubeapi.videoinfo.VideoInfoServiceBase;
+import com.liskovsoft.youtubeapi.videoinfo.models.BotCheckDetector;
 import com.liskovsoft.youtubeapi.videoinfo.models.CaptionTrack;
 import com.liskovsoft.youtubeapi.videoinfo.models.TranslationLanguage;
 import com.liskovsoft.youtubeapi.videoinfo.models.VideoInfo;
@@ -63,6 +65,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // OkHttp read/connect timeout is 20s with no overall call timeout, so without this a hang would
     // stall TTFF ~20s+ instead of failing over.
     private static final long CLIENT_ATTEMPT_TIMEOUT_MS = 7_000;
+    private static final long BOT_CHECK_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(15);
     private static ExecutorService sInfoExecutor;
     // Phone ring trim (NewTube touch flavor): the tail of VIDEO_INFO_TYPE_LIST is four TV-app
     // fallback clients that only earn their keep on TV boxes; on a phone they just lengthen the
@@ -170,6 +173,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // Guards the one-time restore of the persisted "winning" fast client at cold start (mobile only).
     private boolean mInfoTypeRestored;
     private boolean mAuthBlock;
+    private volatile long mBotCheckCooldownUntilMs;
+    private volatile boolean mBotCheckAuthenticatedAttempted;
+    @Nullable
+    private volatile VideoInfo mBotCheckResult;
     private List<TranslationLanguage> mCachedTranslationLanguages;
     private boolean mIsUnplayable;
 
@@ -185,9 +192,15 @@ public class VideoInfoService extends VideoInfoServiceBase {
         return sInstance;
     }
 
-    public VideoInfo getVideoInfo(String videoId, String clickTrackingParams) {
+    public synchronized VideoInfo getVideoInfo(String videoId, String clickTrackingParams) {
         if (videoId == null) {
             return null;
+        }
+
+        final boolean authenticated = hasAuthentication();
+        VideoInfo blockedResult = getActiveBotCheckResult(authenticated, videoId);
+        if (blockedResult != null) {
+            return blockedResult;
         }
 
         restoreVideoInfoTypeIfNeeded();
@@ -196,7 +209,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         mAuthBlock = true;
 
-        VideoInfo result = firstPlayable(videoId, clickTrackingParams);
+        VideoInfo result = firstPlayable(videoId, clickTrackingParams, authenticated);
 
         // An error cursor and a persisted cold-start hint are both one-shot on mobile. Leaving either
         // set after a successful failover made every later open start from stale routing state.
@@ -221,10 +234,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         mIsUnplayable = result.isUnplayable();
 
+        if (!mIsUnplayable) {
+            clearBotCheckCircuit();
+        }
+
         return result;
     }
 
-    public VideoInfo getAuthVideoInfo(String videoId, String clickTrackingParams) {
+    public synchronized VideoInfo getAuthVideoInfo(String videoId, String clickTrackingParams) {
         if (videoId == null) {
             return null;
         }
@@ -242,13 +259,20 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * caller still gets an "unplayable" reason to show. Same outcome as the old two-pass sweep
      * (pass 1: first playable, pass 2: first non-null) at half the worst-case /player call count.
      */
-    private VideoInfo firstPlayable(String videoId, String clickTrackingParams) {
+    private VideoInfo firstPlayable(String videoId, String clickTrackingParams, boolean authenticated) {
         //final AppClient beginType = getDefaultClient();
         // Mobile fast-start: when no client is remembered from a previous video, start at the
         // no-pot/no-cipher client instead of WEB_EMBED. buildVisitOrder keeps this fast head but
         // puts the Web family immediately behind it. TV (flag unset) keeps the raw ring as before.
-        final AppClient defaultBegin = sPreferNoPotClient ? PREFERRED_FIRST_CLIENT : VIDEO_INFO_TYPE_LIST[0];
-        final AppClient beginType = mNextInfoType != null ? mNextInfoType : defaultBegin;
+        // A signed-in TV request is the only legitimate recovery for an IP/guest-session block.
+        // Put it first instead of spending seven anonymous attempts before reaching the one client
+        // that can carry the account token.
+        final AppClient defaultBegin = authenticated
+                ? AppClient.TV
+                : (sPreferNoPotClient ? PREFERRED_FIRST_CLIENT : VIDEO_INFO_TYPE_LIST[0]);
+        final AppClient beginType = authenticated
+                ? AppClient.TV
+                : (mNextInfoType != null ? mNextInfoType : defaultBegin);
 
         final AppClient lastWinner = mActualInfoType;
         final boolean recoveryWalk = mRecoveryWalk;
@@ -258,7 +282,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
             android.util.Log.d("NetPath", "player-ring forced-client=" + sDebugForcedClient);
         } else {
             visitOrder = buildVisitOrder(
-                    beginType, lastWinner, sPreferAttestedWebFallback, recoveryWalk);
+                    beginType, lastWinner,
+                    authenticated ? false : sPreferAttestedWebFallback,
+                    recoveryWalk);
+            if (authenticated) {
+                visitOrder = promoteAuthenticatedTvFallback(visitOrder);
+                android.util.Log.d("NetPath", "player-ring authenticated-first=" + visitOrder.get(0));
+            }
             if (recoveryWalk) {
                 android.util.Log.d("NetPath", "player-ring recovery begin=" + beginType
                         + " suspect=" + lastWinner + " first=" + visitOrder.get(0));
@@ -266,19 +296,41 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
 
         VideoInfo firstUnplayable = null;
+        VideoInfo firstLoginRequired = null;
         VideoInfo liveWithoutDash = null;
         int attempt = 0;
 
         for (AppClient nextType : visitOrder) {
             // Phone ring trim: TV-only fallback clients are skipped (a stale mNextInfoType from
             // nextVideoInfoType may land on a TV_* entry; it's simply not probed).
-            if (isSkippedClient(nextType)) {
+            if (isSkippedClient(nextType)
+                    && sDebugForcedClient != nextType
+                    && !(authenticated && nextType == AppClient.TV_DOWNGRADED)) {
                 continue;
             }
 
             attempt++;
             VideoInfo result = getVideoInfoWithTimeout(nextType, videoId, clickTrackingParams);
             boolean playable = result != null && !result.isUnplayable();
+            logPlayerOutcome(videoId, nextType, attempt, result);
+
+            if (result != null) {
+                boolean repeatedLoginRequired = firstLoginRequired != null
+                        && BotCheckDetector.isRepeatedLoginRequired(
+                                firstLoginRequired.getRawPlayabilityStatus(),
+                                firstLoginRequired.getPlayabilityStatus(),
+                                result.getRawPlayabilityStatus(),
+                                result.getPlayabilityStatus());
+                if (result.isBotCheckRequired() || repeatedLoginRequired) {
+                    tripBotCheckCircuit(result, nextType,
+                            result.isBotCheckRequired() ? "explicit" : "repeated-login",
+                            authenticated);
+                    return result;
+                }
+                if (firstLoginRequired == null && result.isLoginRequired()) {
+                    firstLoginRequired = result;
+                }
+            }
 
             // Failover walks leave one logcat line per extra /player attempt (happy path =
             // one attempt = silent) so ring behavior is measurable in verify runs/forensics.
@@ -310,6 +362,113 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // Nobody offered a dash manifest for this live stream: the held HLS-only result is
         // still strictly better than an unplayable verdict.
         return liveWithoutDash != null ? liveWithoutDash : firstUnplayable;
+    }
+
+    /** One credential-free line per parsed /player result, including HTTP-200 playback failures. */
+    private static void logPlayerOutcome(String videoId, AppClient client, int attempt,
+            @Nullable VideoInfo result) {
+        if (result == null) {
+            android.util.Log.w("NetPath", "player-result video=" + videoId + " client=" + client
+                    + " attempt=" + attempt + " parsed=null");
+            return;
+        }
+
+        int adaptive = result.getAdaptiveFormats() != null ? result.getAdaptiveFormats().size() : 0;
+        int regular = result.getRegularFormats() != null ? result.getRegularFormats().size() : 0;
+        int usableAdaptive = 0;
+        if (result.getAdaptiveFormats() != null) {
+            for (com.liskovsoft.youtubeapi.videoinfo.models.formats.AdaptiveVideoFormat format
+                    : result.getAdaptiveFormats()) {
+                if (format != null && !format.isBroken()) {
+                    usableAdaptive++;
+                }
+            }
+        }
+        android.util.Log.d("NetPath", "player-result video=" + videoId + " client=" + client
+                + " attempt=" + attempt
+                + " status=" + safeLogValue(result.getRawPlayabilityStatus(), 32)
+                + " playable=" + (!result.isUnplayable() ? "y" : "n")
+                + " auth=" + (result.isAuth() ? "y" : "n")
+                + " formats=" + adaptive + '+' + regular + " usableAdaptive=" + usableAdaptive
+                + " dash=" + (result.getDashManifestUrl() != null ? "y" : "n")
+                + " hls=" + (result.getHlsManifestUrl() != null ? "y" : "n")
+                + " sabr=" + (result.getServerAbrStreamingUrl() != null ? "y" : "n")
+                + " reason=\"" + safeLogValue(result.getPlayabilityStatus(), 160) + "\"");
+    }
+
+    private static String safeLogValue(@Nullable String value, int maxLength) {
+        if (value == null) {
+            return "null";
+        }
+        String printable = value.replaceAll("[\\p{Cntrl}]+", " ").replaceAll("\\s+", " ").trim();
+        return printable.length() <= maxLength
+                ? printable
+                : printable.substring(0, maxLength) + "…";
+    }
+
+    /**
+     * A current authenticated TV response can be SABR-only. yt-dlp keeps an authenticated
+     * downgraded TV identity for this case; try that single account-bearing fallback before any
+     * anonymous Web client that may be under a guest/IP bot challenge.
+     */
+    static List<AppClient> promoteAuthenticatedTvFallback(List<AppClient> rawOrder) {
+        java.util.List<AppClient> result = new java.util.ArrayList<>(rawOrder.size());
+        result.add(AppClient.TV);
+        result.add(AppClient.TV_DOWNGRADED);
+        for (AppClient client : rawOrder) {
+            if (client != AppClient.TV && client != AppClient.TV_DOWNGRADED) {
+                result.add(client);
+            }
+        }
+        return result;
+    }
+
+    private static boolean hasAuthentication() {
+        String authorization = RetrofitOkHttpHelper.getAuthHeaders().get("Authorization");
+        return authorization != null && !authorization.isEmpty();
+    }
+
+    @Nullable
+    private VideoInfo getActiveBotCheckResult(boolean authenticated, String videoId) {
+        VideoInfo result = mBotCheckResult;
+        long remainingMs = mBotCheckCooldownUntilMs - android.os.SystemClock.elapsedRealtime();
+        if (result == null || remainingMs <= 0) {
+            if (result != null) {
+                clearBotCheckCircuit();
+            }
+            return null;
+        }
+
+        // Allow exactly one authenticated recovery after a circuit was opened anonymously. If the
+        // account-bearing attempt itself received the challenge, further opens stay inside the
+        // cooldown too; repeatedly exempting a present-but-rejected account recreates the storm.
+        if (authenticated && !mBotCheckAuthenticatedAttempted) {
+            android.util.Log.d("NetPath", "bot-check bypass=authenticated video=" + videoId);
+            return null;
+        }
+
+        android.util.Log.w("NetPath", "bot-check cooldown video=" + videoId
+                + " remainingMs=" + remainingMs + " network=n");
+        return result;
+    }
+
+    private void tripBotCheckCircuit(VideoInfo result, AppClient client, String signal,
+            boolean authenticatedAttempted) {
+        result.setBotCheckRequired(true);
+        mBotCheckResult = result;
+        mBotCheckCooldownUntilMs = android.os.SystemClock.elapsedRealtime() + BOT_CHECK_COOLDOWN_MS;
+        mBotCheckAuthenticatedAttempted = authenticatedAttempted;
+        mNextInfoType = null;
+        mRecoveryWalk = false;
+        android.util.Log.w("NetPath", "bot-check trip client=" + client
+                + " signal=" + signal + " authAttempted=" + (authenticatedAttempted ? "y" : "n")
+                + " cooldownMs=" + BOT_CHECK_COOLDOWN_MS);
+    }
+
+    private void clearBotCheckCircuit() {
+        mBotCheckResult = null;
+        mBotCheckCooldownUntilMs = 0;
+        mBotCheckAuthenticatedAttempted = false;
     }
     /**
      * Pure visit-order builder, split out so the 403 recovery semantics can be unit-tested without
@@ -468,6 +627,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
     public void resetInfoType() {
         resetInfoTypeToDefault();
         PoTokenGate.resetCache();
+        clearBotCheckCircuit();
     }
 
     private void nextVideoInfoType() {
@@ -634,8 +794,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
             result.setTranslationLanguages(mCachedTranslationLanguages);
         }
 
-        final boolean needSubs = !warmCache && needMoreSubtitles(result);
+        // Authenticated TV may be the only route still accepted while the guest Web session is
+        // challenged. Its own caption tracks are already usable; don't spend another anonymous
+        // /player request merely to enrich the optional auto-translate language list.
+        final boolean skipGuestWebEnrichment = result.isAuth();
+        final boolean needSubs = !warmCache && needMoreSubtitles(result) && !skipGuestWebEnrichment;
         final boolean needExtended = shouldObtainExtendedFormats(result) || result.isStoryboardBroken();
+
+        if (skipGuestWebEnrichment && !warmCache && needMoreSubtitles(result)) {
+            android.util.Log.d("NetPath", "player-enrichment web=n reason=authenticated video=" + videoId);
+        }
 
         if (!needSubs && !needExtended) {
             return;

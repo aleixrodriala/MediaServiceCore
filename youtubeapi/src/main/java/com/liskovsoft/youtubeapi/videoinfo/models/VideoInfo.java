@@ -107,6 +107,7 @@ public class VideoInfo {
     private boolean mIsStreamSeekable;
     private List<CaptionTrack> mMergedCaptionTracks;
     private boolean mIsAuth;
+    private boolean mIsBotCheckRequired;
     private String mPoToken;
     private String mVisitorCookie;
     private AppClient mClient;
@@ -319,6 +320,23 @@ public class VideoInfo {
 
     public String getPlayabilityStatus() {
         return Helpers.toString(ServiceHelper.createInfo(mPlayabilityReason, mPlayabilityDescription));
+    }
+
+    public String getRawPlayabilityStatus() {
+        return mPlayabilityStatus;
+    }
+
+    public boolean isLoginRequired() {
+        return STATUS_LOGIN_REQUIRED.equals(mPlayabilityStatus);
+    }
+
+    public boolean isBotCheckRequired() {
+        return mIsBotCheckRequired
+                || BotCheckDetector.isExplicitBotCheck(mPlayabilityStatus, getPlayabilityStatus());
+    }
+
+    public void setBotCheckRequired(boolean required) {
+        mIsBotCheckRequired = required;
     }
 
     public String getStoryboardSpec() {

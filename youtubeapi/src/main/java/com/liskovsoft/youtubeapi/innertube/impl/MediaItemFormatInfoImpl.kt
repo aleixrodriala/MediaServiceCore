@@ -34,6 +34,7 @@ import com.liskovsoft.youtubeapi.innertube.utils.getWatchTimeUrl
 import com.liskovsoft.youtubeapi.innertube.utils.isPlayableInEmbed
 import com.liskovsoft.youtubeapi.service.data.YouTubeMediaItemStoryboard
 import com.liskovsoft.youtubeapi.videoinfo.models.DashInfo
+import com.liskovsoft.youtubeapi.videoinfo.models.BotCheckDetector
 import com.liskovsoft.youtubeapi.videoinfo.models.VideoUrlHolder
 import io.reactivex.rxjava3.core.Observable
 import java.io.InputStream
@@ -238,6 +239,9 @@ internal data class MediaItemFormatInfoImpl(private val playerResult: PlayerResu
     override fun getPlayabilityReason(): String? = _playabilityReason
 
     override fun isStreamSeekable() = _isHfr || _isStreamSeekable
+
+    override fun isBotCheckRequired() =
+        BotCheckDetector.isExplicitBotCheck(_playabilityStatus, _playabilityReason)
 
     override fun getStartTimestamp() = _startTimestamp
 

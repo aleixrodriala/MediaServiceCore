@@ -91,4 +91,16 @@ public class VideoInfoVisitOrderTest {
         assertFalse(VideoInfoApiHelper.usesWebVisitorData(AppClient.IOS));
         assertFalse(VideoInfoApiHelper.usesWebVisitorData(AppClient.TV));
     }
+
+    @Test
+    public void authenticatedOrderStartsWithTv() {
+        List<AppClient> order = VideoInfoService.promoteAuthenticatedTvFallback(
+                VideoInfoService.buildVisitOrder(
+                        AppClient.TV, AppClient.ANDROID_VR, false, false));
+
+        assertEquals(AppClient.TV, order.get(0));
+        assertEquals(AppClient.TV_DOWNGRADED, order.get(1));
+        assertEquals(AppClient.ANDROID_VR, order.get(2));
+        assertEquals(13, order.size());
+    }
 }

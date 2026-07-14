@@ -65,6 +65,36 @@ public class YouTubeMediaItemService implements MediaItemService {
     // instead of racing into two. Off by default -> TV keeps the exact original single-fetch path.
     private static boolean sSingleFlightEnabled;
     private final ConcurrentHashMap<String, Object> mFormatInfoLocks = new ConcurrentHashMap<>();
+    // The original one-slot cache is easily overwritten by Home's next-video prefetch while the
+    // current video is still playing. A later history/storyboard lookup then remints identical
+    // signed URLs and spends two more /player calls. Mobile keeps a tiny access-ordered working set
+    // (current + a few prefetched neighbors); TV continues to use mCachedFormatInfo unchanged.
+    private static final int MOBILE_FORMAT_CACHE_MAX = 4;
+    private static final long MOBILE_FORMAT_CACHE_TTL_MS = 5 * 60_000L;
+    private final java.util.Map<String, CachedFormatEntry> mMobileFormatInfoCache =
+            java.util.Collections.synchronizedMap(
+                    new java.util.LinkedHashMap<String, CachedFormatEntry>(
+                            MOBILE_FORMAT_CACHE_MAX + 1, 0.75f, true) {
+                        @Override
+                        protected boolean removeEldestEntry(
+                                java.util.Map.Entry<String, CachedFormatEntry> eldest) {
+                            return size() > MOBILE_FORMAT_CACHE_MAX;
+                        }
+                    });
+
+    private static final class CachedFormatEntry {
+        final MediaItemFormatInfo formatInfo;
+        final long timeMs = android.os.SystemClock.elapsedRealtime();
+
+        CachedFormatEntry(MediaItemFormatInfo formatInfo) {
+            this.formatInfo = formatInfo;
+        }
+
+        boolean isActual() {
+            return android.os.SystemClock.elapsedRealtime() - timeMs <= MOBILE_FORMAT_CACHE_TTL_MS
+                    && formatInfo.isCacheActual();
+        }
+    }
 
     // Mobile dedupe for UNPLAYABLE results (age-gated/removed videos). An unplayable result contains
     // no media, so isCacheActual() can never accept it: the tap-time prefetch walks the whole client
@@ -273,7 +303,7 @@ public class YouTubeMediaItemService implements MediaItemService {
 
         MediaItemFormatInfo formatInfo = YouTubeMediaItemFormatInfo.from(videoInfo);
 
-        setCachedFormatInfo(formatInfo, clickTrackingParams);
+        setCachedFormatInfo(videoId, formatInfo, clickTrackingParams);
 
         // Mobile negative cache (see UNPLAYABLE_REUSE_MS). Keyed on the REQUESTED videoId (some
         // unplayable responses lack videoDetails, so the result's own getVideoId() can be null).
@@ -755,6 +785,7 @@ public class YouTubeMediaItemService implements MediaItemService {
 
     public void invalidateCache() {
         mCachedFormatInfo = null;
+        mMobileFormatInfoCache.clear();
         mUnplayableEntry = null; // also ends the unplayable-reuse window
     }
 
@@ -770,7 +801,19 @@ public class YouTubeMediaItemService implements MediaItemService {
         if (sSingleFlightEnabled) {
             UnplayableEntry unplayable = mUnplayableEntry;
             if (unplayable != null && unplayable.isActual(videoId)) {
+                android.util.Log.d("NetPath", "format-cache hit=negative video=" + videoId);
                 return unplayable.formatInfo;
+            }
+
+            CachedFormatEntry mobileCached = mMobileFormatInfoCache.get(videoId);
+            if (mobileCached != null) {
+                if (mobileCached.isActual()) {
+                    android.util.Log.d("NetPath", "format-cache hit=positive video=" + videoId
+                            + " entries=" + mMobileFormatInfoCache.size());
+                    return mobileCached.formatInfo;
+                }
+                mMobileFormatInfoCache.remove(videoId);
+                android.util.Log.d("NetPath", "format-cache evict=stale video=" + videoId);
             }
         }
 
@@ -787,11 +830,18 @@ public class YouTubeMediaItemService implements MediaItemService {
         return null;
     }
 
-    private void setCachedFormatInfo(MediaItemFormatInfo formatInfo, String clickTrackingParams) {
+    private void setCachedFormatInfo(String requestedVideoId, MediaItemFormatInfo formatInfo,
+            String clickTrackingParams) {
         mCachedFormatInfo = formatInfo;
 
         if (formatInfo != null) {
             formatInfo.setClickTrackingParams(clickTrackingParams);
+            if (sSingleFlightEnabled && requestedVideoId != null && !formatInfo.isUnplayable()
+                    && formatInfo.containsMedia()) {
+                mMobileFormatInfoCache.put(requestedVideoId, new CachedFormatEntry(formatInfo));
+                android.util.Log.d("NetPath", "format-cache store video=" + requestedVideoId
+                        + " entries=" + mMobileFormatInfoCache.size());
+            }
         }
     }
 
