@@ -10,7 +10,7 @@ import com.liskovsoft.sharedutils.rx.RxHelper;
 
 import java.util.List;
 
-import io.reactivex.Observable;
+import io.reactivex.rxjava3.core.Observable;
 
 public class GoogleSignInService implements SignInService {
     private static final String TAG = GoogleSignInService.class.getSimpleName();

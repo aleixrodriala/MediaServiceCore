@@ -1,7 +1,7 @@
 package com.liskovsoft.mediaserviceinterfaces;
 
 import com.liskovsoft.mediaserviceinterfaces.data.Command;
-import io.reactivex.Observable;
+import io.reactivex.rxjava3.core.Observable;
 
 public interface RemoteControlService {
     int STATE_PLAYING = 1;

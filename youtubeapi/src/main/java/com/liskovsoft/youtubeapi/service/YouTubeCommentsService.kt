@@ -4,7 +4,7 @@ import com.liskovsoft.mediaserviceinterfaces.CommentsService
 import com.liskovsoft.mediaserviceinterfaces.data.CommentGroup
 import com.liskovsoft.sharedutils.rx.RxHelper
 import com.liskovsoft.youtubeapi.comments.CommentsServiceInt
-import io.reactivex.Observable
+import io.reactivex.rxjava3.core.Observable
 
 internal object YouTubeCommentsService: CommentsService {
     private fun getComments(key: String?): CommentGroup? {

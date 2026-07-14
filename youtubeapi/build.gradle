@@ -1,26 +1,22 @@
 apply from: '../../SharedModules/constants.gradle'
-apply plugin: 'kotlin-android'
 apply plugin: 'com.android.library'
 
 android {
-    namespace 'com.liskovsoft.youtubeapi'
+    namespace = 'com.liskovsoft.youtubeapi'
 
-    compileSdkVersion project.ext.compileSdkVersion
+    compileSdk = project.ext.compileSdkVersion
     testOptions.unitTests.includeAndroidResources = true
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
-    }
-
-    // Kotlin 2.x defaults to the toolchain JDK (17); keep bytecode aligned with javac (1.8).
-    kotlinOptions {
-        jvmTarget = '1.8'
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
     defaultConfig {
-        minSdkVersion project.ext.minSdkVersion
-        targetSdkVersion project.ext.targetSdkVersion
+        minSdk = project.ext.minSdkVersion
+        // Robolectric 4.16.1 (latest) supports package targets through API 36. This library's
+        // target is test metadata only; the consuming app still targets API 37.
+        targetSdk = Math.min(project.ext.targetSdkVersion, 36)
         versionCode 15
         versionName "0.1.5"
 
@@ -35,7 +31,7 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 }
@@ -43,21 +39,19 @@ android {
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
 
-    testImplementation project(':youtubeapi')
-    testImplementation project(':sharedtests')
+    testImplementation dependencies.project(':sharedtests')
     testImplementation 'co.infinum:retromock:' + retromockVersion
     testImplementation 'junit:junit:' + junitVersion
     testImplementation 'org.robolectric:robolectric:' + robolectricVersion
 
-    androidTestImplementation project(':youtubeapi')
-    androidTestImplementation project(':sharedtests')
+    androidTestImplementation dependencies.project(':sharedtests')
     androidTestImplementation 'junit:junit:' + junitVersion
     androidTestImplementation 'androidx.test:runner:' + testXSupportVersion
     androidTestImplementation 'androidx.test:rules:' + testXSupportVersion
 
-    implementation project(':commons-io-2.8.0') // My Android 4.3 fix
-    implementation project(':sharedutils')
-    implementation project(':mediaserviceinterfaces')
+    implementation 'commons-io:commons-io:' + commonsIOVersion
+    implementation dependencies.project(':sharedutils')
+    implementation dependencies.project(':mediaserviceinterfaces')
 
     implementation 'com.squareup.retrofit2:retrofit:' + retrofitVersion
     implementation 'com.squareup.retrofit2:converter-gson:' + retrofitVersion
@@ -67,8 +61,8 @@ dependencies {
     implementation 'com.google.net.cronet:cronet-okhttp:' + cronetOkHttpVersion
     implementation 'org.chromium.net:cronet-api:' + cronetApiVersion
 
-    implementation 'io.reactivex.rxjava2:rxandroid:' + rxAndroidVersion
-    implementation 'io.reactivex.rxjava2:rxjava:' + rxJavaVersion
+    implementation 'io.reactivex.rxjava3:rxandroid:' + rxAndroidVersion
+    implementation 'io.reactivex.rxjava3:rxjava:' + rxJavaVersion
 
     implementation 'androidx.annotation:annotation:' + annotationXVersion
 
@@ -87,11 +81,10 @@ dependencies {
     // runtime for playback. It was previously flavor-scoped (stbeta/ststable project(':j2v8'),
     // stfdroid maven @aar); the stmobile build consumed the ststable variant's :j2v8 via
     // matchingFallbacks. With the flavors gone, pull it unconditionally.
-    implementation project(':j2v8')
+    implementation dependencies.project(':j2v8')
 
     // Add kotlin support libs
     implementation 'androidx.core:core-ktx:' + kotlinCoreXVersion
-    implementation 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:' + kotlinVersion
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:' + kotlinxVersion // was wrongly keyed to kotlinVersion
 
     // https://github.com/florianingerl/com.florianingerl.util.regex

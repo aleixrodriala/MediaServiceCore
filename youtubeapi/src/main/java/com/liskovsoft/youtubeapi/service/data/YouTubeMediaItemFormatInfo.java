@@ -19,7 +19,7 @@ import com.liskovsoft.youtubeapi.videoinfo.models.VideoDetails;
 import com.liskovsoft.youtubeapi.videoinfo.models.VideoInfo;
 import com.liskovsoft.youtubeapi.videoinfo.models.formats.AdaptiveVideoFormat;
 import com.liskovsoft.youtubeapi.videoinfo.models.formats.RegularVideoFormat;
-import io.reactivex.Observable;
+import io.reactivex.rxjava3.core.Observable;
 
 import java.io.InputStream;
 import java.util.ArrayList;

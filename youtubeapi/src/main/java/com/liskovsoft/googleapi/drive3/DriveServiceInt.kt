@@ -4,8 +4,10 @@ import android.net.Uri
 import com.liskovsoft.googlecommon.common.helpers.RetrofitHelper
 import com.liskovsoft.googleapi.drive3.data.FileMetadata
 import com.liskovsoft.googleapi.oauth2.impl.GoogleSignInService
-import okhttp3.MediaType
 import okhttp3.RequestBody
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.InputStream
 
@@ -17,12 +19,12 @@ internal object DriveServiceInt {
 
     @JvmStatic
     fun uploadFile(file: File, path: Uri) {
-        uploadFile(RequestBody.create(MediaType.parse(FILE_MIME_TYPE), file), path)
+        uploadFile(file.asRequestBody(FILE_MIME_TYPE.toMediaType()), path)
     }
 
     @JvmStatic
     fun uploadFile(content: String, path: Uri) {
-        uploadFile(RequestBody.create(MediaType.parse(FILE_MIME_TYPE), content), path)
+        uploadFile(content.toRequestBody(FILE_MIME_TYPE.toMediaType()), path)
     }
 
     private fun uploadFile(file: RequestBody, path: Uri) {

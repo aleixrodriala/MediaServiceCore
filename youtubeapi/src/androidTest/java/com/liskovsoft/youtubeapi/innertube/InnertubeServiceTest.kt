@@ -134,8 +134,7 @@ class InnertubeServiceTest {
 
         Assert.assertNotNull("ytytCfg not null", ytCfgStr?.ytCfg)
 
-        val parser = JsonParser()
-        val root = parser.parse(ytCfgStr?.ytCfg).asJsonObject
+        val root = JsonParser.parseString(ytCfgStr?.ytCfg).asJsonObject
 
         val encryptedHostFlags = traverseObj(
             root,

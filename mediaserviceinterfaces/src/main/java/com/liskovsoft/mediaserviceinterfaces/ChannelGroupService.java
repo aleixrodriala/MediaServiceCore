@@ -7,7 +7,7 @@ import com.liskovsoft.mediaserviceinterfaces.data.ItemGroup.Item;
 
 import java.io.File;
 import java.util.List;
-import io.reactivex.Observable;
+import io.reactivex.rxjava3.core.Observable;
 
 public interface ChannelGroupService {
     List<ItemGroup> getChannelGroups();

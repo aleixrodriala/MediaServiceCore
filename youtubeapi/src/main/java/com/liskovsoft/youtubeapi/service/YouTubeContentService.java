@@ -30,8 +30,8 @@ import com.liskovsoft.googlecommon.common.helpers.YouTubeHelper;
 import com.liskovsoft.youtubeapi.search.v1.SearchService;
 import com.liskovsoft.youtubeapi.search.v1.models.SearchResult;
 import com.liskovsoft.youtubeapi.service.data.YouTubeMediaGroup;
-import io.reactivex.Observable;
-import io.reactivex.ObservableEmitter;
+import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.core.ObservableEmitter;
 
 import java.util.ArrayList;
 import java.util.Collections;

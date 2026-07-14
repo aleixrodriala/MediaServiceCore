@@ -25,7 +25,7 @@ import com.liskovsoft.youtubeapi.app.potokennp2.misc.parseIntegrityTokenData
 import com.liskovsoft.youtubeapi.app.potokennp2.misc.potLibPrefix
 import com.liskovsoft.youtubeapi.app.potokennp2.misc.stringToU8
 import com.liskovsoft.youtubeapi.app.potokennp2.misc.u8ToBase64
-import io.reactivex.SingleEmitter
+import io.reactivex.rxjava3.core.SingleEmitter
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -329,17 +329,17 @@ internal class PoTokenWebView private constructor(
             null
         )
 
-        val httpCode = response.code()
+        val httpCode = response.code
 
         if (httpCode != 200) {
             onInitializationErrorCloseAndCancel(PoTokenException("Invalid response code: $httpCode"))
         }
 
-        if (response.body() == null) {
+        if (response.body == null) {
             onInitializationErrorCloseAndCancel(PoTokenException("Response body is empty. Response code: $httpCode"))
         }
 
-        return response.body()?.string()
+        return response.body?.string()
     }
 
     /**

@@ -7,7 +7,7 @@ import com.liskovsoft.sharedutils.helpers.Helpers
 import com.liskovsoft.sharedutils.rx.RxHelper
 import com.liskovsoft.youtubeapi.channelgroups.models.ItemGroupImpl
 import com.liskovsoft.youtubeapi.service.internal.MediaServicePrefs
-import io.reactivex.disposables.Disposable
+import io.reactivex.rxjava3.disposables.Disposable
 
 internal object PlaylistGroupServiceImpl : MediaServicePrefs.ProfileChangeListener {
     private const val PLAYLIST_GROUP_DATA = "playlist_group_data"

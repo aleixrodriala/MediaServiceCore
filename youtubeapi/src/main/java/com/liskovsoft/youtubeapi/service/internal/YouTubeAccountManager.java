@@ -19,7 +19,7 @@ import com.liskovsoft.youtubeapi.service.YouTubeSignInService;
 import com.liskovsoft.googlecommon.service.oauth.YouTubeAccount;
 import com.liskovsoft.youtubeapi.videoinfo.V2.VideoInfoService;
 
-import io.reactivex.Observable;
+import io.reactivex.rxjava3.core.Observable;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;

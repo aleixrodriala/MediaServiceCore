@@ -1,6 +1,6 @@
 package com.liskovsoft.mediaserviceinterfaces.data;
 
-import io.reactivex.Observable;
+import io.reactivex.rxjava3.core.Observable;
 
 import java.io.InputStream;
 import java.util.List;

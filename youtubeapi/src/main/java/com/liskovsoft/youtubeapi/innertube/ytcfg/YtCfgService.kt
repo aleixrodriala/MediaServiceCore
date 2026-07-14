@@ -38,7 +38,6 @@ internal object YtCfgService {
         val wrapper = api.getYtCfg(configUrl, client.userAgent)
         val ytCfgStr = RetrofitHelper.get(wrapper)
 
-        val parser = JsonParser()
-        return parser.parse(ytCfgStr?.ytCfg).asJsonObject
+        return JsonParser.parseString(ytCfgStr?.ytCfg).asJsonObject
     }
 }

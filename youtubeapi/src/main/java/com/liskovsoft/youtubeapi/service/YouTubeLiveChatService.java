@@ -4,7 +4,7 @@ import com.liskovsoft.mediaserviceinterfaces.LiveChatService;
 import com.liskovsoft.mediaserviceinterfaces.data.ChatItem;
 import com.liskovsoft.sharedutils.rx.RxHelper;
 import com.liskovsoft.youtubeapi.chat.LiveChatServiceInt;
-import io.reactivex.Observable;
+import io.reactivex.rxjava3.core.Observable;
 
 class YouTubeLiveChatService implements LiveChatService {
     private static YouTubeLiveChatService sInstance;

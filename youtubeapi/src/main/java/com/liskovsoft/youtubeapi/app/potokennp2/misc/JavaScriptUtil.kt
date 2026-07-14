@@ -68,7 +68,7 @@ internal fun parseDescrambledChallengeData(rawChallengeData: String): String {
         .getObject("interpreterUrl")
         .getString("privateDoNotAccessOrElseTrustedResourceUrlWrappedValue")
     val privateDoNotAccessOrElseSafeScriptWrappedValue =
-        OkHttpManager.instance().doGetRequest("https:$privateDoNotAccessOrElseTrustedResourceUrlWrappedValue").body()?.string()
+        OkHttpManager.instance().doGetRequest("https:$privateDoNotAccessOrElseTrustedResourceUrlWrappedValue").body?.string()
             ?: throw PoTokenException("Empty response body")
 
     return JsonWriter.string(

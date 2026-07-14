@@ -3,7 +3,7 @@ package com.liskovsoft.googleapi.service
 import android.net.Uri
 import com.liskovsoft.googleapi.drive3.DriveServiceInt
 import com.liskovsoft.sharedutils.rx.RxHelper
-import io.reactivex.Observable
+import io.reactivex.rxjava3.core.Observable
 import java.io.File
 import java.io.InputStream
 
@@ -19,17 +19,17 @@ object DriveService {
     }
 
     @JvmStatic
-    fun getFile(path: Uri): Observable<InputStream?> {
-        return RxHelper.fromCallable { DriveServiceInt.getFile(path) }
+    fun getFile(path: Uri): Observable<InputStream> {
+        return RxHelper.fromCallable { requireNotNull(DriveServiceInt.getFile(path)) }
     }
 
     @JvmStatic
-    fun getFileList(path: Uri): Observable<List<String?>?> {
-        return RxHelper.fromCallable { DriveServiceInt.getFileList(path) }
+    fun getFileList(path: Uri): Observable<List<String?>> {
+        return RxHelper.fromCallable { requireNotNull(DriveServiceInt.getFileList(path)) }
     }
 
     @JvmStatic
-    fun getFolderList(path: Uri): Observable<List<String?>?> {
-        return RxHelper.fromCallable { DriveServiceInt.getFolderList(path) }
+    fun getFolderList(path: Uri): Observable<List<String?>> {
+        return RxHelper.fromCallable { requireNotNull(DriveServiceInt.getFolderList(path)) }
     }
 }

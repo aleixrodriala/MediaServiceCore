@@ -22,7 +22,7 @@ import com.liskovsoft.youtubeapi.service.YouTubeMediaItemService;
 
 import java.util.UUID;
 
-import io.reactivex.disposables.Disposable;
+import io.reactivex.rxjava3.disposables.Disposable;
 import kotlin.Triple;
 
 public class MediaServiceData {

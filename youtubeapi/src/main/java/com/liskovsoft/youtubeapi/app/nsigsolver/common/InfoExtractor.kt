@@ -14,7 +14,7 @@ internal abstract class InfoExtractor {
                 val request = Request.Builder().url(url).build()
                 val content = OkHttpManager.instance().client.newCall(request).execute().use {
                     if (!it.isSuccessful) throw InfoExtractorError(formatError(errorMsg, "Unexpected code $it"))
-                    it.body()?.string()
+                    it.body?.string()
                 }
                 return content ?: throw InfoExtractorError(formatError(errorMsg, "Empty content received for the $url"))
             } catch (e: Exception) {

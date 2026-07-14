@@ -89,7 +89,7 @@ internal object RetrofitOkHttpHelper {
      */
     private fun addOpenPathTimeout(builder: OkHttpClient.Builder) {
         builder.addInterceptor { chain ->
-            val path = chain.request().url().encodedPath()
+            val path = chain.request().url.encodedPath
             if (path.contains("/youtubei/v1/player") || path.contains("/youtubei/v1/next")) {
                 chain.withConnectTimeout(OPEN_PATH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                     .withReadTimeout(OPEN_PATH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -103,12 +103,12 @@ internal object RetrofitOkHttpHelper {
     private fun addCommonHeaders(builder: OkHttpClient.Builder) {
         builder.addInterceptor { chain ->
             val request = chain.request()
-            val headers = request.headers()
+            val headers = request.headers
             val requestBuilder = request.newBuilder()
 
             applyHeaders(this.commonHeaders, headers, requestBuilder)
 
-            val url = request.url().toString()
+            val url = request.url.toString()
 
             if (apiPrefixes.any { url.startsWith(it) }) {
                 val doSkipAuth = authSkipList.remove(request)
@@ -151,7 +151,7 @@ internal object RetrofitOkHttpHelper {
     }
 
     internal fun isPlayerEndpoint(request: Request): Boolean =
-        request.url().encodedPath().endsWith(PLAYER_PATH)
+        request.url.encodedPath.endsWith(PLAYER_PATH)
 
     /** Safe /player request/response fingerprint: useful in field logs, contains no credentials. */
     private fun proceedLoggedPlayerRequest(
@@ -171,7 +171,7 @@ internal object RetrofitOkHttpHelper {
                 " visitor=${fingerprint(visitor)} pot=${yn(body.hasPoToken)}" +
                 " origin=${if (origin == YOUTUBE_ORIGIN) "youtube" else if (origin == null) "none" else "other"}" +
                 " referer=${if (referer == null) "none" else "present"}" +
-                " key=${yn(request.url().queryParameter("key") != null)}",
+                " key=${yn(request.url.queryParameter("key") != null)}",
         )
 
         try {
@@ -179,8 +179,8 @@ internal object RetrofitOkHttpHelper {
             val elapsed = android.os.SystemClock.elapsedRealtime() - startedMs
             android.util.Log.d(
                 "NetPath",
-                "player-http[C] rid=$id video=${body.videoId} code=${response.code()}" +
-                    " ms=$elapsed protocol=${response.protocol()}",
+                "player-http[C] rid=$id video=${body.videoId} code=${response.code}" +
+                    " ms=$elapsed protocol=${response.protocol}",
             )
             if (!response.isSuccessful) {
                 val errorText = try {
@@ -190,7 +190,7 @@ internal object RetrofitOkHttpHelper {
                 }
                 android.util.Log.w(
                     "NetPath",
-                    "player-http[E] rid=$id code=${response.code()} bodyHash=${fingerprint(errorText)}" +
+                    "player-http[E] rid=$id code=${response.code} bodyHash=${fingerprint(errorText)}" +
                         " body=${printable(errorText, 240)}",
                 )
             }
@@ -211,7 +211,7 @@ internal object RetrofitOkHttpHelper {
     private fun inspectPlayerBody(request: Request): PlayerBodyInfo {
         return try {
             val buffer = Buffer()
-            request.body()?.writeTo(buffer)
+            request.body?.writeTo(buffer)
             val body = buffer.readUtf8()
             val videoId = Regex("\\\"videoId\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
                 .find(body)?.groupValues?.getOrNull(1) ?: "?"
@@ -252,7 +252,7 @@ internal object RetrofitOkHttpHelper {
     }
 
     private fun applyQueryKeys(keys: Map<String, String?>, request: Request, builder: Request.Builder) {
-        val originUrl = request.url()
+        val originUrl = request.url
 
         var newUrlBuilder: HttpUrl.Builder? = null
 

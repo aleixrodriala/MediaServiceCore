@@ -3,7 +3,7 @@ package com.liskovsoft.mediaserviceinterfaces;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaGroup;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItem;
 import com.liskovsoft.mediaserviceinterfaces.data.NotificationState;
-import io.reactivex.Observable;
+import io.reactivex.rxjava3.core.Observable;
 
 public interface NotificationsService {
     MediaGroup getNotificationItems();

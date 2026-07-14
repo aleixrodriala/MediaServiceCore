@@ -7,7 +7,7 @@ import com.liskovsoft.mediaserviceinterfaces.data.NotificationState
 import com.liskovsoft.sharedutils.rx.RxHelper
 import com.liskovsoft.youtubeapi.notifications.NotificationsServiceInt
 import com.liskovsoft.youtubeapi.notifications.NotificationsServiceIntWrapper
-import io.reactivex.Observable
+import io.reactivex.rxjava3.core.Observable
 
 internal object YouTubeNotificationsService: NotificationsService {
     override fun getNotificationItems(): MediaGroup? {

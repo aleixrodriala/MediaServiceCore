@@ -62,6 +62,6 @@ internal object InitialResponseService {
             if (auth) RetrofitOkHttpHelper.authHeaders else null
         )
 
-        return if (response.isSuccessful) response.body()?.string() else null
+        return if (response.isSuccessful) response.body?.string() else null
     }
 }

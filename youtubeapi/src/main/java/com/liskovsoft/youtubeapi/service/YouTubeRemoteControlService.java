@@ -6,7 +6,7 @@ import com.liskovsoft.sharedutils.prefs.GlobalPreferences;
 import com.liskovsoft.sharedutils.rx.RxHelper;
 import com.liskovsoft.youtubeapi.lounge.LoungeService;
 import com.liskovsoft.youtubeapi.service.data.YouTubeCommand;
-import io.reactivex.Observable;
+import io.reactivex.rxjava3.core.Observable;
 
 class YouTubeRemoteControlService implements RemoteControlService {
     private static final String TAG = YouTubeRemoteControlService.class.getSimpleName();

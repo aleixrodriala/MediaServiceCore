@@ -35,7 +35,7 @@ import com.liskovsoft.youtubeapi.innertube.utils.isPlayableInEmbed
 import com.liskovsoft.youtubeapi.service.data.YouTubeMediaItemStoryboard
 import com.liskovsoft.youtubeapi.videoinfo.models.DashInfo
 import com.liskovsoft.youtubeapi.videoinfo.models.VideoUrlHolder
-import io.reactivex.Observable
+import io.reactivex.rxjava3.core.Observable
 import java.io.InputStream
 import java.util.regex.Pattern
 import kotlin.math.pow
@@ -204,8 +204,8 @@ internal data class MediaItemFormatInfoImpl(private val playerResult: PlayerResu
         return YouTubeMPDBuilder.from(this).build()
     }
 
-    override fun createMpdStreamObservable(): Observable<InputStream?> {
-        return RxHelper.fromCallable(this::createMpdStream)
+    override fun createMpdStreamObservable(): Observable<InputStream> {
+        return RxHelper.fromCallable { requireNotNull(createMpdStream()) }
     }
 
     override fun createUrlList(): List<String>? {
