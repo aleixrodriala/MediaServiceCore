@@ -10,13 +10,20 @@ import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okio.Buffer
+import java.io.IOException
+import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.TimeUnit
 
 internal object RetrofitOkHttpHelper {
     // Open-path stall bound: /player + /next gate every video open (and each failover-ring step),
     // so a stalled host must fail in 8s instead of the shared 20s OkHttp defaults.
     private const val OPEN_PATH_TIMEOUT_MS = 8_000
+    private const val PLAYER_PATH = "/youtubei/v1/player"
+    private const val YOUTUBE_ORIGIN = "https://www.youtube.com"
     private val authSkipList = mutableListOf<Request>()
+    private val playerRequestIds = AtomicLong()
 
     @JvmStatic
     val authHeaders = mutableMapOf<String, String>()
@@ -40,7 +47,6 @@ internal object RetrofitOkHttpHelper {
 
     private val apiHeaders = mapOf(
         "User-Agent" to DefaultHeaders.APP_USER_AGENT,
-        "Referer" to DefaultHeaders.REFERER
     )
 
     private val apiPrefixes = arrayOf(
@@ -106,17 +112,28 @@ internal object RetrofitOkHttpHelper {
 
             if (apiPrefixes.any { url.startsWith(it) }) {
                 val doSkipAuth = authSkipList.remove(request)
+                val isPlayer = isPlayerEndpoint(request)
 
                 // Empty Home fix (anonymous user) and improve Recommendations for everyone
                 if (visitorApiSuffixes.any { url.contains(it) })
                     headers["X-Goog-Visitor-Id"] ?: AppService.instance().visitorData?.let { requestBuilder.header("X-Goog-Visitor-Id", it) }
 
                 applyHeaders(this.apiHeaders, headers, requestBuilder)
+                // A native /player identity must not inherit the global TV referer. yt-dlp sends
+                // Origin plus the selected client's UA/name/version and no Referer for this call.
+                // Endpoint annotations provide Origin explicitly; every other API keeps the
+                // historical default referer unless it declared a client-specific one.
+                if (!isPlayer) {
+                    applyHeaders(mapOf("Referer" to DefaultHeaders.REFERER), headers, requestBuilder)
+                }
 
                 val tParam = if (tParamSuffixes.any { url.contains(it) }) YouTubeHelper.generateTParameter() else null
 
                 if (authHeaders.isEmpty() || doSkipAuth) {
-                    applyQueryKeys(mapOf("key" to AppConstants.API_KEY, "prettyPrint" to "false", "t" to tParam),
+                    // Match yt-dlp's anonymous player call: it is keyless. Authenticated TV calls
+                    // retain their existing key/auth behavior and all non-player APIs are unchanged.
+                    val apiKey = if (isPlayer) null else AppConstants.API_KEY
+                    applyQueryKeys(mapOf("key" to apiKey, "prettyPrint" to "false", "t" to tParam),
                         request, requestBuilder)
                 } else {
                     applyQueryKeys(mapOf("prettyPrint" to "false", "t" to tParam), request, requestBuilder)
@@ -124,9 +141,104 @@ internal object RetrofitOkHttpHelper {
                 }
             }
 
-            chain.proceed(requestBuilder.build())
+            val finalRequest = requestBuilder.build()
+            if (isPlayerEndpoint(finalRequest)) {
+                proceedLoggedPlayerRequest(chain, finalRequest)
+            } else {
+                chain.proceed(finalRequest)
+            }
         }
     }
+
+    internal fun isPlayerEndpoint(request: Request): Boolean =
+        request.url().encodedPath().endsWith(PLAYER_PATH)
+
+    /** Safe /player request/response fingerprint: useful in field logs, contains no credentials. */
+    private fun proceedLoggedPlayerRequest(
+        chain: okhttp3.Interceptor.Chain,
+        request: Request,
+    ): okhttp3.Response {
+        val id = playerRequestIds.incrementAndGet()
+        val startedMs = android.os.SystemClock.elapsedRealtime()
+        val body = inspectPlayerBody(request)
+        val visitor = request.header("X-Goog-Visitor-Id")
+        val origin = request.header("Origin")
+        val referer = request.header("Referer")
+        android.util.Log.d(
+            "NetPath",
+            "player-http[S] rid=$id video=${body.videoId} client=${request.header("X-Youtube-Client-Name")}" +
+                " cver=${request.header("X-Youtube-Client-Version")}" +
+                " visitor=${fingerprint(visitor)} pot=${yn(body.hasPoToken)}" +
+                " origin=${if (origin == YOUTUBE_ORIGIN) "youtube" else if (origin == null) "none" else "other"}" +
+                " referer=${if (referer == null) "none" else "present"}" +
+                " key=${yn(request.url().queryParameter("key") != null)}",
+        )
+
+        try {
+            val response = chain.proceed(request)
+            val elapsed = android.os.SystemClock.elapsedRealtime() - startedMs
+            android.util.Log.d(
+                "NetPath",
+                "player-http[C] rid=$id video=${body.videoId} code=${response.code()}" +
+                    " ms=$elapsed protocol=${response.protocol()}",
+            )
+            if (!response.isSuccessful) {
+                val errorText = try {
+                    response.peekBody(512).string()
+                } catch (_: Exception) {
+                    ""
+                }
+                android.util.Log.w(
+                    "NetPath",
+                    "player-http[E] rid=$id code=${response.code()} bodyHash=${fingerprint(errorText)}" +
+                        " body=${printable(errorText, 240)}",
+                )
+            }
+            return response
+        } catch (error: IOException) {
+            val elapsed = android.os.SystemClock.elapsedRealtime() - startedMs
+            android.util.Log.w(
+                "NetPath",
+                "player-http[E] rid=$id video=${body.videoId} ms=$elapsed " +
+                    "${error.javaClass.simpleName}: ${printable(error.message ?: "", 160)}",
+            )
+            throw error
+        }
+    }
+
+    private data class PlayerBodyInfo(val videoId: String, val hasPoToken: Boolean)
+
+    private fun inspectPlayerBody(request: Request): PlayerBodyInfo {
+        return try {
+            val buffer = Buffer()
+            request.body()?.writeTo(buffer)
+            val body = buffer.readUtf8()
+            val videoId = Regex("\\\"videoId\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
+                .find(body)?.groupValues?.getOrNull(1) ?: "?"
+            PlayerBodyInfo(videoId, Regex("\\\"poToken\\\"\\s*:").containsMatchIn(body))
+        } catch (_: Exception) {
+            PlayerBodyInfo("?", false)
+        }
+    }
+
+    private fun fingerprint(value: String?): String {
+        if (value.isNullOrEmpty()) {
+            return "none"
+        }
+        return try {
+            MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+                .take(5).joinToString("") { "%02x".format(it) }
+        } catch (_: Exception) {
+            Integer.toHexString(value.hashCode())
+        }
+    }
+
+    private fun printable(value: String, max: Int): String {
+        val safe = value.replace(Regex("[^\\x20-\\x7E]"), ".")
+        return if (safe.length <= max) safe else safe.substring(0, max) + "..."
+    }
+
+    private fun yn(value: Boolean) = if (value) "y" else "n"
 
     private fun applyHeaders(newHeaders: Map<String, String?>, oldHeaders: Headers, builder: Request.Builder) {
         for (header in newHeaders) {

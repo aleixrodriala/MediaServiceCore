@@ -13,7 +13,7 @@ import retrofit2.http.POST;
 
 @WithJsonPath
 public interface VideoInfoApi {
-    @Headers("Content-Type: application/json")
+    @Headers({"Content-Type: application/json", "Origin: https://www.youtube.com"})
     @POST("https://www.youtube.com/youtubei/v1/player")
     Call<VideoInfo> getVideoInfo(@Body String videoQuery, @Header("X-Goog-Visitor-Id") String visitorId, @Header("User-Agent") String userAgent,
                                  @Header("X-Youtube-Client-Name") String clientName, @Header("X-Youtube-Client-Version") String clientVersion);
@@ -23,7 +23,7 @@ public interface VideoInfoApi {
     Call<VideoInfoReel> getVideoInfoReel(@Body String videoQuery, @Header("X-Goog-Visitor-Id") String visitorId, @Header("User-Agent") String userAgent,
                                  @Header("X-Youtube-Client-Name") String clientName, @Header("X-Youtube-Client-Version") String clientVersion);
 
-    @Headers("Content-Type: application/json")
+    @Headers({"Content-Type: application/json", "Origin: https://www.youtube.com"})
     @POST("https://www.youtube.com/youtubei/v1/player")
     Call<VideoInfoHls> getVideoInfoHls(@Body String videoQuery, @Header("X-Goog-Visitor-Id") String visitorId, @Header("User-Agent") String userAgent,
                                        @Header("X-Youtube-Client-Name") String clientName, @Header("X-Youtube-Client-Version") String clientVersion);

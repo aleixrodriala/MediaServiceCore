@@ -7,6 +7,7 @@ import com.liskovsoft.youtubeapi.app.potokennp2.PoTokenProviderImpl
 import com.liskovsoft.youtubeapi.app.potokennp2.core.PoTokenResult
 import com.liskovsoft.youtubeapi.app.potokennp2.misc.selectFactory
 import com.liskovsoft.youtubeapi.common.helpers.AppClient
+import android.os.SystemClock
 
 /**
  * PoTokenType
@@ -21,6 +22,7 @@ import com.liskovsoft.youtubeapi.common.helpers.AppClient
 internal object PoTokenGate {
     private const val TAG = "PoTokenGate"
     private var mWebPoToken: PoTokenResult? = null
+    private var mWebPoTokenCreatedAtMs: Long = -1
     private var mCacheResetTimeMs: Long = -1
 
     init {
@@ -35,14 +37,17 @@ internal object PoTokenGate {
         mWebPoToken = if (PoTokenProviderImpl.isWebPotSupported)
             PoTokenProviderImpl.getWebClientPoToken(videoId)
         else null
+        markWebPoTokenCreated()
 
         return mWebPoToken?.playerRequestPoToken
     }
 
     private fun getWebSessionPoToken(): String? {
         return if (PoTokenProviderImpl.isWebPotSupported) {
-            if (mWebPoToken == null)
+            if (mWebPoToken == null) {
                 mWebPoToken = PoTokenProviderImpl.getWebClientPoToken("")
+                markWebPoTokenCreated()
+            }
             mWebPoToken?.streamingDataPoToken
         } else PoTokenCloudService.getPoToken()
     }
@@ -51,6 +56,7 @@ internal object PoTokenGate {
         if (PoTokenProviderImpl.isWebPotSupported) {
             //mNpPoToken = null // only refresh
             mWebPoToken = PoTokenProviderImpl.getWebClientPoToken("") // refresh and preload
+            markWebPoTokenCreated()
         } else {
             PoTokenCloudService.updatePoToken()
         }
@@ -106,6 +112,11 @@ internal object PoTokenGate {
         return getWebVisitorData()
     }
 
+    /** Age of the visitor/token session used by Web-family and Android VR /player requests. */
+    @JvmStatic
+    fun getWebVisitorAgeMs(): Long = if (mWebPoTokenCreatedAtMs >= 0)
+        SystemClock.elapsedRealtime() - mWebPoTokenCreatedAtMs else -1
+
     @JvmStatic
     fun isWebPotSupported() = PoTokenProviderImpl.isWebPotSupported
 
@@ -136,6 +147,7 @@ internal object PoTokenGate {
 
         if (PoTokenProviderImpl.isWebPotSupported) {
             mWebPoToken = null
+            mWebPoTokenCreatedAtMs = -1
             PoTokenProviderImpl.resetCache()
         } else
             PoTokenCloudService.resetCache()
@@ -143,5 +155,9 @@ internal object PoTokenGate {
         mCacheResetTimeMs = currentTimeMs + 60_000
 
         return true
+    }
+
+    private fun markWebPoTokenCreated() {
+        mWebPoTokenCreatedAtMs = if (mWebPoToken != null) SystemClock.elapsedRealtime() else -1
     }
 }
