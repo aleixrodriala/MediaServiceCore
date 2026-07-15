@@ -94,13 +94,27 @@ public class VideoInfoVisitOrderTest {
 
     @Test
     public void authenticatedOrderStartsWithTv() {
-        List<AppClient> order = VideoInfoService.promoteAuthenticatedTvFallback(
-                VideoInfoService.buildVisitOrder(
-                        AppClient.TV, AppClient.ANDROID_VR, false, false));
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.TV, AppClient.ANDROID_VR, true, false, true);
 
         assertEquals(AppClient.TV, order.get(0));
         assertEquals(AppClient.TV_DOWNGRADED, order.get(1));
         assertEquals(AppClient.ANDROID_VR, order.get(2));
+        assertEquals(13, order.size());
+    }
+
+    @Test
+    public void authenticatedRecoveryHonorsCursorAndDefersFailedTvClient() {
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.TV_EMBED, AppClient.TV_DOWNGRADED, true, true, true);
+
+        assertEquals(Arrays.asList(
+                AppClient.WEB_EMBED,
+                AppClient.WEB,
+                AppClient.WEB_SAFARI,
+                AppClient.GEO,
+                AppClient.MWEB), order.subList(0, 5));
+        assertTrue(order.indexOf(AppClient.TV_DOWNGRADED) >= 5);
         assertEquals(13, order.size());
     }
 }

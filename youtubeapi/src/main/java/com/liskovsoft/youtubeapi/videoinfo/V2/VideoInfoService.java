@@ -27,6 +27,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 
 import retrofit2.Call;
 
@@ -164,12 +165,17 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     @Nullable
-    private AppClient mActualInfoType = null;
+    private volatile AppClient mActualInfoType = null;
     @Nullable
-    private AppClient mNextInfoType = null;
+    private volatile AppClient mNextInfoType = null;
     // mNextInfoType is also used for the persisted-client cold-start hint. Keep an explicit bit so
     // only an error-driven cursor invokes recovery ordering and defers the previous winner.
-    private boolean mRecoveryWalk;
+    private volatile boolean mRecoveryWalk;
+    // A next-video prefetch may already be inside synchronized getVideoInfo when the player reports
+    // a media 403. That older request must not clear the recovery cursor installed by
+    // switchNextFormat after it finishes. The generation makes cursor consumption conditional on
+    // the request having observed the same routing state it is about to clear.
+    private final AtomicLong mRoutingGeneration = new AtomicLong();
     // Guards the one-time restore of the persisted "winning" fast client at cold start (mobile only).
     private boolean mInfoTypeRestored;
     private boolean mAuthBlock;
@@ -197,6 +203,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return null;
         }
 
+        final long routingGeneration = mRoutingGeneration.get();
         final boolean authenticated = hasAuthentication();
         VideoInfo blockedResult = getActiveBotCheckResult(authenticated, videoId);
         if (blockedResult != null) {
@@ -214,9 +221,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // An error cursor and a persisted cold-start hint are both one-shot on mobile. Leaving either
         // set after a successful failover made every later open start from stale routing state.
         // TV keeps its historical behavior.
-        if (sPreferAttestedWebFallback) {
+        if (sPreferAttestedWebFallback && routingGeneration == mRoutingGeneration.get()) {
             mNextInfoType = null;
             mRecoveryWalk = false;
+        } else if (sPreferAttestedWebFallback) {
+            android.util.Log.d("NetPath", "player-ring keep-newer-recovery requestGen="
+                    + routingGeneration + " currentGen=" + mRoutingGeneration.get());
         }
 
         if (result == null) {
@@ -264,30 +274,35 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // Mobile fast-start: when no client is remembered from a previous video, start at the
         // no-pot/no-cipher client instead of WEB_EMBED. buildVisitOrder keeps this fast head but
         // puts the Web family immediately behind it. TV (flag unset) keeps the raw ring as before.
-        // A signed-in TV request is the only legitimate recovery for an IP/guest-session block.
-        // Put it first instead of spending seven anonymous attempts before reaching the one client
-        // that can carry the account token.
-        final AppClient defaultBegin = authenticated
+        final AppClient lastWinner = mActualInfoType;
+        final boolean recoveryWalk = mRecoveryWalk;
+        // A normal signed-in open starts on the account-bearing TV route, matching yt-dlp's use
+        // of tv_downgraded for authenticated extraction. An error-driven reload is different: its
+        // cursor deliberately points past the client whose GVS URL just failed. Re-promoting TV on
+        // that reload selected the same TV_DOWNGRADED client forever and defeated the entire 403
+        // recovery ring. Let recovery honor the cursor and Web-family partition; auth headers are
+        // still attached automatically if a later auth-capable client is reached.
+        final boolean authenticatedRecovery = authenticated && recoveryWalk;
+        final AppClient defaultBegin = authenticated && !authenticatedRecovery
                 ? AppClient.TV
                 : (sPreferNoPotClient ? PREFERRED_FIRST_CLIENT : VIDEO_INFO_TYPE_LIST[0]);
-        final AppClient beginType = authenticated
+        final AppClient beginType = authenticated && !authenticatedRecovery
                 ? AppClient.TV
                 : (mNextInfoType != null ? mNextInfoType : defaultBegin);
 
-        final AppClient lastWinner = mActualInfoType;
-        final boolean recoveryWalk = mRecoveryWalk;
         java.util.List<AppClient> visitOrder;
         if (sDebugForcedClient != null) {
             visitOrder = java.util.Collections.singletonList(sDebugForcedClient);
             android.util.Log.d("NetPath", "player-ring forced-client=" + sDebugForcedClient);
         } else {
-            visitOrder = buildVisitOrder(
-                    beginType, lastWinner,
-                    authenticated ? false : sPreferAttestedWebFallback,
-                    recoveryWalk);
-            if (authenticated) {
-                visitOrder = promoteAuthenticatedTvFallback(visitOrder);
+            visitOrder = buildRequestVisitOrder(
+                    beginType, lastWinner, sPreferAttestedWebFallback,
+                    recoveryWalk, authenticated);
+            if (authenticated && !recoveryWalk) {
                 android.util.Log.d("NetPath", "player-ring authenticated-first=" + visitOrder.get(0));
+            } else if (authenticatedRecovery) {
+                android.util.Log.d("NetPath", "player-ring authenticated-recovery first="
+                        + visitOrder.get(0) + " suspect=" + lastWinner);
             }
             if (recoveryWalk) {
                 android.util.Log.d("NetPath", "player-ring recovery begin=" + beginType
@@ -421,6 +436,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
         }
         return result;
+    }
+
+    /**
+     * Applies the signed-in ordering policy without erasing an error-recovery cursor. Kept pure so
+     * a regression that silently re-promotes the failed TV client can be covered by unit tests.
+     */
+    static List<AppClient> buildRequestVisitOrder(AppClient beginType,
+            @Nullable AppClient lastWinner, boolean preferWebFamily, boolean recoveryWalk,
+            boolean authenticated) {
+        List<AppClient> order = buildVisitOrder(
+                beginType, lastWinner,
+                preferWebFamily && (!authenticated || recoveryWalk),
+                recoveryWalk);
+        return authenticated && !recoveryWalk
+                ? promoteAuthenticatedTvFallback(order)
+                : order;
     }
 
     private static boolean hasAuthentication() {
@@ -633,6 +664,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private void nextVideoInfoType() {
         mNextInfoType = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, mActualInfoType);
         mRecoveryWalk = true;
+        mRoutingGeneration.incrementAndGet();
     }
 
     private VideoInfo getVideoInfoWithRentFix(AppClient client, String videoId, String clickTrackingParams) {
@@ -872,6 +904,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         mNextInfoType = null;
         mRecoveryWalk = false;
         mActualInfoType = VIDEO_INFO_TYPE_LIST[0];
+        mRoutingGeneration.incrementAndGet();
         persistVideoInfoType();
     }
 
