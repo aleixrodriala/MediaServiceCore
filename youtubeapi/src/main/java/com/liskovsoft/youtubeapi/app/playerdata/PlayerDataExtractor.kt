@@ -165,7 +165,17 @@ internal class PlayerDataExtractor(val playerUrl: String) {
 
     private fun checkSigData() {
         if (nFuncCode && sFuncCode) {
-            V8ChallengeProvider.warmup() // enable hot start
+            // Restored funcs are trusted as-is; the V8 hot-start (~0.5-1s j2v8 + runtime init)
+            // moves off this constructor, which runs under AppServiceIntCached's player lock on
+            // the first /player of every process. Safe because runJsRuntime() initializes the
+            // runtime itself (same v8Lock) if a real challenge arrives before the warmup thread.
+            Thread({
+                try {
+                    V8ChallengeProvider.warmup() // enable hot start
+                } catch (e: Throwable) {
+                    android.util.Log.e(tag, "V8 warmup failed: ${e.message}")
+                }
+            }, "V8WarmUp").start()
             return
         }
 

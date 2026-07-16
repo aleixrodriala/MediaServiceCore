@@ -95,7 +95,7 @@ public class VideoInfoVisitOrderTest {
     @Test
     public void authenticatedOrderStartsWithTv() {
         List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
-                AppClient.TV, AppClient.ANDROID_VR, true, false, true);
+                AppClient.TV, AppClient.ANDROID_VR, true, false, true, false);
 
         assertEquals(AppClient.TV, order.get(0));
         assertEquals(AppClient.TV_DOWNGRADED, order.get(1));
@@ -104,9 +104,21 @@ public class VideoInfoVisitOrderTest {
     }
 
     @Test
-    public void authenticatedRecoveryHonorsCursorAndDefersFailedTvClient() {
+    public void authenticatedOrderStartsWithDowngradedTvOnceTvIsSabrOnly() {
         List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
-                AppClient.TV_EMBED, AppClient.TV_DOWNGRADED, true, true, true);
+                AppClient.TV, AppClient.ANDROID_VR, true, false, true, true);
+
+        assertEquals(AppClient.TV_DOWNGRADED, order.get(0));
+        assertEquals(AppClient.TV, order.get(1));
+        assertEquals(AppClient.ANDROID_VR, order.get(2));
+        assertEquals(13, order.size());
+    }
+
+    @Test
+    public void authenticatedRecoveryHonorsCursorAndDefersFailedTvClient() {
+        // authTvSabrOnly=true must not disturb recovery ordering — the swap is happy-path only.
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.TV_EMBED, AppClient.TV_DOWNGRADED, true, true, true, true);
 
         assertEquals(Arrays.asList(
                 AppClient.WEB_EMBED,

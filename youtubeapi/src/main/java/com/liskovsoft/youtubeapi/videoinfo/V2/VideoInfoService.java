@@ -89,6 +89,17 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // last winner so it cannot immediately win again. VIDEO_INFO_TYPE_LIST stays byte-identical for
     // upstream compatibility, and TV never enables this behavior.
     private static volatile boolean sPreferAttestedWebFallback;
+    // Learned per-process: an authenticated TV /player response was SABR-only (every adaptive
+    // format broken + serverAbrStreamingUrl present), so the account-bearing route is really
+    // TV_DOWNGRADED and probing TV first burns one doomed /player (~0.5s) on EVERY signed-in open,
+    // preloads and session warmup included (Pixel-9 measured 4/4 opens). While set, the happy-path
+    // head swaps to TV_DOWNGRADED-then-TV; recovery walks are unaffected. Deliberately NOT
+    // persisted: the first signed-in open of each process (normally the app-start session warmup,
+    // off the user path) re-probes TV, and a playable TV response clears the flag — so the ring
+    // self-heals if TV starts serving plain formats again.
+    private static volatile boolean sAuthTvSabrOnly;
+    // See setSkipStoryboardEnrichment.
+    private static volatile boolean sSkipStoryboardEnrichment;
     @Nullable
     private static volatile AppClient sDebugForcedClient;
 
@@ -115,6 +126,17 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setPreferAttestedWebFallback(boolean prefer) {
         sPreferAttestedWebFallback = prefer;
+    }
+
+    /**
+     * Enabled once from the mobile flavor (MobileMainApplication). The touch UI does not render
+     * seek-preview storyboards yet (loadStoryboard is a stub), but a broken storyboard on the
+     * winning client fires a deferred IOS /player per non-live open just to refetch a spec nobody
+     * consumes. Skips that trigger; the extended-HLS trigger and the free storyboard apply when a
+     * fetch happens anyway are unaffected. Remove the call when the mobile UI gains seek previews.
+     */
+    public static void setSkipStoryboardEnrichment(boolean skip) {
+        sSkipStoryboardEnrichment = skip;
     }
 
     /** Debug-playground hook. The mobile app calls this only from a debuggable build. */
@@ -297,7 +319,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         } else {
             visitOrder = buildRequestVisitOrder(
                     beginType, lastWinner, sPreferAttestedWebFallback,
-                    recoveryWalk, authenticated);
+                    recoveryWalk, authenticated, sAuthTvSabrOnly);
             if (authenticated && !recoveryWalk) {
                 android.util.Log.d("NetPath", "player-ring authenticated-first=" + visitOrder.get(0));
             } else if (authenticatedRecovery) {
@@ -328,6 +350,18 @@ public class VideoInfoService extends VideoInfoServiceBase {
             VideoInfo result = getVideoInfoWithTimeout(nextType, videoId, clickTrackingParams);
             boolean playable = result != null && !result.isUnplayable();
             logPlayerOutcome(videoId, nextType, attempt, result);
+
+            // Session learning for the signed-in head order (see sAuthTvSabrOnly). Only the exact
+            // SABR-only signature counts — an age/geo-restricted TV verdict must not flip the ring.
+            if (authenticated && nextType == AppClient.TV && result != null) {
+                boolean sabrOnly = !playable && result.getServerAbrStreamingUrl() != null
+                        && result.isAdaptiveFormatsBroken();
+                if (sabrOnly != sAuthTvSabrOnly) {
+                    sAuthTvSabrOnly = sabrOnly;
+                    android.util.Log.d("NetPath", "player-ring learn tv-sabr-only="
+                            + (sabrOnly ? "y" : "n"));
+                }
+            }
 
             if (result != null) {
                 boolean repeatedLoginRequired = firstLoginRequired != null
@@ -424,12 +458,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
     /**
      * A current authenticated TV response can be SABR-only. yt-dlp keeps an authenticated
      * downgraded TV identity for this case; try that single account-bearing fallback before any
-     * anonymous Web client that may be under a guest/IP bot challenge.
+     * anonymous Web client that may be under a guest/IP bot challenge. Once a SABR-only TV
+     * response has been observed this session ({@code tvSabrOnly}), the two swap so the known
+     * winner is probed first and TV keeps exactly one re-probe slot per failover walk.
      */
-    static List<AppClient> promoteAuthenticatedTvFallback(List<AppClient> rawOrder) {
+    static List<AppClient> promoteAuthenticatedTvFallback(List<AppClient> rawOrder, boolean tvSabrOnly) {
         java.util.List<AppClient> result = new java.util.ArrayList<>(rawOrder.size());
-        result.add(AppClient.TV);
-        result.add(AppClient.TV_DOWNGRADED);
+        result.add(tvSabrOnly ? AppClient.TV_DOWNGRADED : AppClient.TV);
+        result.add(tvSabrOnly ? AppClient.TV : AppClient.TV_DOWNGRADED);
         for (AppClient client : rawOrder) {
             if (client != AppClient.TV && client != AppClient.TV_DOWNGRADED) {
                 result.add(client);
@@ -444,13 +480,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     static List<AppClient> buildRequestVisitOrder(AppClient beginType,
             @Nullable AppClient lastWinner, boolean preferWebFamily, boolean recoveryWalk,
-            boolean authenticated) {
+            boolean authenticated, boolean authTvSabrOnly) {
         List<AppClient> order = buildVisitOrder(
                 beginType, lastWinner,
                 preferWebFamily && (!authenticated || recoveryWalk),
                 recoveryWalk);
         return authenticated && !recoveryWalk
-                ? promoteAuthenticatedTvFallback(order)
+                ? promoteAuthenticatedTvFallback(order, authTvSabrOnly)
                 : order;
     }
 
@@ -771,7 +807,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     private void applyFixesSync(VideoInfo result, String videoId, String clickTrackingParams) {
-        if (shouldObtainExtendedFormats(result) || result.isStoryboardBroken()) {
+        if (shouldObtainExtendedFormats(result) || needStoryboardFix(result)) {
             Log.d(TAG, "Enable high bitrate formats...");
             mAuthBlock = false;
             VideoInfoHls videoInfoHls = getVideoInfoIOSHls(videoId, clickTrackingParams);
@@ -831,7 +867,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // /player request merely to enrich the optional auto-translate language list.
         final boolean skipGuestWebEnrichment = result.isAuth();
         final boolean needSubs = !warmCache && needMoreSubtitles(result) && !skipGuestWebEnrichment;
-        final boolean needExtended = shouldObtainExtendedFormats(result) || result.isStoryboardBroken();
+        final boolean needExtended = shouldObtainExtendedFormats(result) || needStoryboardFix(result);
 
         if (skipGuestWebEnrichment && !warmCache && needMoreSubtitles(result)) {
             android.util.Log.d("NetPath", "player-enrichment web=n reason=authenticated video=" + videoId);
@@ -927,6 +963,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
     private static boolean shouldObtainExtendedFormats(VideoInfo result) {
         return getData().isFormatEnabled(MediaServiceData.FORMATS_EXTENDED_HLS) && result.isExtendedHlsFormatsBroken();
+    }
+
+    /** Storyboard refetch trigger; gated on mobile (see setSkipStoryboardEnrichment). */
+    private static boolean needStoryboardFix(VideoInfo result) {
+        return !sSkipStoryboardEnrichment && result.isStoryboardBroken();
     }
 
     private static boolean shouldUnlockMoreSubtitles(VideoInfo videoInfo) {
