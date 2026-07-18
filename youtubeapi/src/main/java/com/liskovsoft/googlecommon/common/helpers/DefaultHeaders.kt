@@ -80,4 +80,17 @@ object DefaultHeaders {
 
     const val ACCEPT_ENCODING = ACCEPT_ENCODING_LOW
     const val REFERER = "https://www.youtube.com/tv"
+
+    /**
+     * Phone-only gate (set from the mobile flavor's Application class, never on TV).
+     * The recorded objections to br — ~3x decompression RAM on TV boxes, ByeByeDPI
+     * breakage — don't apply to the phone population, and the br decode path
+     * (UnzippingInterceptor) is already wired into the shared OkHttp client.
+     */
+    @JvmStatic
+    @Volatile
+    var brotliEnabled: Boolean = false
+
+    @JvmStatic
+    fun acceptEncoding(): String = if (brotliEnabled) ACCEPT_ENCODING_HIGH else ACCEPT_ENCODING
 }

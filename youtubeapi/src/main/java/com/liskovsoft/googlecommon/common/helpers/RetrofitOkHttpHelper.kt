@@ -149,7 +149,23 @@ internal object RetrofitOkHttpHelper {
                 isNextEndpoint(finalRequest) -> proceedLoggedNextRequest(chain, finalRequest)
                 else -> chain.proceed(finalRequest)
             }
+            logBrotliOnce(response)
             retryOnceIfAuthRejected(chain, finalRequest, response)
+        }
+    }
+
+    @Volatile
+    private var brotliSeen = false
+
+    /**
+     * One line per process confirming the server actually negotiated br after the phone
+     * gate flips it on (this interceptor sees the raw Content-Encoding — UnzippingInterceptor
+     * sits earlier in the chain and strips it on the way out).
+     */
+    private fun logBrotliOnce(response: okhttp3.Response) {
+        if (!brotliSeen && response.header("Content-Encoding") == "br") {
+            brotliSeen = true
+            android.util.Log.d("NetPath", "brotli active: first br response ${response.request.url.encodedPath}")
         }
     }
 
@@ -346,7 +362,13 @@ internal object RetrofitOkHttpHelper {
 
     private fun applyHeaders(newHeaders: Map<String, String?>, oldHeaders: Headers, builder: Request.Builder) {
         for (header in newHeaders) {
-            if (disableCompression && header.key == "Accept-Encoding") {
+            if (header.key == "Accept-Encoding") {
+                if (disableCompression) {
+                    continue
+                }
+                // Resolved at request time so the phone flavor's brotli gate (set after this
+                // object's static init) takes effect — commonHeaders itself is built once.
+                oldHeaders[header.key] ?: builder.header(header.key, DefaultHeaders.acceptEncoding())
                 continue
             }
 
