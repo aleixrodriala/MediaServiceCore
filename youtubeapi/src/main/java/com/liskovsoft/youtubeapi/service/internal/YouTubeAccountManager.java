@@ -281,9 +281,11 @@ public class YouTubeAccountManager {
     }
 
     /**
-     * Sync avatars, names and emails
+     * Sync avatars, names and emails. Runs off the auth critical section now (see
+     * YouTubeSignInService.startStorageSyncAsync) — synchronized so a concurrent dispatch
+     * can't double-run the network fetch before mStorageSynced is set.
      */
-    public void syncStorage() {
+    public synchronized void syncStorage() {
         if (mStorageSynced)
             return;
 

@@ -620,6 +620,14 @@ internal open class BrowseService2 {
     private fun continueIfNeededTV(items: List<ItemWrapper?>?, continuationKey: String?, options: MediaGroupOptions): Pair<List<ItemWrapper?>?, String?> {
         var combinedItems: List<ItemWrapper?>? = items
         var combinedKey: String? = continuationKey
+
+        // Phone gate: the serial pre-combine below runs BEFORE the group is emitted, i.e. the
+        // user stares at an empty grid for every round trip it makes. Returning the first page
+        // as overrideItems keeps the live-first sort semantics (applied per emitted window).
+        if (BrowseServiceGates.skipContinuationPreCombine) {
+            return Pair(combinedItems, combinedKey)
+        }
+
         for (i in 0 until 10) {
             // NOTE: bigger max value help moving live videos to the top (e.g. sorting)
             if (combinedKey == null || (combinedItems?.size ?: 0) > 60)

@@ -144,12 +144,42 @@ internal object RetrofitOkHttpHelper {
             }
 
             val finalRequest = requestBuilder.build()
-            when {
+            val response = when {
                 isPlayerEndpoint(finalRequest) -> proceedLoggedPlayerRequest(chain, finalRequest)
                 isNextEndpoint(finalRequest) -> proceedLoggedNextRequest(chain, finalRequest)
                 else -> chain.proceed(finalRequest)
             }
+            retryOnceIfAuthRejected(chain, finalRequest, response)
         }
+    }
+
+    /**
+     * A 401 on an authed API call means the access token died before its 60-min window
+     * (server-side revoke — possible now that the header is persisted across process starts,
+     * see YouTubeSignInService). Mint a fresh header and replay the request ONCE with it.
+     * Unauthed/skip-auth requests pass through untouched.
+     */
+    private fun retryOnceIfAuthRejected(
+        chain: okhttp3.Interceptor.Chain,
+        request: Request,
+        response: okhttp3.Response,
+    ): okhttp3.Response {
+        if (response.code != 401) return response
+        val rejected = request.header("Authorization") ?: return response
+
+        val refreshed = try {
+            com.liskovsoft.youtubeapi.service.YouTubeSignInService.instance().refreshRejectedAuthHeader(rejected)
+        } catch (e: Exception) {
+            false
+        }
+        val newAuth = authHeaders["Authorization"]
+        if (!refreshed || newAuth == null || newAuth == rejected) return response
+
+        android.util.Log.d("NetPath", "auth-retry: 401 with stale header, replaying with fresh token")
+        response.close()
+        val retryBuilder = request.newBuilder()
+        for ((name, value) in authHeaders) retryBuilder.header(name, value)
+        return chain.proceed(retryBuilder.build())
     }
 
     internal fun isPlayerEndpoint(request: Request): Boolean =
