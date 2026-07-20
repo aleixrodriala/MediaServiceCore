@@ -3,6 +3,9 @@ package com.liskovsoft.mediaserviceinterfaces;
 public interface ServiceManager {
     SignInService getSignInService();
     RemoteControlService getRemoteControlService();
+    default CastSenderService getCastSenderService() {
+        return null;
+    }
     ContentService getContentService();
     MediaItemService getMediaItemService();
     LiveChatService getLiveChatService();

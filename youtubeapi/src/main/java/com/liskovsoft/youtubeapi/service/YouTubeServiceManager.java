@@ -4,6 +4,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.liskovsoft.mediaserviceinterfaces.ChannelGroupService;
+import com.liskovsoft.mediaserviceinterfaces.CastSenderService;
 import com.liskovsoft.mediaserviceinterfaces.CommentsService;
 import com.liskovsoft.mediaserviceinterfaces.ContentService;
 import com.liskovsoft.mediaserviceinterfaces.LiveChatService;
@@ -47,6 +48,11 @@ public class YouTubeServiceManager implements ServiceManager {
     @Override
     public RemoteControlService getRemoteControlService() {
         return getYouTubeRemoteControlService();
+    }
+
+    @Override
+    public CastSenderService getCastSenderService() {
+        return getYouTubeCastSenderService();
     }
 
     @Override
@@ -122,6 +128,11 @@ public class YouTubeServiceManager implements ServiceManager {
     @NonNull
     private static YouTubeRemoteControlService getYouTubeRemoteControlService() {
         return YouTubeRemoteControlService.instance();
+    }
+
+    @NonNull
+    private static YouTubeCastSenderService getYouTubeCastSenderService() {
+        return YouTubeCastSenderService.instance();
     }
 
     @NonNull
