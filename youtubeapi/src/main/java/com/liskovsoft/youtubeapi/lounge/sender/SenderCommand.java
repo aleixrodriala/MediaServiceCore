@@ -59,6 +59,24 @@ public class SenderCommand {
         return command;
     }
 
+    /**
+     * Receiver-side captions. The current YouTube remote sends videoId + languageCode; vss_id is
+     * included when the media manifest exposes it because it disambiguates manual vs ASR tracks
+     * that share a language. An argument-less track selection (videoId only) means captions off.
+     */
+    public static SenderCommand setSubtitlesTrack(String videoId, String vssId, String languageCode) {
+        SenderCommand command = new SenderCommand("setSubtitlesTrack");
+        command.mArgs.put("videoId", videoId);
+        if (vssId != null && !vssId.isEmpty()) {
+            command.mArgs.put("vss_id", vssId);
+        }
+        if (languageCode != null && !languageCode.isEmpty()) {
+            command.mArgs.put("languageCode", languageCode);
+            command.mArgs.put("sourceLanguageCode", languageCode);
+        }
+        return command;
+    }
+
     public static SenderCommand stopVideo() {
         return new SenderCommand("stopVideo");
     }

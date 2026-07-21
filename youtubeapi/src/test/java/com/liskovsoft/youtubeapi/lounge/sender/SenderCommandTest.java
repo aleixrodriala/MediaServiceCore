@@ -55,6 +55,29 @@ public class SenderCommandTest {
     }
 
     @Test
+    public void testThatSubtitleSelectionIsEncoded() {
+        Map<String, String> fields = SenderCommand
+                .setSubtitlesTrack("abc123", "a.en", "en").encode(4);
+
+        assertEquals("setSubtitlesTrack", fields.get("req0__sc"));
+        assertEquals("abc123", fields.get("req0_videoId"));
+        assertEquals("a.en", fields.get("req0_vss_id"));
+        assertEquals("en", fields.get("req0_languageCode"));
+        assertEquals("en", fields.get("req0_sourceLanguageCode"));
+    }
+
+    @Test
+    public void testThatSubtitleOffKeepsOnlyVideoIdentity() {
+        Map<String, String> fields = SenderCommand
+                .setSubtitlesTrack("abc123", null, null).encode(5);
+
+        assertEquals("setSubtitlesTrack", fields.get("req0__sc"));
+        assertEquals("abc123", fields.get("req0_videoId"));
+        assertFalse(fields.containsKey("req0_vss_id"));
+        assertFalse(fields.containsKey("req0_languageCode"));
+    }
+
+    @Test
     public void testThatArglessCommandsAreEncoded() {
         for (SenderCommand command : new SenderCommand[]{
                 SenderCommand.play(), SenderCommand.pause(), SenderCommand.stopVideo()}) {

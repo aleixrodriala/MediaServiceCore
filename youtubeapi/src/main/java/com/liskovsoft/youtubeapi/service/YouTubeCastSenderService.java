@@ -133,6 +133,11 @@ public class YouTubeCastSenderService implements CastSenderService {
     }
 
     @Override
+    public Observable<Void> setSubtitleObserve(String videoId, String vssId, String languageCode) {
+        return postCommandObserve(SenderCommand.setSubtitlesTrack(videoId, vssId, languageCode));
+    }
+
+    @Override
     public Observable<Void> stopVideoObserve() {
         return postCommandObserve(SenderCommand.stopVideo());
     }

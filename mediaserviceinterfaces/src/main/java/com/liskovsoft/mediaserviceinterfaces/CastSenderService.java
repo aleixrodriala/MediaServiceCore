@@ -34,6 +34,12 @@ public interface CastSenderService {
 
     Observable<Void> setVolumeObserve(int volume);
 
+    /**
+     * Select a receiver-side caption track. Empty {@code vssId}/{@code languageCode} disables
+     * captions; {@code videoId} prevents a late command from changing the next queue item.
+     */
+    Observable<Void> setSubtitleObserve(String videoId, String vssId, String languageCode);
+
     Observable<Void> stopVideoObserve();
 
     boolean isConnected();
