@@ -13,6 +13,7 @@ import com.liskovsoft.youtubeapi.common.models.impl.mediaitem.ShortsMediaItem
 import com.liskovsoft.youtubeapi.next.v2.gen.getItems
 import com.liskovsoft.youtubeapi.next.v2.gen.getContinuationToken
 import com.liskovsoft.youtubeapi.next.v2.gen.getShelves
+import com.liskovsoft.youtubeapi.service.YouTubeSignInService
 
 internal open class BrowseService2 {
     private val mBrowseApi = RetrofitHelper.create(BrowseApi::class.java)
@@ -29,6 +30,10 @@ internal open class BrowseService2 {
         //    return getBrowseRowsTV(BrowseApiHelper.getHomeQueryTV(), MediaGroup.TYPE_HOME)
         //
         //return Pair(rows, null)
+
+        // Anonymous TV "default" home is personalized-only and returns no shelves
+        if (!YouTubeSignInService.instance().isSigned())
+            return Pair(getBrowseRowsWeb(BrowseApiHelper.getTrendingQuery(AppClient.WEB), MediaGroup.TYPE_HOME), null)
 
         return getBrowseRowsTV(BrowseApiHelper::getHomeQuery, MediaGroup.TYPE_HOME)
     }
