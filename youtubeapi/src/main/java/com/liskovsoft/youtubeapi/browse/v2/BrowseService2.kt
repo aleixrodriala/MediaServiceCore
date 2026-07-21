@@ -31,12 +31,21 @@ internal open class BrowseService2 {
         //
         //return Pair(rows, null)
 
-        // Anonymous TV "default" home is personalized-only and returns no shelves.
-        // FEtrending is RETIRED (400 Invalid Argument on every client since YouTube killed the
-        // Trending page), and the anonymous WEB/TV FEwhat_to_watch/FEtopics return only a
-        // "start searching" nudge - so compose Home from the TV topic feeds that still serve
-        // shelves without auth (same feeds as the Explore sections).
+        // Anonymous TV "default" home personalizes off the persistent visitor id: watch-time
+        // pings credit history to it, and once any exists the same home query used signed-in
+        // returns real recommendation shelves (verified with raw /browse probes). Requires the
+        // visitor id to survive AppInfo refreshes - see the consent cookie in AppServiceInt.
+        // A visitor with no history yet gets only a "start searching" nudge (zero shelves), so
+        // fall back to the TV topic feeds that serve shelves without any history (same feeds as
+        // the Explore sections). FEtrending itself is RETIRED - 400 on every client since
+        // YouTube killed the Trending page.
         if (!YouTubeSignInService.instance().isSigned()) {
+            val home = getBrowseRowsTV(BrowseApiHelper::getHomeQuery, MediaGroup.TYPE_HOME)
+
+            if (home?.first?.any { it?.isEmpty == false } == true) {
+                return home
+            }
+
             val rows = mutableListOf<MediaGroup?>()
 
             for (query in listOf(BrowseApiHelper::getMusicQuery, BrowseApiHelper::getGamingQuery,

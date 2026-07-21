@@ -80,6 +80,16 @@ internal object AppConstants {
     const val VISITOR_INFO_COOKIE = "VISITOR_INFO1_LIVE"
     const val VISITOR_PRIVACY_COOKIE = "VISITOR_PRIVACY_METADATA"
 
+    /**
+     * "Consent accepted" SOCS blob. On EU IPs youtube.com EXPIRES the VISITOR_INFO1_LIVE cookie
+     * unless an accepted-SOCS rides along, so the anonymous visitor id rotates on every AppInfo
+     * refresh and signed-out watch history/recommendations never accumulate. Presenting this
+     * blob makes youtube.com mint and keep re-setting a persistent visitor cookie - exactly the
+     * non-EU behavior the visitor-replay in AppServiceInt was designed around. (Decoded: proto
+     * {consented, record "950531894", lang "en", accepted=1, timestamp}.)
+     */
+    const val CONSENT_ACCEPTED_COOKIE = "SOCS=CAISEwgDEgk5NTA1MzE4OTQaAmVuIAEaBgiA7frSBg"
+
     const val SCRIPTS_URL_BASE = "https://www.youtube.com"
     const val API_KEY = API_KEY_NEW
 

@@ -1,10 +1,12 @@
 package com.liskovsoft.youtubeapi.app;
 
+import com.liskovsoft.sharedutils.helpers.Helpers;
 import com.liskovsoft.youtubeapi.app.models.AppInfo;
 import com.liskovsoft.youtubeapi.app.models.ClientData;
 import com.liskovsoft.youtubeapi.app.playerdata.PlayerDataExtractor;
 import com.liskovsoft.googlecommon.common.helpers.DefaultHeaders;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitHelper;
+import com.liskovsoft.youtubeapi.common.helpers.AppConstants;
 import com.liskovsoft.youtubeapi.service.internal.MediaServiceData;
 
 import retrofit2.Call;
@@ -23,6 +25,14 @@ public class AppServiceInt {
      */
     protected AppInfo getAppInfo(String userAgent) {
         String visitorCookie = getData().getVisitorCookie();
+        // EU: without an accepted-SOCS consent cookie youtube.com expires VISITOR_INFO1_LIVE
+        // instead of setting it, so the replayed visitor cookie below never contains one and the
+        // anonymous visitor id silently rotates every refresh (killing signed-out watch history
+        // and the personalized anonymous Home). SOCS itself is never echoed back, so append it
+        // on every request rather than persisting it.
+        if (visitorCookie == null || !visitorCookie.contains("SOCS=")) {
+            visitorCookie = Helpers.join("; ", visitorCookie, AppConstants.CONSENT_ACCEPTED_COOKIE);
+        }
         Call<AppInfo> wrapper = mAppApi.getAppInfo(userAgent, visitorCookie);
         AppInfo result = null;
 

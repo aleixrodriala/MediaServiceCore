@@ -63,9 +63,15 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                    forceRecreate || webPoTokenGenerator!!.isExpired()
 
                 if (shouldRecreate) {
-                    // MOD: my visitor data
-                    //webPoTokenVisitorData = AppService.instance().visitorData
-                    webPoTokenVisitorData = VisitorService.getVisitorData()
+                    // NEWTUBE(anonymous-recs): bind the whole web-pot session to the app's
+                    // persistent visitor instead of minting a throwaway one per session. The
+                    // watch-time pings credit whatever visitor the /player call used; with a
+                    // throwaway, signed-out history fragments across dead identities and the
+                    // anonymous Home never personalizes. Pot, /player and streaming URLs still
+                    // share ONE visitor (the deep-range-403 invariant from the Pixel round -
+                    // see PoTokenGate.getWebVisitorDataForPlayer). Fallback keeps the old
+                    // behavior when AppInfo hasn't produced a visitor yet.
+                    webPoTokenVisitorData = AppService.instance().visitorData ?: VisitorService.getVisitorData()
 
                     val latch = if (webPoTokenGenerator != null) CountDownLatch(1) else null
 
