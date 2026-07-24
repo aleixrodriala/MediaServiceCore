@@ -38,7 +38,7 @@ import retrofit2.Call;
 
 public class VideoInfoService extends VideoInfoServiceBase {
     private static final String TAG = VideoInfoService.class.getSimpleName();
-    private static VideoInfoService sInstance;
+    private static volatile VideoInfoService sInstance;
     private final VideoInfoApi mVideoInfoApi;
     private final static AppClient[] VIDEO_INFO_TYPE_LIST = {
             AppClient.WEB_EMBED, // Restricted (18+) videos
@@ -80,7 +80,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * key mismatch and the short TTL self-heals server-side changes.
      */
     private static final long AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(10);
-    private static ExecutorService sInfoExecutor;
+    private static volatile ExecutorService sInfoExecutor;
     // Phone ring trim (NewTube touch flavor): the tail of VIDEO_INFO_TYPE_LIST is four TV-app
     // fallback clients that only earn their keep on TV boxes; on a phone they just lengthen the
     // failover walk of a hard video (4 extra /player round-trips per sweep). Gated the same way as
@@ -230,16 +230,35 @@ public class VideoInfoService extends VideoInfoServiceBase {
         mVideoInfoApi = RetrofitHelper.create(VideoInfoApi.class);
     }
 
-    public static VideoInfoService instance() {
-        if (sInstance == null) {
-            sInstance = new VideoInfoService();
-        }
-
-        return sInstance;
+    public interface CancellationSignal {
+        boolean isCanceled();
     }
 
-    public synchronized VideoInfo getVideoInfo(String videoId, String clickTrackingParams) {
+    public static VideoInfoService instance() {
+        VideoInfoService result = sInstance;
+        if (result == null) {
+            synchronized (VideoInfoService.class) {
+                result = sInstance;
+                if (result == null) {
+                    result = new VideoInfoService();
+                    sInstance = result;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    public VideoInfo getVideoInfo(String videoId, String clickTrackingParams) {
+        return getVideoInfo(videoId, clickTrackingParams, null);
+    }
+
+    public synchronized VideoInfo getVideoInfo(String videoId, String clickTrackingParams,
+            @Nullable CancellationSignal cancellationSignal) {
         if (videoId == null) {
+            return null;
+        }
+        if (abortCanceledRequest(videoId, "entry", cancellationSignal)) {
             return null;
         }
 
@@ -256,7 +275,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         mAuthBlock = true;
 
-        VideoInfo result = firstPlayable(videoId, clickTrackingParams, authenticated);
+        VideoInfo result = firstPlayable(
+                videoId, clickTrackingParams, authenticated, cancellationSignal);
+        if (abortCanceledRequest(videoId, "post-player", cancellationSignal)) {
+            return null;
+        }
 
         // An error cursor and a persisted cold-start hint are both one-shot on mobile. Leaving either
         // set after a successful failover made every later open start from stale routing state.
@@ -276,9 +299,23 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         Log.d(TAG, "getVideoInfo: winning client=%s videoId=%s", result.getClient(), videoId);
 
+        long fixesStartMs = android.os.SystemClock.elapsedRealtime();
         applyFixesIfNeeded(result, videoId, clickTrackingParams);
+        android.util.Log.d("NetPath", "player-fixes video=" + videoId
+                + " client=" + result.getClient()
+                + " ms=" + (android.os.SystemClock.elapsedRealtime() - fixesStartMs));
+        if (abortCanceledRequest(videoId, "pre-transform", cancellationSignal)) {
+            return null;
+        }
 
+        long transformStartMs = android.os.SystemClock.elapsedRealtime();
         transformFormats(result);
+        android.util.Log.d("NetPath", "player-transform video=" + videoId
+                + " client=" + result.getClient()
+                + " ms=" + (android.os.SystemClock.elapsedRealtime() - transformStartMs));
+        if (abortCanceledRequest(videoId, "post-transform", cancellationSignal)) {
+            return null;
+        }
 
         persistRecentTypeIfNeeded(result);
 
@@ -289,6 +326,24 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
 
         return result;
+    }
+
+    /**
+     * A tap-time prefetch is disposable. When the user immediately selects another video, do not
+     * let the obsolete request sit on this service's routing lock or enter the comparatively costly
+     * signature transform. Java monitor acquisition itself is not interruptible, so the entry check
+     * is essential for a canceled request that was queued behind another getVideoInfo call.
+     */
+    private static boolean abortCanceledRequest(String videoId, String stage,
+            @Nullable CancellationSignal cancellationSignal) {
+        if (!Thread.currentThread().isInterrupted()
+                && (cancellationSignal == null || !cancellationSignal.isCanceled())) {
+            return false;
+        }
+
+        android.util.Log.d("NetPath", "player-request canceled video=" + videoId
+                + " stage=" + stage);
+        return true;
     }
 
     public synchronized VideoInfo getAuthVideoInfo(String videoId, String clickTrackingParams) {
@@ -309,7 +364,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * caller still gets an "unplayable" reason to show. Same outcome as the old two-pass sweep
      * (pass 1: first playable, pass 2: first non-null) at half the worst-case /player call count.
      */
-    private VideoInfo firstPlayable(String videoId, String clickTrackingParams, boolean authenticated) {
+    private VideoInfo firstPlayable(String videoId, String clickTrackingParams,
+            boolean authenticated, @Nullable CancellationSignal cancellationSignal) {
         //final AppClient beginType = getDefaultClient();
         // Mobile fast-start: when no client is remembered from a previous video, start at the
         // no-pot/no-cipher client instead of WEB_EMBED. buildVisitOrder keeps this fast head but
@@ -367,6 +423,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         int attempt = 0;
 
         for (AppClient nextType : visitOrder) {
+            if (abortCanceledRequest(videoId, "client-ring", cancellationSignal)) {
+                break;
+            }
+
             // Phone ring trim: TV-only fallback clients are skipped (a stale mNextInfoType from
             // nextVideoInfoType may land on a TV_* entry; it's simply not probed).
             if (isSkippedClient(nextType)
@@ -376,7 +436,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
 
             attempt++;
-            VideoInfo result = getVideoInfoWithTimeout(nextType, videoId, clickTrackingParams);
+            VideoInfo result = getVideoInfoWithTimeout(
+                    nextType, videoId, clickTrackingParams, cancellationSignal);
+            if (abortCanceledRequest(videoId, "post-attempt", cancellationSignal)) {
+                break;
+            }
             if (authenticated && nextType.isAuthSupported()) {
                 authenticatedClientAttempted = true;
             }
@@ -734,35 +798,71 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * timeout. TV (flag unset) and web-pot clients (WEB_EMBED fallback for restricted videos, whose
      * PO-token generation can legitimately take several seconds) run unbounded exactly as before.
      */
-    private VideoInfo getVideoInfoWithTimeout(AppClient client, String videoId, String clickTrackingParams) {
+    private VideoInfo getVideoInfoWithTimeout(AppClient client, String videoId,
+            String clickTrackingParams, @Nullable CancellationSignal cancellationSignal) {
+        if (abortCanceledRequest(videoId, "pre-attempt", cancellationSignal)) {
+            return null;
+        }
+
         if (!sPreferNoPotClient || client.isWebPotRequired()) {
             return getVideoInfoWithRentFix(client, videoId, clickTrackingParams);
         }
 
         Future<VideoInfo> future = getInfoExecutor().submit(() -> getVideoInfoWithRentFix(client, videoId, clickTrackingParams));
+        final long deadlineNs = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(CLIENT_ATTEMPT_TIMEOUT_MS);
 
-        try {
-            return future.get(CLIENT_ATTEMPT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        } catch (TimeoutException e) {
-            Log.e(TAG, "getVideoInfo timed out for client %s after %s ms, failing over...", client, CLIENT_ATTEMPT_TIMEOUT_MS);
-            future.cancel(true);
-            return null;
-        } catch (Exception e) {
-            Log.e(TAG, "getVideoInfo failed for client %s (%s), failing over...", client, e.getMessage());
-            return null;
+        while (true) {
+            if (abortCanceledRequest(videoId, "player-wait", cancellationSignal)) {
+                future.cancel(true);
+                return null;
+            }
+
+            long remainingNs = deadlineNs - System.nanoTime();
+            if (remainingNs <= 0) {
+                Log.e(TAG, "getVideoInfo timed out for client %s after %s ms, failing over...",
+                        client, CLIENT_ATTEMPT_TIMEOUT_MS);
+                future.cancel(true);
+                return null;
+            }
+
+            try {
+                long waitMs = Math.min(
+                        Math.max(TimeUnit.NANOSECONDS.toMillis(remainingNs), 1), 100);
+                return future.get(waitMs, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException e) {
+                // Poll the cancellation signal without shortening the existing overall timeout.
+            } catch (InterruptedException e) {
+                future.cancel(true);
+                Thread.currentThread().interrupt();
+                android.util.Log.d("NetPath", "player-request canceled video=" + videoId
+                        + " stage=player-wait client=" + client);
+                return null;
+            } catch (Exception e) {
+                Log.e(TAG, "getVideoInfo failed for client %s (%s), failing over...",
+                        client, e.getMessage());
+                return null;
+            }
         }
     }
 
     private static ExecutorService getInfoExecutor() {
-        if (sInfoExecutor == null) {
-            sInfoExecutor = Executors.newCachedThreadPool(r -> {
-                Thread t = new Thread(r, "VideoInfoAttempt");
-                t.setDaemon(true);
-                return t;
-            });
+        ExecutorService result = sInfoExecutor;
+        if (result == null) {
+            synchronized (VideoInfoService.class) {
+                result = sInfoExecutor;
+                if (result == null) {
+                    result = Executors.newCachedThreadPool(r -> {
+                        Thread t = new Thread(r, "VideoInfoAttempt");
+                        t.setDaemon(true);
+                        return t;
+                    });
+                    sInfoExecutor = result;
+                }
+            }
         }
 
-        return sInfoExecutor;
+        return result;
     }
 
     //private void initInfoTypeIfNeeded() {

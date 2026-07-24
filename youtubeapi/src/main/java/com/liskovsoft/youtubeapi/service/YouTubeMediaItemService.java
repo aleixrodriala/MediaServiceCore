@@ -41,6 +41,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import android.net.Uri;
 
@@ -55,7 +56,7 @@ import org.chromium.net.UrlResponseInfo;
 
 public class YouTubeMediaItemService implements MediaItemService {
     private static final String TAG = YouTubeMediaItemService.class.getSimpleName();
-    private static YouTubeMediaItemService sInstance;
+    private static volatile YouTubeMediaItemService sInstance;
     private MediaItemFormatInfo mCachedFormatInfo;
 
     // Mobile single-flight for format info. When enabled, concurrent getFormatInfo() calls for the SAME
@@ -63,8 +64,21 @@ public class YouTubeMediaItemService implements MediaItemService {
     // lock and then read the freshly cached result). This is what makes the mobile "prefetch at tap" win
     // real: the tap-time prefetch and the player's own end-of-onCreate fetch share a single round-trip
     // instead of racing into two. Off by default -> TV keeps the exact original single-fetch path.
-    private static boolean sSingleFlightEnabled;
-    private final ConcurrentHashMap<String, Object> mFormatInfoLocks = new ConcurrentHashMap<>();
+    private static volatile boolean sSingleFlightEnabled;
+    private final ConcurrentHashMap<String, FormatFlight> mFormatInfoFlights =
+            new ConcurrentHashMap<>();
+
+    private static final class FormatFlight {
+        private final AtomicBoolean mCanceled = new AtomicBoolean();
+
+        boolean cancel() {
+            return mCanceled.compareAndSet(false, true);
+        }
+
+        boolean isCanceled() {
+            return mCanceled.get();
+        }
+    }
     // The original one-slot cache is easily overwritten by Home's next-video prefetch while the
     // current video is still playing. A later history/storyboard lookup then remints identical
     // signed URLs and spends two more /player calls. Mobile keeps a tiny access-ordered working set
@@ -245,11 +259,18 @@ public class YouTubeMediaItemService implements MediaItemService {
     }
 
     public static YouTubeMediaItemService instance() {
-        if (sInstance == null) {
-            sInstance = new YouTubeMediaItemService();
+        YouTubeMediaItemService result = sInstance;
+        if (result == null) {
+            synchronized (YouTubeMediaItemService.class) {
+                result = sInstance;
+                if (result == null) {
+                    result = new YouTubeMediaItemService();
+                    sInstance = result;
+                }
+            }
         }
 
-        return sInstance;
+        return result;
     }
 
     /**
@@ -267,39 +288,76 @@ public class YouTubeMediaItemService implements MediaItemService {
 
     @Override
     public MediaItemFormatInfo getFormatInfo(String videoId, String clickTrackingParams) {
+        return getFormatInfo(videoId, clickTrackingParams, null);
+    }
+
+    private MediaItemFormatInfo getFormatInfo(String videoId, String clickTrackingParams,
+            @Nullable FormatFlight suppliedFlight) {
         MediaItemFormatInfo cachedFormatInfo = getCachedFormatInfo(videoId);
 
         if (cachedFormatInfo != null) {
+            if (suppliedFlight != null) {
+                mFormatInfoFlights.remove(videoId, suppliedFlight);
+            }
             return cachedFormatInfo;
         }
 
         // TV path: unchanged single fetch.
         if (!sSingleFlightEnabled || videoId == null) {
-            return fetchFormatInfo(videoId, clickTrackingParams);
+            return fetchFormatInfo(videoId, clickTrackingParams, null);
         }
 
         // Mobile path: collapse concurrent fetches for the same videoId into one round-trip.
-        Object lock = getFormatInfoLock(videoId);
-        synchronized (lock) {
+        FormatFlight flight = suppliedFlight != null
+                ? suppliedFlight : getFormatInfoFlight(videoId);
+        synchronized (flight) {
             try {
+                if (flight.isCanceled()) {
+                    android.util.Log.d("NetPath", "format-flight canceled video=" + videoId
+                            + " stage=entry");
+                    return null;
+                }
+
                 // Another caller for this videoId may have just populated the cache while we waited.
                 MediaItemFormatInfo cached = getCachedFormatInfo(videoId);
                 if (cached != null) {
                     return cached;
                 }
 
-                return fetchFormatInfo(videoId, clickTrackingParams);
+                return fetchFormatInfo(videoId, clickTrackingParams, flight);
             } finally {
-                // Only remove our own lock so a concurrent leader for a different videoId isn't disturbed.
-                mFormatInfoLocks.remove(videoId, lock);
+                // Only remove our own flight so a newer request for this video isn't disturbed.
+                mFormatInfoFlights.remove(videoId, flight);
             }
         }
     }
 
-    private MediaItemFormatInfo fetchFormatInfo(String videoId, String clickTrackingParams) {
+    @Override
+    public void cancelStaleFormatInfoRequests(String keepVideoId) {
+        if (!sSingleFlightEnabled) {
+            return;
+        }
+
+        for (java.util.Map.Entry<String, FormatFlight> entry : mFormatInfoFlights.entrySet()) {
+            if (!Helpers.equals(entry.getKey(), keepVideoId) && entry.getValue().cancel()) {
+                android.util.Log.d("NetPath", "format-flight cancel stale=" + entry.getKey()
+                        + " next=" + keepVideoId);
+                // A disposed Rx task may never enter getFormatInfo's finally block. Remove the
+                // canceled reservation now so revisiting this video creates a fresh flight; an
+                // already-running worker retains its own canceled object and still exits safely.
+                mFormatInfoFlights.remove(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+
+    private MediaItemFormatInfo fetchFormatInfo(String videoId, String clickTrackingParams,
+            @Nullable FormatFlight flight) {
         checkSigned();
 
-        VideoInfo videoInfo = getVideoInfoService().getVideoInfo(videoId, clickTrackingParams);
+        VideoInfo videoInfo = flight != null
+                ? getVideoInfoService().getVideoInfo(
+                        videoId, clickTrackingParams, flight::isCanceled)
+                : getVideoInfoService().getVideoInfo(videoId, clickTrackingParams);
 
         MediaItemFormatInfo formatInfo = YouTubeMediaItemFormatInfo.from(videoInfo);
 
@@ -324,14 +382,14 @@ public class YouTubeMediaItemService implements MediaItemService {
         return formatInfo;
     }
 
-    private Object getFormatInfoLock(String videoId) {
-        Object lock = mFormatInfoLocks.get(videoId);
-        if (lock == null) {
-            Object created = new Object();
-            Object prev = mFormatInfoLocks.putIfAbsent(videoId, created);
-            lock = prev != null ? prev : created;
+    private FormatFlight getFormatInfoFlight(String videoId) {
+        FormatFlight flight = mFormatInfoFlights.get(videoId);
+        if (flight == null) {
+            FormatFlight created = new FormatFlight();
+            FormatFlight previous = mFormatInfoFlights.putIfAbsent(videoId, created);
+            flight = previous != null ? previous : created;
         }
-        return lock;
+        return flight;
     }
 
     //@Override
@@ -355,17 +413,51 @@ public class YouTubeMediaItemService implements MediaItemService {
 
     @Override
     public Observable<MediaItemFormatInfo> getFormatInfoObserve(MediaItem item) {
-        return RxHelper.fromCallable(() -> getFormatInfo(item));
+        if (item == null) {
+            return RxHelper.fromCallable(() -> getFormatInfo(item));
+        }
+        return getFormatInfoObserve(item.getVideoId(), item.getClickTrackingParams(), false);
     }
 
     @Override
     public Observable<MediaItemFormatInfo> getFormatInfoObserve(String videoId) {
-        return RxHelper.fromCallable(() -> getFormatInfo(videoId));
+        return getFormatInfoObserve(videoId, null, false);
     }
 
     @Override
     public Observable<MediaItemFormatInfo> getFormatInfoObserve(String videoId, String clickTrackingParams) {
-        return RxHelper.fromCallable(() -> getFormatInfo(videoId, clickTrackingParams));
+        return getFormatInfoObserve(videoId, clickTrackingParams, false);
+    }
+
+    @Override
+    public Observable<MediaItemFormatInfo> getLatestFormatInfoObserve(String videoId) {
+        return getFormatInfoObserve(videoId, null, true);
+    }
+
+    private Observable<MediaItemFormatInfo> getFormatInfoObserve(String videoId,
+            String clickTrackingParams, boolean latestRequest) {
+        if (!sSingleFlightEnabled || videoId == null) {
+            return RxHelper.fromCallable(() -> getFormatInfo(videoId, clickTrackingParams));
+        }
+
+        // Reserve the flight NOW, before Rx schedules the blocking callable. A newer tap can then
+        // cancel it even if the old task has not started running yet. Regular player consumers also
+        // reserve/join here, so every observer attached to the stale flight completes consistently.
+        FormatFlight flight = getFormatInfoFlight(videoId);
+        return RxHelper.create(emitter -> {
+            MediaItemFormatInfo result = getFormatInfo(videoId, clickTrackingParams, flight);
+            if (result != null) {
+                emitter.onNext(result);
+                emitter.onComplete();
+            } else if (flight.isCanceled()) {
+                android.util.Log.d("NetPath", "format-flight complete=canceled video=" + videoId
+                        + " latest=" + (latestRequest ? "y" : "n"));
+                emitter.onComplete();
+            } else {
+                RxHelper.onError(emitter, "fromNullable result is null");
+                Log.e(TAG, "fromNullable result is null");
+            }
+        });
     }
 
     @Override

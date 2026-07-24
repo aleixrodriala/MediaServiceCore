@@ -25,6 +25,8 @@ public interface MediaItemService {
     MediaItemFormatInfo getFormatInfo(MediaItem item);
     MediaItemFormatInfo getFormatInfo(String videoId);
     MediaItemFormatInfo getFormatInfo(String videoId, String clickTrackingParams);
+    default void cancelStaleFormatInfoRequests(String keepVideoId) {
+    }
     MediaItemStoryboard getStoryboard(MediaItem item);
     MediaItemStoryboard getStoryboard(String videoId);
     MediaItemMetadata getMetadata(MediaItem item);
@@ -55,6 +57,9 @@ public interface MediaItemService {
     Observable<MediaItemFormatInfo> getFormatInfoObserve(MediaItem item);
     Observable<MediaItemFormatInfo> getFormatInfoObserve(String videoId);
     Observable<MediaItemFormatInfo> getFormatInfoObserve(String videoId, String clickTrackingParams);
+    default Observable<MediaItemFormatInfo> getLatestFormatInfoObserve(String videoId) {
+        return getFormatInfoObserve(videoId);
+    }
     Observable<MediaItemStoryboard> getStoryboardObserve(MediaItem item);
     Observable<MediaItemStoryboard> getStoryboardObserve(String videoId);
     Observable<MediaItemMetadata> getMetadataObserve(MediaItem item);

@@ -40,6 +40,12 @@ internal class PlayerDataExtractor(val playerUrl: String) {
             checkCpnData()
             persistAllData()
         }
+
+        // CPN validation also starts a short-lived J2V8 runtime. Starting the much heavier
+        // challenge-provider warmup before that validation made both runtimes contend during the
+        // first signed-in request, delaying /player even after an obsolete tap was canceled.
+        // Schedule this last so the challenge runtime remains hot for the upcoming format decipher.
+        warmupSigRuntimeAsync()
     }
 
     fun extractNSig(nParam: String): String? {
@@ -165,17 +171,6 @@ internal class PlayerDataExtractor(val playerUrl: String) {
 
     private fun checkSigData() {
         if (nFuncCode && sFuncCode) {
-            // Restored funcs are trusted as-is; the V8 hot-start (~0.5-1s j2v8 + runtime init)
-            // moves off this constructor, which runs under AppServiceIntCached's player lock on
-            // the first /player of every process. Safe because runJsRuntime() initializes the
-            // runtime itself (same v8Lock) if a real challenge arrives before the warmup thread.
-            Thread({
-                try {
-                    V8ChallengeProvider.warmup() // enable hot start
-                } catch (e: Throwable) {
-                    android.util.Log.e(tag, "V8 warmup failed: ${e.message}")
-                }
-            }, "V8WarmUp").start()
             return
         }
 
@@ -202,5 +197,31 @@ internal class PlayerDataExtractor(val playerUrl: String) {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    private fun warmupSigRuntimeAsync() {
+        if (!nFuncCode || !sFuncCode) {
+            return
+        }
+
+        android.util.Log.d("NetPath", "v8-warmup scheduled")
+        Thread({
+            val startMs = android.os.SystemClock.elapsedRealtime()
+            android.util.Log.d("NetPath", "v8-warmup start")
+            try {
+                V8ChallengeProvider.warmup()
+                android.util.Log.d(
+                    "NetPath",
+                    "v8-warmup complete ms=${android.os.SystemClock.elapsedRealtime() - startMs}"
+                )
+            } catch (e: Throwable) {
+                android.util.Log.e(
+                    "NetPath",
+                    "v8-warmup failed ms=${android.os.SystemClock.elapsedRealtime() - startMs} " +
+                            "${e.javaClass.simpleName}: ${e.message}"
+                )
+                android.util.Log.e(tag, "V8 warmup failed: ${e.message}")
+            }
+        }, "V8WarmUp").start()
     }
 }

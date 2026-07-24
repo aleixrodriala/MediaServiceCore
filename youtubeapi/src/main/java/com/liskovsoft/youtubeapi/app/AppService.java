@@ -15,7 +15,7 @@ import java.util.List;
 import kotlin.Pair;
 
 public class AppService {
-    private static AppService sInstance;
+    private static volatile AppService sInstance;
     private final AppServiceInt mAppServiceInt;
     private String mClientPlaybackNonce;
 
@@ -24,11 +24,18 @@ public class AppService {
     }
 
     public static AppService instance() {
-        if (sInstance == null) {
-            sInstance = new AppService();
+        AppService result = sInstance;
+        if (result == null) {
+            synchronized (AppService.class) {
+                result = sInstance;
+                if (result == null) {
+                    result = new AppService();
+                    sInstance = result;
+                }
+            }
         }
 
-        return sInstance;
+        return result;
     }
 
     /**
@@ -100,7 +107,7 @@ public class AppService {
         return result;
     }
 
-    public void resetClientPlaybackNonce() {
+    public synchronized void resetClientPlaybackNonce() {
         mClientPlaybackNonce = null;
     }
 
@@ -117,7 +124,11 @@ public class AppService {
             return null;
         }
 
+        long startMs = android.os.SystemClock.elapsedRealtime();
         mClientPlaybackNonce = mAppServiceInt.getPlayerDataExtractor().createClientPlaybackNonce();
+        android.util.Log.d("NetPath", "player-cpn complete ms="
+                + (android.os.SystemClock.elapsedRealtime() - startMs)
+                + " result=" + (mClientPlaybackNonce != null ? "ok" : "missing"));
 
         return mClientPlaybackNonce;
     }
