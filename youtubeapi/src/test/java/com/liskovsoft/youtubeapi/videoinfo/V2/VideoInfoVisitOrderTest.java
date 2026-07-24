@@ -115,6 +115,23 @@ public class VideoInfoVisitOrderTest {
     }
 
     @Test
+    public void authenticatedRecent403StartsWithWebButKeepsTvFallbacks() {
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.WEB_EMBED, AppClient.TV_DOWNGRADED,
+                true, false, true, true, true);
+
+        assertEquals(Arrays.asList(
+                AppClient.WEB_EMBED,
+                AppClient.WEB,
+                AppClient.WEB_SAFARI,
+                AppClient.GEO,
+                AppClient.MWEB), order.subList(0, 5));
+        assertEquals(AppClient.TV_DOWNGRADED, order.get(5));
+        assertTrue(order.indexOf(AppClient.TV) > 5);
+        assertEquals(13, order.size());
+    }
+
+    @Test
     public void authenticatedRecoveryHonorsCursorAndDefersFailedTvClient() {
         // authTvSabrOnly=true must not disturb recovery ordering — the swap is happy-path only.
         List<AppClient> order = VideoInfoService.buildRequestVisitOrder(

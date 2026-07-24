@@ -13,6 +13,8 @@ import okhttp3.Request
 import okio.Buffer
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.TimeUnit
 
@@ -20,15 +22,20 @@ internal object RetrofitOkHttpHelper {
     // Open-path stall bound: /player + /next gate every video open (and each failover-ring step),
     // so a stalled host must fail in 8s instead of the shared 20s OkHttp defaults.
     private const val OPEN_PATH_TIMEOUT_MS = 8_000
+    // Browse/search/feed reads may legitimately take longer than /player, but a TCP/TLS route that
+    // cannot connect should not leave the UI skeleton waiting on the shared 20s connect default.
+    // Read/write timeouts remain untouched and OkHttp's normal connection recovery still applies.
+    private const val API_CONNECT_TIMEOUT_MS = 10_000
     private const val PLAYER_PATH = "/youtubei/v1/player"
     private const val NEXT_PATH = "/youtubei/v1/next"
     private const val YOUTUBE_ORIGIN = "https://www.youtube.com"
-    private val authSkipList = mutableListOf<Request>()
+    private val authSkipList = Collections.synchronizedList(mutableListOf<Request>())
     private val playerRequestIds = AtomicLong()
     private val nextRequestIds = AtomicLong()
+    private val apiRequestIds = AtomicLong()
 
     @JvmStatic
-    val authHeaders = mutableMapOf<String, String>()
+    val authHeaders: MutableMap<String, String> = ConcurrentHashMap()
 
     @JvmStatic
     val client: OkHttpClient by lazy { createClient() }
@@ -38,8 +45,11 @@ internal object RetrofitOkHttpHelper {
 
     @JvmStatic
     fun addAuthSkip(request: Request) {
-        if (!authSkipList.contains(request))
-            authSkipList.add(request)
+        synchronized(authSkipList) {
+            if (!authSkipList.contains(request)) {
+                authSkipList.add(request)
+            }
+        }
     }
 
     private val commonHeaders = mapOf(
@@ -84,20 +94,24 @@ internal object RetrofitOkHttpHelper {
     }
 
     /**
-     * Per-request timeout bound for the video-open critical path. Every youtubeapi Retrofit
+     * Per-request timeout bounds for API calls. Every youtubeapi Retrofit
      * instance rides this one client (auth and non-auth requests alike - auth is applied per
-     * request in [addCommonHeaders]), so tightening connect/read here covers both. Write timeout
-     * and every other endpoint keep the shared OkHttpCommons defaults untouched.
+     * request in [addCommonHeaders]). /player and /next get an 8s connect+read bound; other known
+     * API calls get only a 10s connect bound. Write timeouts and non-API traffic stay untouched.
      */
     private fun addOpenPathTimeout(builder: OkHttpClient.Builder) {
         builder.addInterceptor { chain ->
-            val path = chain.request().url.encodedPath
+            val request = chain.request()
+            val path = request.url.encodedPath
             if (path.contains("/youtubei/v1/player") || path.contains("/youtubei/v1/next")) {
                 chain.withConnectTimeout(OPEN_PATH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                     .withReadTimeout(OPEN_PATH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-                    .proceed(chain.request())
+                    .proceed(request)
+            } else if (isApiEndpoint(request)) {
+                chain.withConnectTimeout(API_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .proceed(request)
             } else {
-                chain.proceed(chain.request())
+                chain.proceed(request)
             }
         }
     }
@@ -147,6 +161,7 @@ internal object RetrofitOkHttpHelper {
             val response = when {
                 isPlayerEndpoint(finalRequest) -> proceedLoggedPlayerRequest(chain, finalRequest)
                 isNextEndpoint(finalRequest) -> proceedLoggedNextRequest(chain, finalRequest)
+                isApiEndpoint(finalRequest) -> proceedLoggedApiRequest(chain, finalRequest)
                 else -> chain.proceed(finalRequest)
             }
             logBrotliOnce(response)
@@ -204,6 +219,59 @@ internal object RetrofitOkHttpHelper {
     internal fun isNextEndpoint(request: Request): Boolean =
         request.url.encodedPath.endsWith(NEXT_PATH)
 
+    private fun isApiEndpoint(request: Request): Boolean {
+        val url = request.url.toString()
+        return apiPrefixes.any { url.startsWith(it) }
+    }
+
+    /**
+     * Safe timing/error visibility for browse, search, feeds, comments and other API calls. The
+     * endpoint contains host + path only: query values, request/response bodies, auth tokens,
+     * cookies and user-entered search text never enter logcat.
+     */
+    private fun proceedLoggedApiRequest(
+        chain: okhttp3.Interceptor.Chain,
+        request: Request,
+    ): okhttp3.Response {
+        val id = apiRequestIds.incrementAndGet()
+        val startedMs = android.os.SystemClock.elapsedRealtime()
+        val bodyBytes = try {
+            request.body?.contentLength() ?: 0
+        } catch (_: Exception) {
+            -1
+        }
+        val endpoint = "${request.url.host}${request.url.encodedPath}"
+        android.util.Log.d(
+            "NetPath",
+            "api-http[S] aid=$id method=${request.method} endpoint=$endpoint" +
+                " auth=${yn(request.header("Authorization") != null)}" +
+                " visitor=${fingerprint(request.header("X-Goog-Visitor-Id"))}" +
+                " bodyBytes=$bodyBytes net=${activeNetworkId()}",
+        )
+
+        try {
+            val response = chain.proceed(request)
+            val elapsed = android.os.SystemClock.elapsedRealtime() - startedMs
+            val message = "api-http[C] aid=$id method=${request.method} endpoint=$endpoint" +
+                " code=${response.code} ms=$elapsed net=${activeNetworkId()} ${responseSummary(response)}"
+            if (response.isSuccessful) {
+                android.util.Log.d("NetPath", message)
+            } else {
+                android.util.Log.w("NetPath", message)
+            }
+            return response
+        } catch (error: IOException) {
+            val elapsed = android.os.SystemClock.elapsedRealtime() - startedMs
+            android.util.Log.w(
+                "NetPath",
+                "api-http[E] aid=$id method=${request.method} endpoint=$endpoint ms=$elapsed " +
+                    "net=${activeNetworkId()} " +
+                    "${error.javaClass.simpleName}:${safeErrorMessage(error.message)}",
+            )
+            throw error
+        }
+    }
+
     /** Safe /player request/response fingerprint: useful in field logs, contains no credentials. */
     private fun proceedLoggedPlayerRequest(
         chain: okhttp3.Interceptor.Chain,
@@ -227,7 +295,7 @@ internal object RetrofitOkHttpHelper {
                 " sts=${yn(body.hasSignatureTimestamp)} ua=${fingerprint(request.header("User-Agent"))}" +
                 " origin=${if (origin == YOUTUBE_ORIGIN) "youtube" else if (origin == null) "none" else "other"}" +
                 " referer=${if (referer == null) "none" else "present"}" +
-                " key=${yn(request.url.queryParameter("key") != null)}",
+                " key=${yn(request.url.queryParameter("key") != null)} net=${activeNetworkId()}",
         )
 
         try {
@@ -236,7 +304,7 @@ internal object RetrofitOkHttpHelper {
             android.util.Log.d(
                 "NetPath",
                 "player-http[C] rid=$id video=${body.videoId} code=${response.code}" +
-                    " ms=$elapsed ${responseSummary(response)}",
+                    " ms=$elapsed net=${activeNetworkId()} ${responseSummary(response)}",
             )
             if (!response.isSuccessful) {
                 val errorText = try {
@@ -256,7 +324,7 @@ internal object RetrofitOkHttpHelper {
             android.util.Log.w(
                 "NetPath",
                 "player-http[E] rid=$id video=${body.videoId} ms=$elapsed " +
-                    "${error.javaClass.simpleName}: ${printable(error.message ?: "", 160)}",
+                    "${error.javaClass.simpleName}: ${safeErrorMessage(error.message)}",
             )
             throw error
         }
@@ -277,7 +345,7 @@ internal object RetrofitOkHttpHelper {
                 " cver=${request.header("X-Youtube-Client-Version")}" +
                 " visitor=${fingerprint(request.header("X-Goog-Visitor-Id"))}" +
                 " auth=${yn(request.header("Authorization") != null)}" +
-                " cookie=${yn(request.header("Cookie") != null)}",
+                " cookie=${yn(request.header("Cookie") != null)} net=${activeNetworkId()}",
         )
         try {
             val response = chain.proceed(request)
@@ -285,7 +353,7 @@ internal object RetrofitOkHttpHelper {
             android.util.Log.d(
                 "NetPath",
                 "next-http[C] nid=$id video=${body.videoId} code=${response.code}" +
-                    " ms=$elapsed ${responseSummary(response)}",
+                    " ms=$elapsed net=${activeNetworkId()} ${responseSummary(response)}",
             )
             return response
         } catch (error: IOException) {
@@ -293,7 +361,7 @@ internal object RetrofitOkHttpHelper {
             android.util.Log.w(
                 "NetPath",
                 "next-http[E] nid=$id video=${body.videoId} ms=$elapsed " +
-                    "${error.javaClass.simpleName}: ${printable(error.message ?: "", 160)}",
+                    "${error.javaClass.simpleName}: ${safeErrorMessage(error.message)}",
             )
             throw error
         }
@@ -356,6 +424,31 @@ internal object RetrofitOkHttpHelper {
     private fun printable(value: String, max: Int): String {
         val safe = value.replace(Regex("[^\\x20-\\x7E]"), ".")
         return if (safe.length <= max) safe else safe.substring(0, max) + "..."
+    }
+
+    private fun safeErrorMessage(value: String?): String {
+        val withoutUrls = (value ?: "").replace(Regex("https?://\\S+"), "[url]")
+        return printable(withoutUrls, 160)
+    }
+
+    private fun activeNetworkId(): String {
+        return try {
+            val context = AppService.instance().context
+            val manager = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                as? android.net.ConnectivityManager
+            val network = manager?.activeNetwork ?: return "none"
+            val caps = manager.getNetworkCapabilities(network) ?: return "none"
+            val transport = when {
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "cell"
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                else -> "other"
+            }
+            "$transport:${network.hashCode()}"
+        } catch (_: RuntimeException) {
+            "unknown"
+        }
     }
 
     private fun yn(value: Boolean) = if (value) "y" else "n"

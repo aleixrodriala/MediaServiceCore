@@ -1,5 +1,10 @@
 package com.liskovsoft.youtubeapi.videoinfo.V2;
 
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+
 import androidx.annotation.Nullable;
 
 import com.liskovsoft.sharedutils.helpers.Helpers;
@@ -67,6 +72,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // stall TTFF ~20s+ instead of failing over.
     private static final long CLIENT_ATTEMPT_TIMEOUT_MS = 7_000;
     private static final long BOT_CHECK_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(15);
+    /**
+     * A real media 403 from an authenticated TV-family URL is route evidence, not an invitation to
+     * select the same route for every next video. On that SAME Android default network, temporarily
+     * start public playback in the attested Web partition; auth-capable TV clients remain later in
+     * the ring for private/member/age-gated content. Network replacement clears the quarantine by
+     * key mismatch and the short TTL self-heals server-side changes.
+     */
+    private static final long AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(10);
     private static ExecutorService sInfoExecutor;
     // Phone ring trim (NewTube touch flavor): the tail of VIDEO_INFO_TYPE_LIST is four TV-app
     // fallback clients that only earn their keep on TV boxes; on a phone they just lengthen the
@@ -205,6 +218,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private volatile boolean mBotCheckAuthenticatedAttempted;
     @Nullable
     private volatile VideoInfo mBotCheckResult;
+    private volatile long mAuthRouteForbiddenUntilMs;
+    @Nullable
+    private volatile String mAuthRouteForbiddenNetwork;
+    @Nullable
+    private volatile AppClient mAuthRouteForbiddenClient;
     private List<TranslationLanguage> mCachedTranslationLanguages;
     private boolean mIsUnplayable;
 
@@ -305,10 +323,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // recovery ring. Let recovery honor the cursor and Web-family partition; auth headers are
         // still attached automatically if a later auth-capable client is reached.
         final boolean authenticatedRecovery = authenticated && recoveryWalk;
-        final AppClient defaultBegin = authenticated && !authenticatedRecovery
+        final boolean authenticatedWebFirst = authenticated && !authenticatedRecovery
+                && shouldAvoidAuthenticatedRoute();
+        final AppClient defaultBegin = authenticatedWebFirst
+                ? AppClient.WEB_EMBED
+                : authenticated && !authenticatedRecovery
                 ? AppClient.TV
                 : (sPreferNoPotClient ? PREFERRED_FIRST_CLIENT : VIDEO_INFO_TYPE_LIST[0]);
-        final AppClient beginType = authenticated && !authenticatedRecovery
+        final AppClient beginType = authenticatedWebFirst
+                ? AppClient.WEB_EMBED
+                : authenticated && !authenticatedRecovery
                 ? AppClient.TV
                 : (mNextInfoType != null ? mNextInfoType : defaultBegin);
 
@@ -319,8 +343,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
         } else {
             visitOrder = buildRequestVisitOrder(
                     beginType, lastWinner, sPreferAttestedWebFallback,
-                    recoveryWalk, authenticated, sAuthTvSabrOnly);
-            if (authenticated && !recoveryWalk) {
+                    recoveryWalk, authenticated, sAuthTvSabrOnly, authenticatedWebFirst);
+            if (authenticatedWebFirst) {
+                android.util.Log.w("NetPath", "player-ring authenticated-web-first reason=recent-gvs-403"
+                        + " failedClient=" + mAuthRouteForbiddenClient
+                        + " network=" + mAuthRouteForbiddenNetwork);
+            } else if (authenticated && !recoveryWalk) {
                 android.util.Log.d("NetPath", "player-ring authenticated-first=" + visitOrder.get(0));
             } else if (authenticatedRecovery) {
                 android.util.Log.d("NetPath", "player-ring authenticated-recovery first="
@@ -335,6 +363,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         VideoInfo firstUnplayable = null;
         VideoInfo firstLoginRequired = null;
         VideoInfo liveWithoutDash = null;
+        boolean authenticatedClientAttempted = false;
         int attempt = 0;
 
         for (AppClient nextType : visitOrder) {
@@ -348,6 +377,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
             attempt++;
             VideoInfo result = getVideoInfoWithTimeout(nextType, videoId, clickTrackingParams);
+            if (authenticated && nextType.isAuthSupported()) {
+                authenticatedClientAttempted = true;
+            }
             boolean playable = result != null && !result.isUnplayable();
             logPlayerOutcome(videoId, nextType, attempt, result);
 
@@ -371,10 +403,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
                                 result.getRawPlayabilityStatus(),
                                 result.getPlayabilityStatus());
                 if (result.isBotCheckRequired() || repeatedLoginRequired) {
-                    tripBotCheckCircuit(result, nextType,
-                            result.isBotCheckRequired() ? "explicit" : "repeated-login",
-                            authenticated);
-                    return result;
+                    // A quarantined public route deliberately tries anonymous Web before the
+                    // account-bearing fallback. Do not let two Web LOGIN_REQUIRED/challenge
+                    // verdicts prevent the later TV client from serving auth-only content.
+                    if (authenticated && !authenticatedClientAttempted) {
+                        android.util.Log.d("NetPath", "bot-check defer-until-auth-client client="
+                                + nextType + " signal="
+                                + (result.isBotCheckRequired() ? "explicit" : "repeated-login"));
+                    } else {
+                        tripBotCheckCircuit(result, nextType,
+                                result.isBotCheckRequired() ? "explicit" : "repeated-login",
+                                authenticated);
+                        return result;
+                    }
                 }
                 if (firstLoginRequired == null && result.isLoginRequired()) {
                     firstLoginRequired = result;
@@ -481,13 +522,88 @@ public class VideoInfoService extends VideoInfoServiceBase {
     static List<AppClient> buildRequestVisitOrder(AppClient beginType,
             @Nullable AppClient lastWinner, boolean preferWebFamily, boolean recoveryWalk,
             boolean authenticated, boolean authTvSabrOnly) {
+        return buildRequestVisitOrder(beginType, lastWinner, preferWebFamily, recoveryWalk,
+                authenticated, authTvSabrOnly, false);
+    }
+
+    static List<AppClient> buildRequestVisitOrder(AppClient beginType,
+            @Nullable AppClient lastWinner, boolean preferWebFamily, boolean recoveryWalk,
+            boolean authenticated, boolean authTvSabrOnly, boolean authenticatedWebFirst) {
         List<AppClient> order = buildVisitOrder(
                 beginType, lastWinner,
-                preferWebFamily && (!authenticated || recoveryWalk),
+                preferWebFamily && (!authenticated || recoveryWalk || authenticatedWebFirst),
                 recoveryWalk);
-        return authenticated && !recoveryWalk
+        return authenticated && !recoveryWalk && !authenticatedWebFirst
                 ? promoteAuthenticatedTvFallback(order, authTvSabrOnly)
                 : order;
+    }
+
+    /**
+     * Called only after the player surfaced an actual HTTP 403. It remembers a failed
+     * account-bearing route against the current Android default network, without persisting it
+     * across processes or leaking any network identifiers beyond the in-memory framework hash.
+     */
+    public void markCurrentPlaybackRouteForbidden() {
+        AppClient failedClient = mActualInfoType;
+        if (!hasAuthentication() || failedClient == null || !failedClient.isAuthSupported()) {
+            return;
+        }
+        String network = activeNetworkKey();
+        if (network == null) {
+            return;
+        }
+        mAuthRouteForbiddenClient = failedClient;
+        mAuthRouteForbiddenNetwork = network;
+        mAuthRouteForbiddenUntilMs =
+                android.os.SystemClock.elapsedRealtime() + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS;
+        android.util.Log.w("NetPath", "player-ring quarantine-auth-route client=" + failedClient
+                + " network=" + network + " cooldownMs=" + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS);
+    }
+
+    private boolean shouldAvoidAuthenticatedRoute() {
+        long remainingMs =
+                mAuthRouteForbiddenUntilMs - android.os.SystemClock.elapsedRealtime();
+        if (remainingMs <= 0) {
+            clearAuthenticatedRouteQuarantine();
+            return false;
+        }
+        String currentNetwork = activeNetworkKey();
+        if (currentNetwork == null || !currentNetwork.equals(mAuthRouteForbiddenNetwork)) {
+            android.util.Log.d("NetPath", "player-ring clear-auth-route-quarantine reason=network-change"
+                    + " old=" + mAuthRouteForbiddenNetwork + " new=" + currentNetwork);
+            clearAuthenticatedRouteQuarantine();
+            return false;
+        }
+        return true;
+    }
+
+    private void clearAuthenticatedRouteQuarantine() {
+        mAuthRouteForbiddenUntilMs = 0;
+        mAuthRouteForbiddenNetwork = null;
+        mAuthRouteForbiddenClient = null;
+    }
+
+    @Nullable
+    private static String activeNetworkKey() {
+        try {
+            Context context = AppService.instance().getContext();
+            ConnectivityManager manager = (ConnectivityManager)
+                    context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            Network network = manager != null ? manager.getActiveNetwork() : null;
+            NetworkCapabilities caps = network != null
+                    ? manager.getNetworkCapabilities(network) : null;
+            if (network == null || caps == null) {
+                return null;
+            }
+            String transport = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ? "vpn"
+                    : caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "wifi"
+                    : caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ? "cell"
+                    : caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ? "ethernet"
+                    : "other";
+            return transport + ':' + network.hashCode();
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private static boolean hasAuthentication() {
