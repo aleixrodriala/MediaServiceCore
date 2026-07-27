@@ -24,6 +24,12 @@ internal object PoTokenGate {
     private var mWebPoToken: PoTokenResult? = null
     private var mWebPoTokenCreatedAtMs: Long = -1
     private var mCacheResetTimeMs: Long = -1
+    private var mVisitorRotationAllowedAtMs: Long = -1
+    /**
+     * Rotating tears down and rebuilds the BotGuard WebView (~1s) and throws away a warm token
+     * session, so it must stay rare. One rotation per challenge cooldown window is the intent.
+     */
+    private const val VISITOR_ROTATION_MIN_INTERVAL_MS = 15 * 60_000L
 
     init {
         PoTokenProviderImpl.poTokenFactory = selectFactory()
@@ -134,6 +140,41 @@ internal object PoTokenGate {
     @JvmStatic
     fun resetCache() {
         resetWebCache()
+    }
+
+    /**
+     * Abandons the current anonymous Web identity and forces the next web-pot session to mint a
+     * fresh visitor. Called when the /player ring has seen the anonymous partition answer with bot
+     * challenges: a plain [resetCache] only re-mints a token for the SAME persistent visitor, which
+     * is the identity being challenged, so it can never clear the challenge on its own.
+     *
+     * Rate-limited to [VISITOR_ROTATION_MIN_INTERVAL_MS] and deliberately independent of
+     * [resetWebCache]'s own 60s throttle. Returns true if a rotation was armed.
+     *
+     * Cost of rotating: a signed-out session's watch-time pings for subsequent videos credit the
+     * new visitor, so signed-out history continuity breaks at this point. That is a strictly better
+     * outcome than the alternative at the moment it fires, which is that nothing plays at all.
+     * Browse/Home personalization is unaffected -- that rides AppService.visitorData, not this one.
+     */
+    @JvmStatic
+    fun rotateWebVisitor(): Boolean {
+        if (!PoTokenProviderImpl.isWebPotSupported) {
+            return false
+        }
+
+        val nowMs = SystemClock.elapsedRealtime()
+        if (mVisitorRotationAllowedAtMs >= 0 && nowMs < mVisitorRotationAllowedAtMs) {
+            return false
+        }
+        mVisitorRotationAllowedAtMs = nowMs + VISITOR_ROTATION_MIN_INTERVAL_MS
+
+        Log.d(TAG, "Rotating the anonymous web visitor identity")
+        PoTokenProviderImpl.requestFreshVisitor()
+        mWebPoToken = null
+        mWebPoTokenCreatedAtMs = -1
+        PoTokenProviderImpl.resetCache()
+
+        return true
     }
 
     fun getWebVisitorData(): String? {

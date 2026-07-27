@@ -73,13 +73,37 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private static final long CLIENT_ATTEMPT_TIMEOUT_MS = 7_000;
     private static final long BOT_CHECK_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(15);
     /**
+     * Signed-in probe head, most-likely-to-work first. yt-dlp's {@code _DEFAULT_AUTHED_CLIENTS} is
+     * {@code ('tv_downgraded', 'web')} — plain {@code tv} appears in NO default client list — and
+     * the 2026-07-27 Pixel-9 round measured why: TVHTML5 7.x (TV) is handed googlevideo URLs that
+     * 403 every chunk once ~60s of media has been served (a soak caught it at {@code pos=59994}),
+     * while TVHTML5 5.x (TV_DOWNGRADED) played the same video, same session, same network for
+     * minutes with zero 403s. Leading with TV therefore guaranteed a mid-playback break on every
+     * video watched longer than a minute.
+     */
+    private static final AppClient[] AUTHENTICATED_HEAD = {
+            AppClient.TV_DOWNGRADED, AppClient.TV
+    };
+    /**
      * A real media 403 from an authenticated TV-family URL is route evidence, not an invitation to
-     * select the same route for every next video. On that SAME Android default network, temporarily
-     * start public playback in the attested Web partition; auth-capable TV clients remain later in
-     * the ring for private/member/age-gated content. Network replacement clears the quarantine by
-     * key mismatch and the short TTL self-heals server-side changes.
+     * select the same route for every next video. Held per client on that SAME Android default
+     * network: the quarantined client is demoted behind its account-bearing sibling, and only when
+     * EVERY client in {@link #AUTHENTICATED_HEAD} is quarantined does the walk give up on the
+     * account and lead with the attested Web partition. Network replacement clears the quarantine
+     * by key mismatch and the short TTL self-heals server-side changes.
      */
     private static final long AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(10);
+    /**
+     * How long the anonymous partition stays deprioritized after it answers with bot challenges.
+     * Matches {@link #BOT_CHECK_COOLDOWN_MS} — same underlying guest-session restriction.
+     */
+    private static final long ANON_CHALLENGE_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(15);
+    /**
+     * Two challenged anonymous clients inside ONE walk is the signal. A single LOGIN_REQUIRED can
+     * be a genuine per-video gate; two different anonymous identities rejected back to back means
+     * the guest session/IP itself is challenged, not the video.
+     */
+    private static final int ANON_CHALLENGE_MIN_HITS = 2;
     private static volatile ExecutorService sInfoExecutor;
     // Phone ring trim (NewTube touch flavor): the tail of VIDEO_INFO_TYPE_LIST is four TV-app
     // fallback clients that only earn their keep on TV boxes; on a phone they just lengthen the
@@ -103,13 +127,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // upstream compatibility, and TV never enables this behavior.
     private static volatile boolean sPreferAttestedWebFallback;
     // Learned per-process: an authenticated TV /player response was SABR-only (every adaptive
-    // format broken + serverAbrStreamingUrl present), so the account-bearing route is really
-    // TV_DOWNGRADED and probing TV first burns one doomed /player (~0.5s) on EVERY signed-in open,
-    // preloads and session warmup included (Pixel-9 measured 4/4 opens). While set, the happy-path
-    // head swaps to TV_DOWNGRADED-then-TV; recovery walks are unaffected. Deliberately NOT
-    // persisted: the first signed-in open of each process (normally the app-start session warmup,
-    // off the user path) re-probes TV, and a playable TV response clears the flag — so the ring
-    // self-heals if TV starts serving plain formats again.
+    // format broken + serverAbrStreamingUrl present). This NO LONGER drives ordering — TV_DOWNGRADED
+    // is now unconditionally the signed-in head (see AUTHENTICATED_HEAD), which subsumes the swap
+    // this flag used to perform. Kept purely as an observation logged once per transition, because
+    // "TV went SABR-only" is a useful marker when reading a session's NetPath trace.
     private static volatile boolean sAuthTvSabrOnly;
     // See setSkipStoryboardEnrichment.
     private static volatile boolean sSkipStoryboardEnrichment;
@@ -218,11 +239,20 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private volatile boolean mBotCheckAuthenticatedAttempted;
     @Nullable
     private volatile VideoInfo mBotCheckResult;
-    private volatile long mAuthRouteForbiddenUntilMs;
+    // 403-quarantine of account-bearing routes, held PER CLIENT and scoped to one network. Per
+    // client because the two TVHTML5 variants fail independently: TV (TVHTML5 7.x) hands out
+    // googlevideo URLs that 403 every chunk past the pot-less ~60s mark, while TV_DOWNGRADED
+    // (TVHTML5 5.x) keeps serving the same video on the same session. Quarantining "the
+    // authenticated route" as a whole threw away the client that actually works.
+    private final java.util.Map<AppClient, Long> mAuthRouteForbiddenUntilMs =
+            new java.util.concurrent.ConcurrentHashMap<>();
     @Nullable
     private volatile String mAuthRouteForbiddenNetwork;
+    // Per-network memory that the ANONYMOUS partition is under a bot challenge (see
+    // noteAnonymousChallenge). While set, web-pot clients are probed after everything else.
+    private volatile long mAnonChallengeUntilMs;
     @Nullable
-    private volatile AppClient mAuthRouteForbiddenClient;
+    private volatile String mAnonChallengeNetwork;
     private List<TranslationLanguage> mCachedTranslationLanguages;
     private boolean mIsUnplayable;
 
@@ -379,17 +409,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // recovery ring. Let recovery honor the cursor and Web-family partition; auth headers are
         // still attached automatically if a later auth-capable client is reached.
         final boolean authenticatedRecovery = authenticated && recoveryWalk;
+        final java.util.Set<AppClient> forbiddenAuthClients = forbiddenAuthClients();
+        // Only a FULLY quarantined account head hands the walk to the anonymous partition. A single
+        // 403 (in practice always TV's ~60s pot-less expiry) used to send every open for the next
+        // 10 minutes straight into anonymous Web — six guaranteed-dead round trips per open on a
+        // bot-challenged network, while the sibling TV_DOWNGRADED route was healthy the whole time.
         final boolean authenticatedWebFirst = authenticated && !authenticatedRecovery
-                && shouldAvoidAuthenticatedRoute();
-        final AppClient defaultBegin = authenticatedWebFirst
+                && forbiddenAuthClients.size() >= AUTHENTICATED_HEAD.length;
+        final boolean anonChallenged = isAnonPartitionChallenged();
+        final AppClient authBegin = authenticatedWebFirst
                 ? AppClient.WEB_EMBED
-                : authenticated && !authenticatedRecovery
-                ? AppClient.TV
+                : AUTHENTICATED_HEAD[0];
+        final AppClient defaultBegin = authenticated && !authenticatedRecovery
+                ? authBegin
                 : (sPreferNoPotClient ? PREFERRED_FIRST_CLIENT : VIDEO_INFO_TYPE_LIST[0]);
-        final AppClient beginType = authenticatedWebFirst
-                ? AppClient.WEB_EMBED
-                : authenticated && !authenticatedRecovery
-                ? AppClient.TV
+        final AppClient beginType = authenticated && !authenticatedRecovery
+                ? authBegin
                 : (mNextInfoType != null ? mNextInfoType : defaultBegin);
 
         java.util.List<AppClient> visitOrder;
@@ -399,11 +434,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
         } else {
             visitOrder = buildRequestVisitOrder(
                     beginType, lastWinner, sPreferAttestedWebFallback,
-                    recoveryWalk, authenticated, sAuthTvSabrOnly, authenticatedWebFirst);
+                    recoveryWalk, authenticated, forbiddenAuthClients, authenticatedWebFirst,
+                    anonChallenged);
+            if (anonChallenged) {
+                android.util.Log.d("NetPath", "player-ring anon-deprioritized network="
+                        + mAnonChallengeNetwork + " first=" + visitOrder.get(0));
+            }
             if (authenticatedWebFirst) {
                 android.util.Log.w("NetPath", "player-ring authenticated-web-first reason=recent-gvs-403"
-                        + " failedClient=" + mAuthRouteForbiddenClient
+                        + " failedClients=" + forbiddenAuthClients
                         + " network=" + mAuthRouteForbiddenNetwork);
+            } else if (authenticated && !recoveryWalk && !forbiddenAuthClients.isEmpty()) {
+                android.util.Log.d("NetPath", "player-ring authenticated-first=" + visitOrder.get(0)
+                        + " demoted=" + forbiddenAuthClients);
             } else if (authenticated && !recoveryWalk) {
                 android.util.Log.d("NetPath", "player-ring authenticated-first=" + visitOrder.get(0));
             } else if (authenticatedRecovery) {
@@ -420,6 +463,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         VideoInfo firstLoginRequired = null;
         VideoInfo liveWithoutDash = null;
         boolean authenticatedClientAttempted = false;
+        int anonChallengeHits = 0;
         int attempt = 0;
 
         for (AppClient nextType : visitOrder) {
@@ -447,8 +491,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
             boolean playable = result != null && !result.isUnplayable();
             logPlayerOutcome(videoId, nextType, attempt, result);
 
-            // Session learning for the signed-in head order (see sAuthTvSabrOnly). Only the exact
-            // SABR-only signature counts — an age/geo-restricted TV verdict must not flip the ring.
+            // Diagnostic only (see sAuthTvSabrOnly). Only the exact SABR-only signature counts —
+            // an age/geo-restricted TV verdict must not be reported as "TV is SABR-only".
             if (authenticated && nextType == AppClient.TV && result != null) {
                 boolean sabrOnly = !playable && result.getServerAbrStreamingUrl() != null
                         && result.isAdaptiveFormatsBroken();
@@ -467,6 +511,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
                                 result.getRawPlayabilityStatus(),
                                 result.getPlayabilityStatus());
                 if (result.isBotCheckRequired() || repeatedLoginRequired) {
+                    // A challenge answered to a request that carried no account is evidence about
+                    // the ANONYMOUS identity, not about this video. Count it so the walk can learn
+                    // to stop leading with a partition the network is currently rejecting.
+                    if (!result.isAuth()) {
+                        noteAnonymousChallenge(++anonChallengeHits);
+                    }
                     // A quarantined public route deliberately tries anonymous Web before the
                     // account-bearing fallback. Do not let two Web LOGIN_REQUIRED/challenge
                     // verdicts prevent the later TV client from serving auth-only content.
@@ -495,6 +545,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
 
             if (playable) {
+                // The anonymous partition just served a video, so whatever guest challenge was
+                // remembered has lifted. Drop it immediately rather than sitting out the TTL.
+                if (nextType.isWebPotRequired() && !result.isAuth()) {
+                    clearAnonChallenge("anon-served");
+                }
                 // Mobile live routing (see sPreferDashManifestForLive): hold an HLS-only live
                 // result and keep walking toward a dash-manifest client.
                 if (sPreferDashManifestForLive && result.isLive() && result.getDashManifestUrl() == null) {
@@ -561,22 +616,55 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
-     * A current authenticated TV response can be SABR-only. yt-dlp keeps an authenticated
-     * downgraded TV identity for this case; try that single account-bearing fallback before any
-     * anonymous Web client that may be under a guest/IP bot challenge. Once a SABR-only TV
-     * response has been observed this session ({@code tvSabrOnly}), the two swap so the known
-     * winner is probed first and TV keeps exactly one re-probe slot per failover walk.
+     * Puts the account-bearing head ({@link #AUTHENTICATED_HEAD}) in front of the rest of the ring.
+     * A head client currently 403-quarantined on this network is DEMOTED to the back of the head
+     * rather than dropped: a quarantined account route is still a better bet than an anonymous
+     * client that cannot carry the account at all, and if it 403s again it simply re-quarantines.
+     * Kept pure so the ordering can be unit-tested without network calls.
      */
-    static List<AppClient> promoteAuthenticatedTvFallback(List<AppClient> rawOrder, boolean tvSabrOnly) {
-        java.util.List<AppClient> result = new java.util.ArrayList<>(rawOrder.size());
-        result.add(tvSabrOnly ? AppClient.TV_DOWNGRADED : AppClient.TV);
-        result.add(tvSabrOnly ? AppClient.TV : AppClient.TV_DOWNGRADED);
+    static List<AppClient> promoteAuthenticatedTvFallback(List<AppClient> rawOrder,
+            @Nullable java.util.Set<AppClient> forbidden) {
+        java.util.List<AppClient> head = new java.util.ArrayList<>(AUTHENTICATED_HEAD.length);
+        java.util.List<AppClient> demoted = new java.util.ArrayList<>(AUTHENTICATED_HEAD.length);
+        for (AppClient client : AUTHENTICATED_HEAD) {
+            if (forbidden != null && forbidden.contains(client)) {
+                demoted.add(client);
+            } else {
+                head.add(client);
+            }
+        }
+
+        java.util.List<AppClient> result =
+                new java.util.ArrayList<>(rawOrder.size() + AUTHENTICATED_HEAD.length);
+        result.addAll(head);
+        result.addAll(demoted);
         for (AppClient client : rawOrder) {
-            if (client != AppClient.TV && client != AppClient.TV_DOWNGRADED) {
+            if (!Helpers.equalsAny(client, (Object[]) AUTHENTICATED_HEAD)) {
                 result.add(client);
             }
         }
         return result;
+    }
+
+    /**
+     * While the anonymous partition is bot-challenged on this network every web-pot probe is a
+     * guaranteed-dead round trip (42/42 measured on Telefonica cellular, 2026-07-27). Keep those
+     * clients in the ring — the challenge expires, and some videos only a Web client can serve —
+     * but stable-move them behind every client that might still answer. Stable so the relative
+     * order inside each partition (and therefore ring memory) is untouched.
+     */
+    static List<AppClient> deprioritizeWebPotClients(List<AppClient> order) {
+        java.util.List<AppClient> rest = new java.util.ArrayList<>(order.size());
+        java.util.List<AppClient> webPot = new java.util.ArrayList<>();
+        for (AppClient client : order) {
+            if (client.isWebPotRequired()) {
+                webPot.add(client);
+            } else {
+                rest.add(client);
+            }
+        }
+        rest.addAll(webPot);
+        return rest;
     }
 
     /**
@@ -585,21 +673,26 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     static List<AppClient> buildRequestVisitOrder(AppClient beginType,
             @Nullable AppClient lastWinner, boolean preferWebFamily, boolean recoveryWalk,
-            boolean authenticated, boolean authTvSabrOnly) {
+            boolean authenticated, @Nullable java.util.Set<AppClient> forbiddenAuthClients) {
         return buildRequestVisitOrder(beginType, lastWinner, preferWebFamily, recoveryWalk,
-                authenticated, authTvSabrOnly, false);
+                authenticated, forbiddenAuthClients, false, false);
     }
 
     static List<AppClient> buildRequestVisitOrder(AppClient beginType,
             @Nullable AppClient lastWinner, boolean preferWebFamily, boolean recoveryWalk,
-            boolean authenticated, boolean authTvSabrOnly, boolean authenticatedWebFirst) {
+            boolean authenticated, @Nullable java.util.Set<AppClient> forbiddenAuthClients,
+            boolean authenticatedWebFirst, boolean anonChallenged) {
         List<AppClient> order = buildVisitOrder(
                 beginType, lastWinner,
                 preferWebFamily && (!authenticated || recoveryWalk || authenticatedWebFirst),
                 recoveryWalk);
-        return authenticated && !recoveryWalk && !authenticatedWebFirst
-                ? promoteAuthenticatedTvFallback(order, authTvSabrOnly)
-                : order;
+        if (authenticated && !recoveryWalk && !authenticatedWebFirst) {
+            order = promoteAuthenticatedTvFallback(order, forbiddenAuthClients);
+        }
+        // Applied LAST, so it also overrides an attested-web-first or authenticated-web-first
+        // preference: if the account head is exhausted AND the guest identity is challenged, the
+        // non-web platform clients are all that is left worth spending a round trip on.
+        return anonChallenged ? deprioritizeWebPotClients(order) : order;
     }
 
     /**
@@ -616,35 +709,104 @@ public class VideoInfoService extends VideoInfoServiceBase {
         if (network == null) {
             return;
         }
-        mAuthRouteForbiddenClient = failedClient;
-        mAuthRouteForbiddenNetwork = network;
-        mAuthRouteForbiddenUntilMs =
-                android.os.SystemClock.elapsedRealtime() + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS;
+        // A quarantine only means anything against the network it was observed on; moving networks
+        // starts a clean slate rather than carrying a stale verdict across.
+        if (!network.equals(mAuthRouteForbiddenNetwork)) {
+            mAuthRouteForbiddenUntilMs.clear();
+            mAuthRouteForbiddenNetwork = network;
+        }
+        mAuthRouteForbiddenUntilMs.put(failedClient,
+                android.os.SystemClock.elapsedRealtime() + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS);
         android.util.Log.w("NetPath", "player-ring quarantine-auth-route client=" + failedClient
-                + " network=" + network + " cooldownMs=" + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS);
+                + " network=" + network + " cooldownMs=" + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS
+                + " quarantined=" + mAuthRouteForbiddenUntilMs.size()
+                + "/" + AUTHENTICATED_HEAD.length);
     }
 
-    private boolean shouldAvoidAuthenticatedRoute() {
-        long remainingMs =
-                mAuthRouteForbiddenUntilMs - android.os.SystemClock.elapsedRealtime();
-        if (remainingMs <= 0) {
-            clearAuthenticatedRouteQuarantine();
-            return false;
+    /**
+     * Account-bearing clients currently 403-quarantined on the ACTIVE network. Never null; expired
+     * entries are dropped as they are seen, and a network change wipes the whole set.
+     */
+    private java.util.Set<AppClient> forbiddenAuthClients() {
+        if (mAuthRouteForbiddenUntilMs.isEmpty()) {
+            return java.util.Collections.emptySet();
         }
+
         String currentNetwork = activeNetworkKey();
         if (currentNetwork == null || !currentNetwork.equals(mAuthRouteForbiddenNetwork)) {
             android.util.Log.d("NetPath", "player-ring clear-auth-route-quarantine reason=network-change"
                     + " old=" + mAuthRouteForbiddenNetwork + " new=" + currentNetwork);
             clearAuthenticatedRouteQuarantine();
+            return java.util.Collections.emptySet();
+        }
+
+        long now = android.os.SystemClock.elapsedRealtime();
+        java.util.Set<AppClient> result = new java.util.HashSet<>();
+        for (java.util.Map.Entry<AppClient, Long> entry : mAuthRouteForbiddenUntilMs.entrySet()) {
+            if (entry.getValue() - now > 0) {
+                result.add(entry.getKey());
+            } else {
+                mAuthRouteForbiddenUntilMs.remove(entry.getKey());
+            }
+        }
+        return result;
+    }
+
+    private void clearAuthenticatedRouteQuarantine() {
+        mAuthRouteForbiddenUntilMs.clear();
+        mAuthRouteForbiddenNetwork = null;
+    }
+
+    /**
+     * Records that an anonymous /player attempt came back bot-challenged. Only fires once
+     * {@link #ANON_CHALLENGE_MIN_HITS} different anonymous identities have been rejected inside the
+     * same walk, so a genuine single-video login gate cannot deprioritize the whole partition.
+     */
+    private void noteAnonymousChallenge(int hits) {
+        if (hits < ANON_CHALLENGE_MIN_HITS) {
+            return;
+        }
+
+        String network = activeNetworkKey();
+        if (network == null) {
+            return;
+        }
+
+        long now = android.os.SystemClock.elapsedRealtime();
+        boolean fresh = !network.equals(mAnonChallengeNetwork) || mAnonChallengeUntilMs - now <= 0;
+        mAnonChallengeNetwork = network;
+        mAnonChallengeUntilMs = now + ANON_CHALLENGE_COOLDOWN_MS;
+        if (fresh) {
+            // The challenged guest identity is the app's own long-lived visitor, and re-minting a
+            // pot for it changes nothing (measured: every rejected call already carried a valid
+            // pot). Abandoning the identity is the only lever the client actually has.
+            boolean rotated = PoTokenGate.rotateWebVisitor();
+            android.util.Log.w("NetPath", "player-ring anon-challenged network=" + network
+                    + " hits=" + hits + " cooldownMs=" + ANON_CHALLENGE_COOLDOWN_MS
+                    + " visitorRotated=" + (rotated ? "y" : "n"));
+        }
+    }
+
+    private boolean isAnonPartitionChallenged() {
+        if (mAnonChallengeUntilMs - android.os.SystemClock.elapsedRealtime() <= 0) {
+            return false;
+        }
+
+        String currentNetwork = activeNetworkKey();
+        if (currentNetwork == null || !currentNetwork.equals(mAnonChallengeNetwork)) {
+            clearAnonChallenge("network-change");
             return false;
         }
         return true;
     }
 
-    private void clearAuthenticatedRouteQuarantine() {
-        mAuthRouteForbiddenUntilMs = 0;
-        mAuthRouteForbiddenNetwork = null;
-        mAuthRouteForbiddenClient = null;
+    private void clearAnonChallenge(String reason) {
+        if (mAnonChallengeNetwork == null && mAnonChallengeUntilMs == 0) {
+            return;
+        }
+        android.util.Log.d("NetPath", "player-ring clear-anon-challenge reason=" + reason);
+        mAnonChallengeUntilMs = 0;
+        mAnonChallengeNetwork = null;
     }
 
     @Nullable

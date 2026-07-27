@@ -58,10 +58,19 @@ object DefaultHeaders {
     // Throttling! Probably, because of Chrome engine checks.
     //private const val USER_AGENT_CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36"
     private const val USER_AGENT_CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    // NEWTUBE(client-freshness): a years-old Chrome build is a cheap bot signal. yt-dlp targets
+    // "released within the last ~6 months" (random_user_agent: Chrome 144-150 as of 2026-07);
+    // 147 sits mid-range. The mobile form uses Chrome's reduced UA ("Android 10; K"), which is what
+    // real Chrome sends now -- a device-specific mobile UA is itself anomalous today.
+    private const val USER_AGENT_CHROME_CURRENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
     private const val USER_AGENT_MOBILE_CHROME_1 = "Mozilla/5.0 (Linux; Android 7.1.2; Redmi 4A) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.86 Mobile Safari/537.36"
     private const val USER_AGENT_MOBILE_CHROME_2 = "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36"
+    private const val USER_AGENT_MOBILE_CHROME_CURRENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36"
     private const val USER_AGENT_ANDROID_19 = "com.google.android.youtube/19.28.35 (Linux; U; Android 15; GB) gzip"
     private const val USER_AGENT_ANDROID_20 = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
+    // Must stay in step with CLIENTS.ANDROID.VERSION -- AppClient.ANDROID takes clientVersion from
+    // there and the UA from here, so a drift between the two contradicts itself on the wire.
+    private const val USER_AGENT_ANDROID_21 = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip"
     private const val USER_AGENT_IOS_1 = "com.google.ios.youtube/17.33.2 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)"
     private const val USER_AGENT_IOS_2 = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)"
     const val USER_AGENT_SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"
@@ -70,9 +79,9 @@ object DefaultHeaders {
     //const val USER_AGENT_TV = USER_AGENT_SAMSUNG_3 // no buffering (only 320x180 thumbs)
     //const val USER_AGENT_TV = USER_AGENT_ATV_COMBINED // buffering badly even with protobuf params (see videoinfo)
     const val USER_AGENT_TV = USER_AGENT_FIRE_TV // buffering?
-    const val USER_AGENT_WEB = USER_AGENT_CHROME
-    const val USER_AGENT_MOBILE_WEB = USER_AGENT_MOBILE_CHROME_2
-    const val USER_AGENT_ANDROID = USER_AGENT_ANDROID_20
+    const val USER_AGENT_WEB = USER_AGENT_CHROME_CURRENT
+    const val USER_AGENT_MOBILE_WEB = USER_AGENT_MOBILE_CHROME_CURRENT
+    const val USER_AGENT_ANDROID = USER_AGENT_ANDROID_21
     const val USER_AGENT_IOS = USER_AGENT_IOS_2
 
     @JvmField

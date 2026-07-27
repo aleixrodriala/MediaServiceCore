@@ -26,7 +26,21 @@ internal object PoTokenProviderImpl : PoTokenProvider {
     private var webPoTokenGenerator: PoTokenGenerator? = null
     
     var poTokenFactory: PoTokenGenerator.Factory? = null
-    
+
+    // NEWTUBE(visitor-rotation): armed by PoTokenGate.rotateWebVisitor when the /player ring has
+    // seen the anonymous partition answer with bot challenges. The next generator recreate then
+    // mints a FRESH visitor instead of reusing the app's persistent one, because that persistent
+    // identity is precisely what YouTube is challenging (2026-07-27 Pixel-9 round: 42/42 anonymous
+    // /player calls rejected, all carrying the same visitor and a VALID BotGuard pot -- so the pot
+    // was never the problem, the identity was). Deliberately scoped to this web-pot session:
+    // AppService.visitorData keeps driving browse/Home personalization untouched.
+    @Volatile
+    private var forceFreshVisitor = false
+
+    fun requestFreshVisitor() {
+        forceFreshVisitor = true
+    }
+
     override fun getWebClientPoToken(videoId: String): PoTokenResult? {
         if (!isWebPotSupported) {
             return null
@@ -71,7 +85,16 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                     // share ONE visitor (the deep-range-403 invariant from the Pixel round -
                     // see PoTokenGate.getWebVisitorDataForPlayer). Fallback keeps the old
                     // behavior when AppInfo hasn't produced a visitor yet.
-                    webPoTokenVisitorData = AppService.instance().visitorData ?: VisitorService.getVisitorData()
+                    // Rotation inverts the preference for exactly one recreate: mint a brand new
+                    // visitor and only fall back to the persistent one if minting fails, so a
+                    // challenged identity is genuinely left behind rather than re-adopted.
+                    webPoTokenVisitorData = if (forceFreshVisitor) {
+                        forceFreshVisitor = false
+                        Log.d(TAG, "Rotating web visitor after a bot challenge")
+                        VisitorService.getVisitorData() ?: AppService.instance().visitorData
+                    } else {
+                        AppService.instance().visitorData ?: VisitorService.getVisitorData()
+                    }
 
                     val latch = if (webPoTokenGenerator != null) CountDownLatch(1) else null
 
