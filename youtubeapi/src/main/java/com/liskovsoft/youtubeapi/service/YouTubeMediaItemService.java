@@ -20,6 +20,7 @@ import com.liskovsoft.youtubeapi.actions.ActionsService;
 import com.liskovsoft.youtubeapi.actions.ActionsServiceWrapper;
 import com.liskovsoft.youtubeapi.block.SponsorBlockService;
 import com.liskovsoft.youtubeapi.block.data.SegmentList;
+import com.liskovsoft.youtubeapi.common.helpers.MediaHostPreconnect;
 import com.liskovsoft.youtubeapi.common.models.impl.mediaitem.BaseMediaItem;
 import com.liskovsoft.youtubeapi.dearrow.DeArrowService;
 import com.liskovsoft.youtubeapi.feedback.FeedbackService;
@@ -39,20 +40,11 @@ import io.reactivex.rxjava3.core.Observable;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import android.net.Uri;
 
 import com.liskovsoft.mediaserviceinterfaces.data.MediaFormat;
-import com.liskovsoft.sharedutils.cronet.CronetManager;
-import com.liskovsoft.sharedutils.prefs.GlobalPreferences;
 
-import org.chromium.net.CronetEngine;
-import org.chromium.net.CronetException;
-import org.chromium.net.UrlRequest;
-import org.chromium.net.UrlResponseInfo;
 
 public class YouTubeMediaItemService implements MediaItemService {
     private static final String TAG = YouTubeMediaItemService.class.getSimpleName();
@@ -149,56 +141,20 @@ public class YouTubeMediaItemService implements MediaItemService {
         sSingleFlightEnabled = enabled;
     }
 
-    // Mobile TTFF: the instant format info arrives (usually while the player Activity is still
-    // inflating / building the DASH manifest), open a throwaway request to the per-video
-    // googlevideo host through the SAME singleton Cronet engine ExoPlayer's CronetDataSourceFactory
-    // wraps. Cronet pools QUIC/H2 sessions per host inside the engine, so the DNS + TLS/QUIC
-    // handshake is already done when the first real media request goes out. Best-effort: any
-    // failure is swallowed. Off by default -> TV path unchanged.
-    private static boolean sPreconnectMediaHost;
-    private static volatile String sLastWarmedHost;
-    private static ExecutorService sPreconnectExecutor;
-
+    /**
+     * Mobile TTFF: warm the per-video googlevideo host so the first media chunk does not pay a
+     * TLS/QUIC handshake. Mechanics and the timing rationale live in {@link MediaHostPreconnect},
+     * which is also called earlier - straight off the parsed /player response, before the
+     * signature transform - because warming only at this point left the handshake unfinished when
+     * the first init segment went out. Off by default, so the TV path is unchanged.
+     */
     public static void setPreconnectMediaHost(boolean enabled) {
-        sPreconnectMediaHost = enabled;
+        MediaHostPreconnect.setEnabled(enabled);
     }
 
     private static void preconnectMediaHost(MediaItemFormatInfo formatInfo) {
-        if (!sPreconnectMediaHost || formatInfo == null) {
-            return;
-        }
-
-        try {
-            String url = firstStreamUrl(formatInfo);
-            String host = url != null ? Uri.parse(url).getHost() : null;
-            if (host == null || host.equals(sLastWarmedHost)) {
-                return; // nothing to warm, or the session to this host is already warm
-            }
-
-            if (!GlobalPreferences.isInitialized()) {
-                return;
-            }
-
-            CronetEngine engine = CronetManager.getEngine(GlobalPreferences.sInstance.getContext());
-            if (engine == null) {
-                return;
-            }
-
-            if (sPreconnectExecutor == null) {
-                sPreconnectExecutor = Executors.newSingleThreadExecutor(r -> {
-                    Thread t = new Thread(r, "MediaHostPreconnect");
-                    t.setDaemon(true);
-                    return t;
-                });
-            }
-
-            sLastWarmedHost = host;
-            UrlRequest request = engine.newUrlRequestBuilder(
-                    "https://" + host + "/generate_204", new NoopUrlCallback(host), sPreconnectExecutor).build();
-            request.start();
-            Log.d(TAG, "preconnecting media host: %s", host);
-        } catch (Throwable e) {
-            Log.d(TAG, "media host preconnect skipped: %s", e.getMessage());
+        if (formatInfo != null) {
+            MediaHostPreconnect.warmUrl(firstStreamUrl(formatInfo));
         }
     }
 
@@ -215,44 +171,6 @@ public class YouTubeMediaItemService implements MediaItemService {
             return regular.get(0).getUrl();
         }
         return formatInfo.getDashManifestUrl();
-    }
-
-    private static class NoopUrlCallback extends UrlRequest.Callback {
-        private final String mHost;
-        private final long mStartMs = android.os.SystemClock.elapsedRealtime();
-
-        NoopUrlCallback(String host) {
-            mHost = host;
-        }
-
-        @Override
-        public void onRedirectReceived(UrlRequest request, UrlResponseInfo info, String newLocationUrl) {
-            request.followRedirect();
-        }
-
-        @Override
-        public void onResponseStarted(UrlRequest request, UrlResponseInfo info) {
-            request.read(java.nio.ByteBuffer.allocateDirect(1024));
-        }
-
-        @Override
-        public void onReadCompleted(UrlRequest request, UrlResponseInfo info, java.nio.ByteBuffer byteBuffer) {
-            byteBuffer.clear();
-            request.read(byteBuffer);
-        }
-
-        @Override
-        public void onSucceeded(UrlRequest request, UrlResponseInfo info) {
-            // Connection is warm. One line under the NetPath tag so the drive session can tell
-            // whether the first media chunk pays a handshake (warm-complete vs first-chunk order).
-            android.util.Log.d("NetPath", "warm " + mHost + " +"
-                    + (android.os.SystemClock.elapsedRealtime() - mStartMs) + "ms");
-        }
-
-        @Override
-        public void onFailed(UrlRequest request, UrlResponseInfo info, CronetException error) {
-            // best-effort warm; ignore
-        }
     }
 
     private YouTubeMediaItemService() {

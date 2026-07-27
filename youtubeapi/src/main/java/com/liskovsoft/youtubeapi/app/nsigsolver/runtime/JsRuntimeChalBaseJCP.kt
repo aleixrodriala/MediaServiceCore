@@ -51,6 +51,11 @@ internal abstract class JsRuntimeChalBaseJCP: JsChallengeProvider() {
             }
 
             val stdin = constructStdin(player, cached, groupedRequests)
+            // A miss here means the whole player JS is re-preprocessed (parsed by meriyah, printed
+            // by astring) inside V8 before a single challenge is solved -- by far the most expensive
+            // thing this path can do, and invisible in the transform total without this line.
+            android.util.Log.d("NetPath", "v8-player cached=" + (if (cached) "y" else "n")
+                    + " challenges=" + groupedRequests.sumOf { it.input.challenges.size })
             val stdout = runJsRuntime(stdin)
 
             val gson = Gson()

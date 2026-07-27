@@ -16,6 +16,15 @@ internal object V8ChallengeProvider: JsRuntimeChalBaseJCP() {
     private val v8NpmLibFilename = listOf("${libPrefix}polyfill.js", "${libPrefix}meriyah-6.1.4.min.js", "${libPrefix}astring-1.9.0.min.js")
     private var v8Runtime: V8? = null
     private val v8Lock = Any()
+    /**
+     * Mobile TTFF: keep the V8 runtime alive between opens instead of tearing it down after every
+     * solve. Rebuilding costs a fresh V8 heap plus a re-eval of the solver lib (meriyah + astring +
+     * polyfill) on the critical path of EVERY video open, and it also throws away V8's JIT state
+     * for the solver functions. Off by default so TV boxes keep their historical low-water memory
+     * behaviour; the mobile flavor opts in and releases it on memory pressure.
+     */
+    @Volatile
+    private var keepAlive = false
 
     override fun iterScriptSources(): Sequence<Pair<ScriptSource, (ScriptType) -> Script?>> = sequence {
         for ((source, func) in super.iterScriptSources()) {
@@ -35,9 +44,18 @@ internal object V8ChallengeProvider: JsRuntimeChalBaseJCP() {
 
     override fun runJsRuntime(stdin: String): String {
         synchronized(v8Lock) {
+            val initStartMs = android.os.SystemClock.elapsedRealtime()
+            val reusedRuntime = v8Runtime != null
             initRuntime()
+            val solveStartMs = android.os.SystemClock.elapsedRealtime()
 
             val result = runV8(stdin)
+
+            val doneMs = android.os.SystemClock.elapsedRealtime()
+            android.util.Log.d("NetPath", "v8-run reused=" + (if (reusedRuntime) "y" else "n")
+                    + " initMs=" + (solveStartMs - initStartMs)
+                    + " solveMs=" + (doneMs - solveStartMs)
+                    + " stdinKb=" + (stdin.length / 1024))
 
             shutdownIfNeeded()
 
@@ -87,6 +105,20 @@ internal object V8ChallengeProvider: JsRuntimeChalBaseJCP() {
         }
     }
 
+    @JvmStatic
+    fun setKeepRuntimeAlive(enabled: Boolean) {
+        keepAlive = enabled
+        if (!enabled) {
+            shutdown()
+        }
+    }
+
+    /** Java-callable alias for [shutdown]: an object's own members are not @JvmStatic. */
+    @JvmStatic
+    fun releaseRuntime() {
+        shutdown()
+    }
+
     fun forceRecreate() {
         synchronized(v8Lock) {
             disposeRuntime()
@@ -98,6 +130,9 @@ internal object V8ChallengeProvider: JsRuntimeChalBaseJCP() {
     private fun shutdownIfNeeded() {
         // NOTE: Possible Invalid thread access if using RxHelper runAsync
         // NOTE: Shutdown should run on the same thread that created V8 engine.
+        if (keepAlive) {
+            return
+        }
         disposeRuntime()
     }
 }

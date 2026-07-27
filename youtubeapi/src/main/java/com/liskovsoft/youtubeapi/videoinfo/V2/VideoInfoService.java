@@ -12,6 +12,7 @@ import com.liskovsoft.sharedutils.mylogger.Log;
 import com.liskovsoft.sharedutils.prefs.GlobalPreferences;
 import com.liskovsoft.youtubeapi.app.AppService;
 import com.liskovsoft.youtubeapi.app.PoTokenGate;
+import com.liskovsoft.youtubeapi.app.nsigsolver.impl.V8ChallengeProvider;
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitHelper;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitOkHttpHelper;
@@ -198,6 +199,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void warmUpPoTokenGate() {
         PoTokenGate.warmUp();
+    }
+
+    /**
+     * Called once from the mobile flavor (MobileMainApplication). Keeps the signature solver's V8
+     * runtime alive between video opens instead of disposing it after every solve, which put a
+     * fresh-heap + solver-lib re-evaluation on the critical path of every open (and silently undid
+     * the async warmup after the first video). The mobile flavor releases it again on memory
+     * pressure. Never called on TV, where the historical dispose-every-time behaviour stands.
+     */
+    public static void setKeepSigRuntimeAlive(boolean keepAlive) {
+        V8ChallengeProvider.setKeepRuntimeAlive(keepAlive);
+    }
+
+    /** Mobile memory-pressure hook: drop the retained solver runtime. Safe from any thread. */
+    public static void releaseSigRuntime() {
+        V8ChallengeProvider.releaseRuntime();
     }
 
     // Mobile live routing: WEB_EMBED (the ring head) answers live videos with an HLS-only

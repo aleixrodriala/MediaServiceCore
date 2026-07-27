@@ -5,6 +5,7 @@ import com.liskovsoft.sharedutils.mylogger.Log;
 import com.liskovsoft.youtubeapi.app.AppService;
 import com.liskovsoft.googlecommon.common.api.FileApi;
 import com.liskovsoft.youtubeapi.app.PoTokenGate;
+import com.liskovsoft.youtubeapi.common.helpers.MediaHostPreconnect;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitHelper;
 import com.liskovsoft.youtubeapi.formatbuilders.utils.MediaFormatUtils;
 import com.liskovsoft.youtubeapi.service.internal.MediaServiceData;
@@ -40,6 +41,14 @@ public abstract class VideoInfoServiceBase {
             return;
         }
 
+        // Mobile TTFF: the googlevideo host is already known here and deciphering never rewrites
+        // it (only the n/sig query params), so start the TLS/QUIC handshake NOW and let it run
+        // concurrently with the transform below. Warming after the transform, as the format-info
+        // publish path did on its own, left the handshake only ~114ms ahead of the first init
+        // segment on a measured Pixel 9 cold open -- so that segment opened its own connection and
+        // paid a 400ms TTFB. No-op unless the mobile flavor enabled it.
+        MediaHostPreconnect.warmUrlEarly(firstStreamUrl(videoInfo));
+
         decipherFormats(videoInfo);
 
         if (videoInfo.isLive()) {
@@ -72,14 +81,23 @@ public abstract class VideoInfoServiceBase {
             }
         urlHolders.add(videoInfo.getUrlHolder());
 
-        Pair<List<String>, List<String>> result = mAppService.bulkSigExtract(extractNParams(urlHolders), extractSParams(urlHolders));
+        List<String> nParams = extractNParams(urlHolders);
+        List<String> sParams = extractSParams(urlHolders);
+        long sigStartMs = android.os.SystemClock.elapsedRealtime();
+        Pair<List<String>, List<String>> result = mAppService.bulkSigExtract(nParams, sParams);
+        // The V8 solve is charged per DISTINCT param, not per format, and it is the only part of
+        // the transform that costs real CPU -- so log both counts next to the elapsed time. Without
+        // them a slow transform is indistinguishable between "many distinct challenges" (which
+        // lazy per-itag deciphering could fix) and "cold V8" (which it could not).
+        android.util.Log.d("NetPath", "player-sig video=" + videoInfo.getVideoDetails().getVideoId()
+                + " holders=" + urlHolders.size()
+                + " n=" + distinctCount(nParams) + "/" + nonNullCount(nParams)
+                + " s=" + distinctCount(sParams) + "/" + nonNullCount(sParams)
+                + " ms=" + (android.os.SystemClock.elapsedRealtime() - sigStartMs));
 
         if (result != null) {
-            List<String> nParams = result.getFirst();
-            List<String> signatures = result.getSecond();
-
-            applyNParams(urlHolders, nParams);
-            applySignatures(urlHolders, signatures);
+            applyNParams(urlHolders, result.getFirst());
+            applySignatures(urlHolders, result.getSecond());
         }
 
         String poToken = PoTokenGate.getPoToken(videoInfo.getClient(), videoInfo.getVideoDetails().getVideoId());
@@ -89,6 +107,46 @@ public abstract class VideoInfoServiceBase {
         // and current enforcement rejects tokens that do not match the originating platform and
         // binding. Clients that do not ask PoTokenGate for a token keep their minted URL untouched.
         applySessionPoToken(urlHolders, poToken);
+    }
+
+    /**
+     * A URL whose HOST identifies the media server for this video. Only the host is consumed, so
+     * an un-deciphered URL is as good as a deciphered one. Mirrors the adaptive -> SABR -> regular
+     * -> DASH-manifest fallback order the format-info publish path uses.
+     */
+    private static String firstStreamUrl(VideoInfo videoInfo) {
+        List<? extends VideoFormat> adaptive = videoInfo.getAdaptiveFormats();
+        if (adaptive != null && !adaptive.isEmpty() && adaptive.get(0).getUrl() != null) {
+            return adaptive.get(0).getUrl();
+        }
+        if (videoInfo.getServerAbrStreamingUrl() != null) {
+            return videoInfo.getServerAbrStreamingUrl();
+        }
+        List<? extends VideoFormat> regular = videoInfo.getRegularFormats();
+        if (regular != null && !regular.isEmpty() && regular.get(0).getUrl() != null) {
+            return regular.get(0).getUrl();
+        }
+        return videoInfo.getDashManifestUrl();
+    }
+
+    private static int distinctCount(List<String> values) {
+        java.util.Set<String> distinct = new java.util.HashSet<>();
+        for (String value : values) {
+            if (value != null) {
+                distinct.add(value);
+            }
+        }
+        return distinct.size();
+    }
+
+    private static int nonNullCount(List<String> values) {
+        int count = 0;
+        for (String value : values) {
+            if (value != null) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static List<String> extractSParams(List<VideoUrlHolder> urlHolders) {
