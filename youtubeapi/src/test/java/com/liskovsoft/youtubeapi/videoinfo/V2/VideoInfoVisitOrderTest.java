@@ -216,15 +216,18 @@ public class VideoInfoVisitOrderTest {
                 AppClient.WEB_EMBED, AppClient.TV_DOWNGRADED,
                 true, false, true, forbidden(AppClient.TV, AppClient.TV_DOWNGRADED), true, false);
 
+        // The token-free client leads the anonymous partition now; the Web family follows it
+        // intact, and the quarantined siblings still keep their relative places behind it.
         assertEquals(Arrays.asList(
+                AppClient.VISIONOS,
                 AppClient.WEB_EMBED,
                 AppClient.WEB,
                 AppClient.WEB_SAFARI,
                 AppClient.GEO,
-                AppClient.MWEB), order.subList(0, 5));
-        assertEquals(AppClient.TV_DOWNGRADED, order.get(5));
-        assertTrue(order.indexOf(AppClient.TV) > 5);
-        assertEquals(13, order.size());
+                AppClient.MWEB), order.subList(0, 6));
+        assertEquals(AppClient.TV_DOWNGRADED, order.get(6));
+        assertTrue(order.indexOf(AppClient.TV) > 6);
+        assertEquals(14, order.size());
     }
 
     /**
@@ -256,7 +259,7 @@ public class VideoInfoVisitOrderTest {
                 forbidden(AppClient.TV, AppClient.TV_DOWNGRADED), true, true);
 
         assertFalse(order.get(0).isWebPotRequired());
-        assertEquals(13, order.size());
+        assertEquals(14, order.size());
     }
 
     @Test
@@ -265,13 +268,66 @@ public class VideoInfoVisitOrderTest {
                 AppClient.TV_EMBED, AppClient.TV_DOWNGRADED, true, true, true, noneForbidden());
 
         assertEquals(Arrays.asList(
+                AppClient.VISIONOS,
                 AppClient.WEB_EMBED,
                 AppClient.WEB,
                 AppClient.WEB_SAFARI,
                 AppClient.GEO,
-                AppClient.MWEB), order.subList(0, 5));
-        assertTrue(order.indexOf(AppClient.TV_DOWNGRADED) >= 5);
-        assertEquals(13, order.size());
+                AppClient.MWEB), order.subList(0, 6));
+        assertTrue("the failed TV client is still deferred behind its Web siblings",
+                order.indexOf(AppClient.TV_DOWNGRADED) >= 6);
+        assertEquals(14, order.size());
+    }
+
+    /**
+     * The account is gone for this open, so the first ANONYMOUS attempt should be the client that
+     * mints nothing. It used to be WEB_EMBED, which generates a PO token before it can even ask -
+     * on the exact path taken after a media 403, when the open is already slow.
+     */
+    @Test
+    public void authenticatedRecoveryLeadsWithTheTokenFreeClient() {
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.TV_EMBED, AppClient.TV_DOWNGRADED, true, true, true, noneForbidden());
+
+        assertEquals(AppClient.VISIONOS, order.get(0));
+        assertTrue("WEB_EMBED still backs it up", order.get(1).isWebPotRequired());
+        assertEquals(order.size(), new HashSet<>(order).size());
+    }
+
+    /** Same when the account head is fully quarantined rather than mid-recovery. */
+    @Test
+    public void exhaustedAccountHeadLeadsWithTheTokenFreeClient() {
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.WEB_EMBED, AppClient.TV_DOWNGRADED, true, false, true,
+                forbidden(AppClient.TV, AppClient.TV_DOWNGRADED), true, false);
+
+        assertEquals(AppClient.VISIONOS, order.get(0));
+        assertEquals(order.size(), new HashSet<>(order).size());
+    }
+
+    /**
+     * The account must NOT be given away while it still works. An anonymous client returns fewer
+     * formats than the authenticated head (41 vs 32 on device) and its /player response carries
+     * anonymous playbackTracking URLs, so the watch is never attributed to the account.
+     */
+    @Test
+    public void healthyAccountHeadIsNeverDisplacedByTheTokenFreeClient() {
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.TV_DOWNGRADED, AppClient.ANDROID_VR, true, false, true, noneForbidden());
+
+        assertEquals(AppClient.TV_DOWNGRADED, order.get(0));
+        assertEquals(AppClient.TV, order.get(1));
+        assertFalse("off-ring head must stay out of an authenticated walk",
+                order.contains(AppClient.VISIONOS));
+    }
+
+    /** Idempotent: an order already led by the token-free client is returned untouched. */
+    @Test
+    public void leadWithTokenFreeClientIsIdempotent() {
+        List<AppClient> once = VideoInfoService.leadWithTokenFreeClient(
+                Arrays.asList(AppClient.WEB_EMBED, AppClient.TV));
+        assertEquals(Arrays.asList(AppClient.VISIONOS, AppClient.WEB_EMBED, AppClient.TV), once);
+        assertEquals(once, VideoInfoService.leadWithTokenFreeClient(once));
     }
 
     private static Set<AppClient> noneForbidden() {

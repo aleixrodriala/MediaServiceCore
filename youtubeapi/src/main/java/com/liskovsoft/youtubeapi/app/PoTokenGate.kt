@@ -21,6 +21,7 @@ import android.os.SystemClock
  */
 internal object PoTokenGate {
     private const val TAG = "PoTokenGate"
+    private var mPlayerPotEnabled = false
     private var mWebPoToken: PoTokenResult? = null
     private var mWebPoTokenCreatedAtMs: Long = -1
     private var mCacheResetTimeMs: Long = -1
@@ -33,6 +34,12 @@ internal object PoTokenGate {
 
     init {
         PoTokenProviderImpl.poTokenFactory = selectFactory()
+    }
+
+    /** @see AppClient.isPlayerPotSupported */
+    @JvmStatic
+    fun setPlayerPotEnabled(enabled: Boolean) {
+        mPlayerPotEnabled = enabled
     }
 
     private fun getWebContentPoToken(videoId: String): String? {
@@ -73,6 +80,11 @@ internal object PoTokenGate {
     fun getPoToken(client: AppClient, videoId: String? = null): String? {
         return when {
             client.isWebPotRequired -> if (videoId != null) getWebContentPoToken(videoId) else getWebSessionPoToken()
+            // Off by default: minting this costs a BotGuard round on a path whose whole point is
+            // to be token-free, and the enforcement it guards against is intermittent. Measure
+            // with debug.arc.player_pot before considering it a default.
+            client.isPlayerPotSupported && mPlayerPotEnabled ->
+                if (videoId != null) getWebContentPoToken(videoId) else null
             else -> null
         }
     }

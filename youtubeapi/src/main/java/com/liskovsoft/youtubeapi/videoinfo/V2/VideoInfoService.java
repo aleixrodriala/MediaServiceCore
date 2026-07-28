@@ -211,6 +211,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
+     * Debug playground: give ANDROID_VR a PO token in its /player request so the media URLs it
+     * returns stop needing one (yt-dlp's `not_required_with_player_token`). Upstream flagged
+     * intermittent POT enforcement on that client in 2026.07. Off by default - it trades the
+     * client's cheapness for that protection, and we have not yet observed the enforcement here.
+     */
+    public static void setPlayerPotEnabled(boolean enabled) {
+        PoTokenGate.setPlayerPotEnabled(enabled);
+    }
+
+    /**
      * Called once from the mobile flavor (MobileMainApplication). Initializes the WebView/BotGuard
      * generator in the background so the first Web-family request finds it warm. Never called on
      * TV, and deliberately does not mint a cross-platform token for Android/TV/iOS clients.
@@ -651,6 +661,26 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
+     * Put {@link #PREFERRED_FIRST_CLIENT} at the head of an order, moving it if already present.
+     * Called only once the account has stopped being an option for this open, so it never competes
+     * with an account-bearing client - it competes with WEB_EMBED, and wins on cost: no PO token.
+     */
+    static List<AppClient> leadWithTokenFreeClient(List<AppClient> order) {
+        if (order.isEmpty() || order.get(0) == PREFERRED_FIRST_CLIENT) {
+            return order;
+        }
+
+        List<AppClient> result = new java.util.ArrayList<>(order.size() + 1);
+        result.add(PREFERRED_FIRST_CLIENT);
+        for (AppClient type : order) {
+            if (type != PREFERRED_FIRST_CLIENT) {
+                result.add(type);
+            }
+        }
+        return result;
+    }
+
+    /**
      * Puts the account-bearing head ({@link #AUTHENTICATED_HEAD}) in front of the rest of the ring.
      * A head client currently 403-quarantined on this network is DEMOTED to the back of the head
      * rather than dropped: a quarantined account route is still a better bet than an anonymous
@@ -723,6 +753,18 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 recoveryWalk);
         if (authenticated && !recoveryWalk && !authenticatedWebFirst) {
             order = promoteAuthenticatedTvFallback(order, forbiddenAuthClients);
+        }
+        // An authenticated walk that has fallen through to the anonymous partition should spend
+        // its FIRST anonymous attempt on the client that mints nothing. Until now that attempt was
+        // WEB_EMBED, which generates a PO token before it can even ask - on the exact path taken
+        // after a media 403, when the open is already slow. The token-free head costs one round
+        // trip when it cannot serve (made-for-kids) and then falls through to WEB_EMBED as before.
+        // It is off-ring, so it is absent from an authenticated order and has to be injected here.
+        // Safe against the anon-challenge detector: that needs the SAME reason string from two
+        // clients (BotCheckDetector.isRepeatedLoginRequired), and an age gate changes outcome on
+        // the embedded client - so this adds a third independent identity, not a false hit.
+        if (authenticated && (recoveryWalk || authenticatedWebFirst)) {
+            order = leadWithTokenFreeClient(order);
         }
         // Applied LAST, so it also overrides an attested-web-first or authenticated-web-first
         // preference: if the account head is exhausted AND the guest identity is challenged, the
