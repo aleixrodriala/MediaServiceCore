@@ -15,6 +15,21 @@ import java.util.List;
 import java.util.Set;
 
 public class VideoInfoVisitOrderTest {
+    /**
+     * The 7s per-attempt timeout was sized for a speculative fast client (ANDROID_VR). Applying
+     * it to the AUTHENTICATED head is what turned one slow cold request into a fallthrough to
+     * TV, a media 403 and a 10-minute quarantine of the whole authenticated route.
+     */
+    @Test
+    public void authenticatedHeadGetsAColdStartBudget() {
+        long head = VideoInfoService.attemptTimeoutMsFor(AppClient.TV_DOWNGRADED);
+        long speculative = VideoInfoService.attemptTimeoutMsFor(AppClient.ANDROID_VR);
+
+        assertEquals(head, VideoInfoService.attemptTimeoutMsFor(AppClient.TV));
+        assertTrue("auth head must outlast a cold start", head >= 15_000);
+        assertTrue("speculative clients keep the short budget", speculative < head);
+    }
+
     @Test
     public void tvOrderKeepsLastWinnerSecond() {
         List<AppClient> order = VideoInfoService.buildVisitOrder(

@@ -72,6 +72,20 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // OkHttp read/connect timeout is 20s with no overall call timeout, so without this a hang would
     // stall TTFF ~20s+ instead of failing over.
     private static final long CLIENT_ATTEMPT_TIMEOUT_MS = 7_000;
+
+    /**
+     * Per-attempt budget for the AUTHENTICATED head ({@link #AUTHENTICATED_HEAD}). The 7s
+     * above was chosen for a speculative fast client (ANDROID_VR, which "often hangs"), where
+     * failing over early costs a second and gains a second. The head is not that: for a
+     * signed-in open it IS the route, and falling through it is expensive out of all
+     * proportion to the wait. Measured on a roaming link: TV_DOWNGRADED normally answers in
+     * 0.9-2.6s, but a COLD first request (DNS + TLS, no warm connection) overran 7s, and the
+     * fallthrough then cost ~12s to first frame plus a 10-MINUTE quarantine of the whole
+     * authenticated route - every open in that window served anonymously. So the head gets a
+     * budget sized for a cold start on a slow link, still short enough to fail over before
+     * OkHttp's own 20s read/connect timeout would.
+     */
+    private static final long AUTH_HEAD_ATTEMPT_TIMEOUT_MS = 15_000;
     private static final long BOT_CHECK_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(15);
     /**
      * Signed-in probe head, most-likely-to-work first. yt-dlp's {@code _DEFAULT_AUTHED_CLIENTS} is
@@ -972,10 +986,26 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
+     * Per-attempt timeout for {@code client}: the authenticated head is given a cold-start
+     * budget, every other fast client keeps the short speculative one. See
+     * {@link #AUTH_HEAD_ATTEMPT_TIMEOUT_MS}.
+     */
+    static long attemptTimeoutMsFor(AppClient client) {
+        for (AppClient head : AUTHENTICATED_HEAD) {
+            if (head == client) {
+                return AUTH_HEAD_ATTEMPT_TIMEOUT_MS;
+            }
+        }
+
+        return CLIENT_ATTEMPT_TIMEOUT_MS;
+    }
+
+    /**
      * Mobile-only guard: run a fast (non-web-pot) client attempt with a short timeout so a hanging
      * ANDROID_VR fails over to the next client quickly instead of blocking on the 20s OkHttp read
      * timeout. TV (flag unset) and web-pot clients (WEB_EMBED fallback for restricted videos, whose
      * PO-token generation can legitimately take several seconds) run unbounded exactly as before.
+     * The authenticated head is budgeted separately - see {@link #attemptTimeoutMsFor}.
      */
     private VideoInfo getVideoInfoWithTimeout(AppClient client, String videoId,
             String clickTrackingParams, @Nullable CancellationSignal cancellationSignal) {
@@ -988,8 +1018,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
 
         Future<VideoInfo> future = getInfoExecutor().submit(() -> getVideoInfoWithRentFix(client, videoId, clickTrackingParams));
+        final long attemptTimeoutMs = attemptTimeoutMsFor(client);
         final long deadlineNs = System.nanoTime()
-                + TimeUnit.MILLISECONDS.toNanos(CLIENT_ATTEMPT_TIMEOUT_MS);
+                + TimeUnit.MILLISECONDS.toNanos(attemptTimeoutMs);
 
         while (true) {
             if (abortCanceledRequest(videoId, "player-wait", cancellationSignal)) {
@@ -1000,7 +1031,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             long remainingNs = deadlineNs - System.nanoTime();
             if (remainingNs <= 0) {
                 Log.e(TAG, "getVideoInfo timed out for client %s after %s ms, failing over...",
-                        client, CLIENT_ATTEMPT_TIMEOUT_MS);
+                        client, attemptTimeoutMs);
                 future.cancel(true);
                 return null;
             }
