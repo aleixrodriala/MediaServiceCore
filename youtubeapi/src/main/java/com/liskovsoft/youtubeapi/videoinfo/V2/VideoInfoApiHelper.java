@@ -44,7 +44,8 @@ public class VideoInfoApiHelper {
     }
 
     static boolean usesWebVisitorData(AppClient client) {
-        return client.isWebPotRequired() || client == AppClient.ANDROID_VR;
+        return client.isWebPotRequired() || client == AppClient.ANDROID_VR
+                || client == AppClient.VISIONOS;
     }
 
     private static String fingerprint(String value) {

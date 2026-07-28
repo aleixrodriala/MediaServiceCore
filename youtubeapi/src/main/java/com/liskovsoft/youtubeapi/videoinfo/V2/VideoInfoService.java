@@ -58,14 +58,15 @@ public class VideoInfoService extends VideoInfoServiceBase {
             //AppClient.ANDROID_SDK_LESS, // doesn't require pot (hangs on cronet!)
     };
     // === Mobile fast-start (NewTube touch flavor) =========================================
-    // When enabled by the mobile flavor, getVideoInfo tries the repaired no-PO-token / no-cipher
-    // ANDROID_VR client FIRST. Its fallback tail is Web-family-first so restricted / made-for-kids
-    // videos do not wander through unrelated platform identities, and an error-driven reload starts
-    // directly in that Web partition. This skips roughly one second of median cold-start latency in
-    // the Pixel 9 sample while retaining attested Web recovery. TV builds never enable this flag, so
-    // they keep the WEB_EMBED-first order and unbounded (no-timeout) behaviour byte-for-byte.
+    // When enabled by the mobile flavor, getVideoInfo tries a no-PO-token / no-cipher client
+    // FIRST (PREFERRED_FIRST_CLIENT). Its fallback tail is Web-family-first so restricted /
+    // made-for-kids videos do not wander through unrelated platform identities, and an
+    // error-driven reload starts directly in that Web partition. This skips roughly one second
+    // of median cold-start latency in the Pixel 9 sample while retaining attested Web recovery.
+    // TV builds never enable this flag, so they keep the WEB_EMBED-first order and unbounded
+    // (no-timeout) behaviour byte-for-byte.
     private static volatile boolean sPreferNoPotClient;
-    private static final AppClient PREFERRED_FIRST_CLIENT = AppClient.ANDROID_VR;
+    private static final AppClient PREFERRED_FIRST_CLIENT = AppClient.VISIONOS;
     // Short per-attempt timeout guarding a hanging fast client (ANDROID_VR "often hangs?"). Applied
     // ONLY to fast (non-web-pot) clients on the mobile path; web-pot clients (WEB_EMBED) run
     // unbounded because their PO-token generation can legitimately take several seconds. The base
@@ -196,7 +197,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
         try {
             AppClient client = AppClient.valueOf(clientName.trim().toUpperCase(java.util.Locale.US));
-            if (!Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(client)) {
+            // PREFERRED_FIRST_CLIENT is deliberately off-ring, but forcing it is the whole point
+            // of the playground when comparing fast heads.
+            if (!Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(client)
+                    && client != PREFERRED_FIRST_CLIENT) {
                 return false;
             }
             sDebugForcedClient = client;
@@ -930,7 +934,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
             rawOrder.add(lastWinner);
         }
 
-        for (AppClient type = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, beginType); type != beginType;
+        // The fast head may sit OUTSIDE the ring: VIDEO_INFO_TYPE_LIST is upstream's and stays
+        // untouched, while PREFERRED_FIRST_CLIENT is ours. Helpers.getNextValue returns element 0
+        // for a value it cannot find, so a lap started from an off-ring begin never satisfies this
+        // loop's `type != beginType` stop condition - it spins forever. Anchor the lap at element 0
+        // and visit that anchor explicitly, which gives an off-ring head the whole canonical ring
+        // as its tail.
+        final boolean beginInRing = Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(beginType);
+        final AppClient anchor = beginInRing ? beginType : VIDEO_INFO_TYPE_LIST[0];
+        if (!beginInRing && (deferLastWinner || anchor != lastWinner)) {
+            rawOrder.add(anchor);
+        }
+
+        for (AppClient type = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, anchor); type != anchor;
                 type = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, type)) {
             if (deferLastWinner || type != lastWinner) {
                 rawOrder.add(type);
@@ -941,11 +957,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return rawOrder;
         }
 
-        boolean keepVrFastHead = !recoveryWalk && beginType == PREFERRED_FIRST_CLIENT;
+        // Whatever FAST client the walk chose to begin with keeps attempt 1; only its tail is
+        // partitioned. Keyed off beginType rather than PREFERRED_FIRST_CLIENT so a restored
+        // previous-session winner is honoured too: with the preferred head now sitting off-ring,
+        // pinning this to the constant would have demoted every other fast begin behind the Web
+        // family, turning the first cold start after an upgrade into a pot-minting WEB open.
+        // Anonymous-walk only - buildRequestVisitOrder passes preferWebFamily=false while
+        // authenticated, so the account head never reaches here.
+        final AppClient fastHead = !recoveryWalk && !beginType.isWebPotRequired() ? beginType : null;
+        boolean keepVrFastHead = fastHead != null;
         java.util.List<AppClient> result = new java.util.ArrayList<>();
         if (keepVrFastHead || recoveryWalk) {
             if (keepVrFastHead) {
-                result.add(PREFERRED_FIRST_CLIENT);
+                result.add(fastHead);
                 // A previous Web winner is the best fallback hint; otherwise use the canonical
                 // ring order, whose WEB_EMBED head handles the broadest set in device tests.
                 if (lastWinner != null && lastWinner.isWebPotRequired()) {
@@ -964,7 +988,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
 
             for (AppClient type : rawOrder) {
-                if (!type.isWebPotRequired() && (!keepVrFastHead || type != PREFERRED_FIRST_CLIENT)) {
+                if (!type.isWebPotRequired() && (fastHead == null || type != fastHead)) {
                     result.add(type);
                 }
             }
@@ -1090,7 +1114,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // a distinct /player/GVS platform. Clear that visitor session and continue into the Web
         // recovery partition; treating the cache clear as the whole fix just remints the failed VR
         // route. A Web-family winner can retry itself after a genuine Web token refresh as before.
-        if (!mIsUnplayable && mActualInfoType == AppClient.ANDROID_VR) {
+        if (!mIsUnplayable && (mActualInfoType == AppClient.ANDROID_VR
+                || mActualInfoType == PREFERRED_FIRST_CLIENT)) {
             PoTokenGate.resetCache();
             nextVideoInfoType();
             android.util.Log.d("NetPath", "player-ring circuit-break suspect=" + mActualInfoType

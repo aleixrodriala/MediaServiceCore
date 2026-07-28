@@ -105,9 +105,67 @@ public class VideoInfoVisitOrderTest {
     public void visitorIdentityBridgeIsLimitedToWebFamilyAndAndroidVr() {
         assertTrue(VideoInfoApiHelper.usesWebVisitorData(AppClient.WEB_EMBED));
         assertTrue(VideoInfoApiHelper.usesWebVisitorData(AppClient.ANDROID_VR));
+        assertTrue(VideoInfoApiHelper.usesWebVisitorData(AppClient.VISIONOS));
         assertFalse(VideoInfoApiHelper.usesWebVisitorData(AppClient.ANDROID_REEL));
         assertFalse(VideoInfoApiHelper.usesWebVisitorData(AppClient.IOS));
         assertFalse(VideoInfoApiHelper.usesWebVisitorData(AppClient.TV));
+    }
+
+    /**
+     * VISIONOS is the fast head but is NOT a member of VIDEO_INFO_TYPE_LIST (that list is
+     * upstream's and stays untouched). Helpers.getNextValue answers with element 0 for a value it
+     * cannot find, so before the anchor fix this walk never met its `type != beginType` stop
+     * condition and looped forever. If that regresses, this test hangs rather than fails - which
+     * is itself the signal.
+     */
+    @Test
+    public void offRingFastHeadWalksTheWholeRingExactlyOnce() {
+        List<AppClient> order = VideoInfoService.buildVisitOrder(
+                AppClient.VISIONOS, null, true, false);
+
+        assertEquals(AppClient.VISIONOS, order.get(0));
+        assertEquals("off-ring head + all 13 ring clients", 14, order.size());
+        assertEquals("no client visited twice", order.size(), new HashSet<>(order).size());
+        assertTrue("the whole ring is still reachable behind the head",
+                order.containsAll(Arrays.asList(
+                        AppClient.WEB_EMBED, AppClient.ANDROID_VR, AppClient.TV,
+                        AppClient.TV_DOWNGRADED, AppClient.IOS)));
+        // The head keeps its Web-family tail: attested Web recovery is what handles the
+        // made-for-kids videos VISIONOS cannot serve.
+        assertTrue(order.get(1).isWebPotRequired());
+    }
+
+    /** Same anchor hazard on the unpartitioned (TV-shaped) walk. */
+    @Test
+    public void offRingFastHeadTerminatesWithoutWebPartitioning() {
+        List<AppClient> order = VideoInfoService.buildVisitOrder(
+                AppClient.VISIONOS, AppClient.ANDROID_VR, false, false);
+
+        assertEquals(AppClient.VISIONOS, order.get(0));
+        assertEquals(AppClient.ANDROID_VR, order.get(1));
+        assertEquals(14, order.size());
+        assertEquals(order.size(), new HashSet<>(order).size());
+    }
+
+    /** The head must not need a pot or an account - that is the entire reason it leads. */
+    @Test
+    public void fastHeadNeedsNeitherPoTokenNorAccount() {
+        assertFalse(AppClient.VISIONOS.isWebPotRequired());
+        assertFalse(AppClient.VISIONOS.isAuthSupported());
+        assertEquals("101", AppClient.VISIONOS.getInnerTubeName());
+    }
+
+    /** The debug playground has to be able to force the off-ring head to A/B it against VR. */
+    @Test
+    public void debugPlaygroundCanForceTheOffRingHead() {
+        try {
+            assertTrue(VideoInfoService.setDebugForcedClient("VISIONOS"));
+            assertTrue(VideoInfoService.setDebugForcedClient("ANDROID_VR"));
+            assertFalse("clients outside both the ring and the head stay rejected",
+                    VideoInfoService.setDebugForcedClient("WEB_MUSIC"));
+        } finally {
+            VideoInfoService.setDebugForcedClient(null);
+        }
     }
 
     /**

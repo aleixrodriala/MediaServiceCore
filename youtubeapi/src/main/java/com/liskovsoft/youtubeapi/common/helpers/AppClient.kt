@@ -17,6 +17,8 @@ private const val POST_DATA_BROWSE_TV =
 private const val POST_DATA_BROWSE_TV_LEGACY =
     "\"tvAppInfo\":{\"appQuality\":\"TV_APP_QUALITY_LIMITED_ANIMATION\",\"zylonLeftNav\":true},\"webpSupport\":false,\"animatedWebpSupport\":true,"
 private const val POST_DATA_IOS_MODEL = "\"deviceModel\":\"%s\",\"osVersion\":\"%s\","
+private const val POST_DATA_VISIONOS_DEVICE =
+    "\"deviceMake\":\"%s\",\"deviceModel\":\"%s\",\"osName\":\"%s\",\"osVersion\":\"%s\","
 private const val POST_DATA_ANDROID_OS = "\"osName\":\"Android\",\"osVersion\":\"%s\","
 private const val POST_DATA_ANDROID_SDK = "\"androidSdkVersion\":\"%s\","
 private const val POST_DATA_ANDROID_MODEL = "\"deviceModel\":\"%s\",\"deviceMake\":\"%s\","
@@ -70,7 +72,15 @@ internal enum class AppClient(
     IOS(CLIENTS.IOS.NAME, CLIENTS.IOS.VERSION, CLIENT_NAME_IDS[CLIENTS.IOS.NAME],
         userAgent = CLIENTS.IOS.USER_AGENT!!, referer = null, postData = String.format(POST_DATA_IOS_MODEL, CLIENTS.IOS.DEVICE_MODEL, CLIENTS.IOS.OS_VERSION)),
     INITIAL(WEB),
-    GEO(WEB);
+    GEO(WEB),
+    // No pot and no cipher, and unchallenged where ANDROID_VR is challenged - see CLIENTS.VISIONOS.
+    // Appended at the END of the enum on purpose: the winning client is persisted by ORDINAL
+    // (getData().setVideoInfoType), so inserting mid-enum would silently re-point every value
+    // saved by an older build.
+    VISIONOS(CLIENTS.VISIONOS.NAME, CLIENTS.VISIONOS.VERSION, CLIENT_NAME_IDS[CLIENTS.VISIONOS.NAME],
+        userAgent = CLIENTS.VISIONOS.USER_AGENT!!, referer = null,
+        postData = String.format(POST_DATA_VISIONOS_DEVICE, CLIENTS.VISIONOS.DEVICE_MAKE,
+            CLIENTS.VISIONOS.DEVICE_MODEL, CLIENTS.VISIONOS.OS_NAME, CLIENTS.VISIONOS.OS_VERSION));
 
     constructor(baseClient: AppClient, clientVersion: String? = null, userAgent: String? = null, postData: String? = null, postDataBrowse: String? = null):
             this(baseClient.clientName, clientVersion ?: baseClient.clientVersion, baseClient.innerTubeName,

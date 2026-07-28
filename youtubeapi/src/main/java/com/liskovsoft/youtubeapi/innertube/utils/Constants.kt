@@ -97,6 +97,23 @@ internal object CLIENTS {
         USER_AGENT = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
     )
 
+    // NEWTUBE(visionos): yt-dlp's current first-choice anonymous client - its _DEFAULT_CLIENTS is
+    // ('visionos', 'android_vr', 'web'). Alone in that whole client table it declares neither a GVS
+    // nor a player PO-token policy AND no JS player, i.e. no pot to mint and no cipher to solve.
+    // Probed 2026-07-28 from an IP that answered LOGIN_REQUIRED ("Sign in to confirm you're not a
+    // bot") to ANDROID_VR and TVHTML5 5.x in the same second: VISIONOS returned 32 adaptive formats
+    // with direct URLs and served init / mid / tail ranges at HTTP 206.
+    // "Made for kids" videos aren't available with this client (same limitation as ANDROID_VR).
+    val VISIONOS = CLIENT(
+        NAME = "VISIONOS",
+        VERSION = "1.02",
+        DEVICE_MAKE = "Apple",
+        DEVICE_MODEL = "RealityDevice17,1",
+        OS_NAME = "visionOS",
+        OS_VERSION = "26.5.23O471",
+        USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+    )
+
     val YTSTUDIO_ANDROID = CLIENT(
         NAME = "ANDROID_CREATOR",
         VERSION = "22.43.101"
@@ -147,6 +164,7 @@ internal object CLIENTS {
         "YTMUSIC" to YTMUSIC,
         "ANDROID" to ANDROID,
         "ANDROID_VR" to ANDROID_VR,
+        "VISIONOS" to VISIONOS,
         "YTSTUDIO_ANDROID" to YTSTUDIO_ANDROID,
         "YTMUSIC_ANDROID" to YTMUSIC_ANDROID,
         "TV" to TV,
@@ -185,6 +203,7 @@ internal val CLIENT_NAME_IDS: Map<String, String> = mapOf(
     "ANDROID_CREATOR" to "14",
     "ANDROID_MUSIC" to "21",
     "ANDROID_VR" to "28",
+    "VISIONOS" to "101",
     "TVHTML5" to "7",
     "TVHTML5_SIMPLY" to "74",
     "TVHTML5_SIMPLY_EMBEDDED_PLAYER" to "85",
