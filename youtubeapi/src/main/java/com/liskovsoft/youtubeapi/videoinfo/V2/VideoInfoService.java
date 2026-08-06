@@ -68,10 +68,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private static volatile boolean sPreferNoPotClient;
     private static final AppClient PREFERRED_FIRST_CLIENT = AppClient.VISIONOS;
     // Short per-attempt timeout guarding a hanging fast client (ANDROID_VR "often hangs?"). Applied
-    // ONLY to fast (non-web-pot) clients on the mobile path; web-pot clients (WEB_EMBED) run
-    // unbounded because their PO-token generation can legitimately take several seconds. The base
-    // OkHttp read/connect timeout is 20s with no overall call timeout, so without this a hang would
-    // stall TTFF ~20s+ instead of failing over.
+    // to fast (non-web-pot) clients on the mobile path; web-pot clients get the larger
+    // WEB_POT_ATTEMPT_TIMEOUT_MS because their PO-token generation can legitimately take several
+    // seconds. The base OkHttp read/connect timeout is 20s with no overall call timeout, so without
+    // this a hang would stall TTFF ~20s+ instead of failing over.
     private static final long CLIENT_ATTEMPT_TIMEOUT_MS = 7_000;
 
     /**
@@ -87,6 +87,49 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * OkHttp's own 20s read/connect timeout would.
      */
     private static final long AUTH_HEAD_ATTEMPT_TIMEOUT_MS = 15_000;
+
+    /**
+     * Per-attempt budget for a web-pot client (WEB, MWEB, WEB_EMBED, WEB_SAFARI, INITIAL, GEO —
+     * {@link AppClient#isWebPotRequired()}). Until now these had NO deadline at all: the dispatch
+     * in {@link #getVideoInfoWithTimeout} ran them inline on the walking thread, so the only bound
+     * was OkHttp's 8s connect + 8s read per socket operation (RetrofitOkHttpHelper's open-path
+     * interceptor), and the PO-token mint that precedes the request is not covered by that at all
+     * (PoTokenWebView.generatePoToken blocks on a CountDownLatch with NO timeout). Five of the
+     * phone ring's ~10 clients are web-pot, which is where the ~2-minute worst-case open came from.
+     * <p>
+     * Deliberately LARGER than {@link #CLIENT_ATTEMPT_TIMEOUT_MS}: a cold BotGuard mint
+     * legitimately takes seconds (HANDOFF §8 — the app-start warmup alone is ~1.1s and a cold
+     * content-pot cost ~2.7s before that warmup existed), and WEB_EMBED /player itself measured
+     * 0.3–2.1s on LTE. Budget = 8s connect + 8s read (worst case for the request) + ~4s of headroom
+     * for a cold mint = 20s. Sizing this tight would trade a bounded wait for the failure mode
+     * §8 warns about: falling through the client that is the only one able to serve the video.
+     */
+    private static final long WEB_POT_ATTEMPT_TIMEOUT_MS = 20_000;
+
+    /**
+     * Wall-clock budget for the WHOLE failover walk, checked at the top of every iteration. The
+     * per-attempt deadlines above bound ONE /player; nothing bounded their sum, so a bad link could
+     * hold this service's process-wide monitor for minutes while the user watched a spinner.
+     * <p>
+     * Arithmetic (worst realistic prefix that is still worth waiting for): authenticated head 15s
+     * + one web-pot client 20s = 35s, plus one 7s fast client = 42s → 45s. Attempts are clamped to
+     * whatever is left of this budget, so 45s is a true ceiling for the walk rather than a
+     * checkpoint that the last attempt can overrun. Mobile-only, like the per-attempt deadlines
+     * (gated on {@link #sPreferNoPotClient}); TV keeps its historical unbounded walk.
+     */
+    private static final long RING_WALK_BUDGET_MS = 45_000;
+    /**
+     * Consecutive attempts that produce no HTTP response before the walk gives up and calls the
+     * link dead rather than the clients bad. Two, so one client timing out on its own does not
+     * abort a walk that would have succeeded on the next entry.
+     */
+    private static final int TRANSPORT_DOWN_STREAK = 2;
+
+    /**
+     * Below this the remaining walk budget cannot buy a useful /player attempt, so stop instead of
+     * spending a round trip that would be cut off mid-flight.
+     */
+    private static final long MIN_ATTEMPT_BUDGET_MS = 1_500;
     private static final long BOT_CHECK_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(15);
     /**
      * Signed-in probe head, most-likely-to-work first. yt-dlp's {@code _DEFAULT_AUTHED_CLIENTS} is
@@ -272,6 +315,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // mNextInfoType is also used for the persisted-client cold-start hint. Keep an explicit bit so
     // only an error-driven cursor invokes recovery ordering and defers the previous winner.
     private volatile boolean mRecoveryWalk;
+    /**
+     * Set when the previous walk gave up because the link was dead (see TRANSPORT_DOWN_STREAK).
+     * Suppresses the next walk's recovery cursor: see the comment in {@link #firstPlayable}.
+     */
+    private volatile boolean mLastWalkTransportDown;
     // A next-video prefetch may already be inside synchronized getVideoInfo when the player reports
     // a media 403. That older request must not clear the recovery cursor installed by
     // switchNextFormat after it finishes. The generation makes cursor consumption conditional on
@@ -446,7 +494,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // no-pot/no-cipher client instead of WEB_EMBED. buildVisitOrder keeps this fast head but
         // puts the Web family immediately behind it. TV (flag unset) keeps the raw ring as before.
         final AppClient lastWinner = mActualInfoType;
-        final boolean recoveryWalk = mRecoveryWalk;
+        // NEWTUBE(net): an outage is not evidence against the client that was working.
+        //
+        // A recovery walk deliberately steps PAST the last winner, because the case it was written
+        // for is a client-specific failure (an expired GVS URL answering 403). When the previous
+        // walk instead ended in transport-down, nothing was learned about any client - so honouring
+        // the cursor just abandons the known-good route. Measured on the netshape rig: a 150s tunnel
+        // ended with playback restored on WEB_EMBED (auth=n, sabr=y) instead of the learned
+        // TV_DOWNGRADED (auth=y, 41 formats), i.e. the outage silently cost the user authenticated
+        // playback until something else reset the routing.
+        final boolean recoveryWalk = mRecoveryWalk && !mLastWalkTransportDown;
+        if (mRecoveryWalk && mLastWalkTransportDown) {
+            android.util.Log.d("NetPath", "player-ring recovery-suppressed reason=transport-down"
+                    + " keeping=" + lastWinner);
+        }
+        // Only this walk's own outcome may set it again.
+        mLastWalkTransportDown = false;
         // A normal signed-in open starts on the account-bearing TV route, matching yt-dlp's use
         // of tv_downgraded for authenticated extraction. An error-driven reload is different: its
         // cursor deliberately points past the client whose GVS URL just failed. Re-promoting TV on
@@ -510,9 +573,28 @@ public class VideoInfoService extends VideoInfoServiceBase {
         boolean authenticatedClientAttempted = false;
         int anonChallengeHits = 0;
         int attempt = 0;
+        // See RING_WALK_BUDGET_MS. Mobile-only; on TV the deadline is never armed.
+        final long walkDeadlineMs = android.os.SystemClock.elapsedRealtime() + RING_WALK_BUDGET_MS;
+        boolean budgetExhausted = false;
+        // See TRANSPORT_DOWN_STREAK.
+        int noResponseStreak = 0;
+        boolean transportDown = false;
 
         for (AppClient nextType : visitOrder) {
             if (abortCanceledRequest(videoId, "client-ring", cancellationSignal)) {
+                break;
+            }
+
+            // Overall wall-clock bound (see RING_WALK_BUDGET_MS). `attempt > 0` guarantees the walk
+            // always spends at least one round trip, whatever the clock says.
+            long remainingBudgetMs = walkDeadlineMs - android.os.SystemClock.elapsedRealtime();
+            if (sPreferNoPotClient && attempt > 0 && remainingBudgetMs < MIN_ATTEMPT_BUDGET_MS) {
+                budgetExhausted = true;
+                android.util.Log.w("NetPath", "player-ring budget-exhausted video=" + videoId
+                        + " attempts=" + attempt + " budgetMs=" + RING_WALK_BUDGET_MS
+                        + " remainingMs=" + remainingBudgetMs + " nextClient=" + nextType
+                        + " heldUnplayable=" + (firstUnplayable != null ? "y" : "n")
+                        + " heldLive=" + (liveWithoutDash != null ? "y" : "n"));
                 break;
             }
 
@@ -525,8 +607,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
 
             attempt++;
+            boolean[] noResponse = new boolean[1];
             VideoInfo result = getVideoInfoWithTimeout(
-                    nextType, videoId, clickTrackingParams, cancellationSignal);
+                    nextType, videoId, clickTrackingParams, cancellationSignal, remainingBudgetMs,
+                    noResponse);
             if (abortCanceledRequest(videoId, "post-attempt", cancellationSignal)) {
                 break;
             }
@@ -535,6 +619,33 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
             boolean playable = result != null && !result.isUnplayable();
             logPlayerOutcome(videoId, nextType, attempt, result);
+
+            // NEWTUBE(net): a dead link is not a bad client - stop walking the ring.
+            //
+            // The ring exists to find a client whose RESPONSE is usable. When an attempt produces no
+            // HTTP response at all (read timeout, or an IOException surfaced by RetrofitHelper),
+            // the client was never the variable, so trying nine more of them cannot help. Measured
+            // in a 150s tunnel on the netshape rig: the walk burned its whole 45s budget on
+            // timeouts, reloaded, and burned another walk - and because a recovery walk deliberately
+            // treats the last winner as suspect, it finally settled on ANDROID_VR (auth=n, sabr=y,
+            // 28 formats) instead of the learned-good TV_DOWNGRADED (auth=y, 41 formats). An outage
+            // silently cost the user authenticated playback and 13 renditions.
+            //
+            // Bailing out returns null fast, which is what ErrorFixerController's escalating backoff
+            // is built to handle, and leaves the learned client order untouched for the retry.
+            // Two CONSECUTIVE no-response attempts, not one: a single client can time out on its own.
+            if (noResponse[0]) {
+                if (sPreferNoPotClient && ++noResponseStreak >= TRANSPORT_DOWN_STREAK) {
+                    transportDown = true;
+                    mLastWalkTransportDown = true;
+                    android.util.Log.w("NetPath", "player-ring transport-down video=" + videoId
+                            + " attempts=" + attempt + " streak=" + noResponseStreak
+                            + " lastClient=" + nextType);
+                    break;
+                }
+            } else {
+                noResponseStreak = 0;
+            }
 
             // Diagnostic only (see sAuthTvSabrOnly). Only the exact SABR-only signature counts —
             // an age/geo-restricted TV verdict must not be reported as "TV is SABR-only".
@@ -611,6 +722,25 @@ public class VideoInfoService extends VideoInfoServiceBase {
             if (firstUnplayable == null && result != null) {
                 firstUnplayable = result;
             }
+        }
+
+        // A DEADLINE is not a verdict, and nothing learned may come out of it. The three learning
+        // sites all live INSIDE the loop and all require a parsed response from a real attempt -
+        // the bot-check trip (BotCheckDetector.isRepeatedLoginRequired / isBotCheckRequired), the
+        // anonymous-challenge counter, and the tv-sabr-only observation - so breaking out at the
+        // top of an iteration cannot reach any of them; the 403 quarantine
+        // (markCurrentPlaybackRouteForbidden) is driven by the player, not by this walk, and is
+        // likewise untouched. What remains is the RETURN VALUE: a partially-walked
+        // `firstUnplayable` is dropped rather than published, because a verdict from an unfinished
+        // walk is a claim the walk never established. It would seat that verdict in
+        // YouTubeMediaItemService's 30s negative cache (keyed on this videoId) and set
+        // mIsUnplayable, which disables switchNextFormat's pot-reset/circuit-break recovery. Null
+        // means "could not load", which is what actually happened and what the app's retry stack
+        // (ErrorFixerController's escalating budget) is built to handle.
+        // Same reasoning for a walk cut short by a dead link (see TRANSPORT_DOWN_STREAK): nothing
+        // was established about this video, so publish nothing about it.
+        if ((budgetExhausted || transportDown) && liveWithoutDash == null) {
+            return null;
         }
 
         // Nobody offered a dash manifest for this live stream: the held HLS-only result is
@@ -1052,9 +1182,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
-     * Per-attempt timeout for {@code client}: the authenticated head is given a cold-start
-     * budget, every other fast client keeps the short speculative one. See
-     * {@link #AUTH_HEAD_ATTEMPT_TIMEOUT_MS}.
+     * Per-attempt timeout for {@code client}: the authenticated head is given a cold-start budget,
+     * web-pot clients an even larger one that covers a cold BotGuard mint, and every other fast
+     * client keeps the short speculative one. See {@link #AUTH_HEAD_ATTEMPT_TIMEOUT_MS} and
+     * {@link #WEB_POT_ATTEMPT_TIMEOUT_MS}.
      */
     static long attemptTimeoutMsFor(AppClient client) {
         for (AppClient head : AUTHENTICATED_HEAD) {
@@ -1063,28 +1194,36 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
         }
 
+        if (client.isWebPotRequired()) {
+            return WEB_POT_ATTEMPT_TIMEOUT_MS;
+        }
+
         return CLIENT_ATTEMPT_TIMEOUT_MS;
     }
 
     /**
-     * Mobile-only guard: run a fast (non-web-pot) client attempt with a short timeout so a hanging
-     * ANDROID_VR fails over to the next client quickly instead of blocking on the 20s OkHttp read
-     * timeout. TV (flag unset) and web-pot clients (WEB_EMBED fallback for restricted videos, whose
-     * PO-token generation can legitimately take several seconds) run unbounded exactly as before.
-     * The authenticated head is budgeted separately - see {@link #attemptTimeoutMsFor}.
+     * Mobile-only guard: run every client attempt with a per-client deadline so a hanging client
+     * fails over instead of blocking until OkHttp gives up (and a PO-token mint, which OkHttp does
+     * not bound at all, cannot stall the walk indefinitely). Web-pot clients used to be exempted
+     * here entirely; they now get {@link #WEB_POT_ATTEMPT_TIMEOUT_MS}, a budget sized for a cold
+     * BotGuard mint, and the authenticated head keeps its own - see {@link #attemptTimeoutMsFor}.
+     * The effective budget is additionally clamped to what is left of the walk's overall
+     * {@link #RING_WALK_BUDGET_MS}. TV (flag unset) runs unbounded exactly as before.
      */
     private VideoInfo getVideoInfoWithTimeout(AppClient client, String videoId,
-            String clickTrackingParams, @Nullable CancellationSignal cancellationSignal) {
+            String clickTrackingParams, @Nullable CancellationSignal cancellationSignal,
+            long remainingWalkBudgetMs, boolean[] noResponseOut) {
         if (abortCanceledRequest(videoId, "pre-attempt", cancellationSignal)) {
             return null;
         }
 
-        if (!sPreferNoPotClient || client.isWebPotRequired()) {
+        if (!sPreferNoPotClient) {
             return getVideoInfoWithRentFix(client, videoId, clickTrackingParams);
         }
 
         Future<VideoInfo> future = getInfoExecutor().submit(() -> getVideoInfoWithRentFix(client, videoId, clickTrackingParams));
-        final long attemptTimeoutMs = attemptTimeoutMsFor(client);
+        final long attemptTimeoutMs = Math.max(1,
+                Math.min(attemptTimeoutMsFor(client), remainingWalkBudgetMs));
         final long deadlineNs = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(attemptTimeoutMs);
 
@@ -1098,7 +1237,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
             if (remainingNs <= 0) {
                 Log.e(TAG, "getVideoInfo timed out for client %s after %s ms, failing over...",
                         client, attemptTimeoutMs);
+                android.util.Log.w("NetPath", "player-ring attempt-timeout client=" + client
+                        + " video=" + videoId + " ms=" + attemptTimeoutMs
+                        + " clamped=" + (attemptTimeoutMs < attemptTimeoutMsFor(client) ? "y" : "n"));
                 future.cancel(true);
+                markNoResponse(noResponseOut); // never got a reply at all - see TRANSPORT_DOWN_STREAK
                 return null;
             }
 
@@ -1117,9 +1260,40 @@ public class VideoInfoService extends VideoInfoServiceBase {
             } catch (Exception e) {
                 Log.e(TAG, "getVideoInfo failed for client %s (%s), failing over...",
                         client, e.getMessage());
+                if (isTransportFailure(e)) {
+                    markNoResponse(noResponseOut);
+                }
                 return null;
             }
         }
+    }
+
+    /** Records that this attempt never produced an HTTP response. See TRANSPORT_DOWN_STREAK. */
+    private static void markNoResponse(boolean[] noResponseOut) {
+        if (noResponseOut != null && noResponseOut.length > 0) {
+            noResponseOut[0] = true;
+        }
+    }
+
+    /**
+     * True when the failure came from the transport rather than from YouTube's answer.
+     *
+     * <p>An {@link IOException} anywhere in the cause chain means the request never completed:
+     * RetrofitHelper.getResponse rethrows those as IllegalStateException specifically to "notify
+     * caller about network condition", and the executor wraps that again in an ExecutionException.
+     * An HTTP error status is NOT an IOException, so 403s and friends still count as real answers
+     * from a client and keep advancing the ring exactly as before.</p>
+     */
+    private static boolean isTransportFailure(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof java.io.IOException) {
+                return true;
+            }
+            if (cause.getCause() == cause) {
+                break; // self-referential chain
+            }
+        }
+        return false;
     }
 
     private static ExecutorService getInfoExecutor() {

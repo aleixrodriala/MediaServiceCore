@@ -30,15 +30,25 @@ internal class PlayerDataExtractor(val playerUrl: String) {
     }
 
     init {
-        // Get the code from the cache
-        restoreAllData()
-        checkSigData()
-        checkCpnData()
-
-        if (cpnCode == null || signatureTimestamp == null) {
-            fetchAllData()
+        // On the cold path (new player JS, nothing cached) the two steps below both need the same
+        // ~680 KB player body: checkSigData resolves it through the challenge provider, fetchAllData
+        // re-reads it for the cpn code + signature timestamp. Downloading it twice costs a second
+        // full body under AppServiceIntCached's player lock, which every other /player in the
+        // process is queued behind (~18s on a 300 kbps link). The memo makes one download feed both
+        // and is dropped when this constructor returns - order, synchronicity and the
+        // validate()/persist contract are deliberately untouched (STATUS.md: the once-per-rotation
+        // dummy solve must stay synchronous, firstValidExtractor's validate() depends on it).
+        YouTubeInfoExtractor.withPlayerMemo {
+            // Get the code from the cache
+            restoreAllData()
+            checkSigData()
             checkCpnData()
-            persistAllData()
+
+            if (cpnCode == null || signatureTimestamp == null) {
+                fetchAllData()
+                checkCpnData()
+                persistAllData()
+            }
         }
 
         // CPN validation also starts a short-lived J2V8 runtime. Starting the much heavier

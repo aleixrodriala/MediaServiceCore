@@ -30,6 +30,23 @@ public class VideoInfoVisitOrderTest {
         assertTrue("speculative clients keep the short budget", speculative < head);
     }
 
+    /**
+     * Web-pot clients used to run with NO per-attempt deadline at all, which is what made a bad
+     * link able to spend minutes inside one walk. They are bounded now, but the bound must stay
+     * generous: a cold BotGuard mint plus an 8s-connect/8s-read /player is a legitimate wait, and
+     * cutting it short abandons the only client that can serve an enforced video (HANDOFF section 8).
+     */
+    @Test
+    public void webPotClientsGetABudgetSizedForAColdMint() {
+        long webPot = VideoInfoService.attemptTimeoutMsFor(AppClient.WEB_EMBED);
+        long speculative = VideoInfoService.attemptTimeoutMsFor(AppClient.ANDROID_VR);
+
+        assertEquals(webPot, VideoInfoService.attemptTimeoutMsFor(AppClient.WEB));
+        assertEquals(webPot, VideoInfoService.attemptTimeoutMsFor(AppClient.GEO));
+        assertTrue("8s connect + 8s read must fit inside a web-pot attempt", webPot >= 16_000);
+        assertTrue("web-pot needs more room than a speculative fast client", webPot > speculative);
+    }
+
     @Test
     public void tvOrderKeepsLastWinnerSecond() {
         List<AppClient> order = VideoInfoService.buildVisitOrder(
