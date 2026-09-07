@@ -5,6 +5,7 @@ import static org.junit.Assert.assertTrue;
 
 import android.app.Application;
 
+import com.google.gson.JsonParser;
 import com.liskovsoft.youtubeapi.app.AppService;
 
 import org.junit.Before;
@@ -174,7 +175,9 @@ public class QueryBuilderTimestampTest {
     }
 
     private void assertTimestamp(String query, int timestamp) {
-        assertTrue(query, query.contains("\"signatureTimestamp\": " + timestamp + ","));
+        assertEquals(timestamp, JsonParser.parseString(query).getAsJsonObject()
+                .getAsJsonObject("playbackContext").getAsJsonObject("contentPlaybackContext")
+                .get("signatureTimestamp").getAsInt());
     }
 
     private void assertSessionFields(String query) {

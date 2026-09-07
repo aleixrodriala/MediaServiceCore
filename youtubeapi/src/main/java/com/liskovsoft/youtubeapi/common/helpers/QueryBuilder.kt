@@ -101,7 +101,36 @@ internal class QueryBuilder(private val client: AppClient) {
             json.lineSequence().forEach { append(it.trim()) }
         }
 
-        return result
+        // Upstream 4d128db8: optional chunks leave commas before closing objects. Remove
+        // those syntax commas only; a literal ",}" inside a quoted field is data.
+        return removeTrailingObjectCommas(result)
+    }
+
+    private fun removeTrailingObjectCommas(json: String): String = buildString(json.length) {
+        var quoted = false
+        var escaped = false
+        for (index in json.indices) {
+            val char = json[index]
+            if (quoted) {
+                append(char)
+                if (escaped) {
+                    escaped = false
+                } else if (char == '\\') {
+                    escaped = true
+                } else if (char == '"') {
+                    quoted = false
+                }
+                continue
+            }
+            if (char == '"') {
+                quoted = true
+            } else if (char == ',') {
+                var next = index + 1
+                while (next < json.length && json[next].isWhitespace()) next++
+                if (next < json.length && json[next] == '}') continue
+            }
+            append(char)
+        }
     }
 
     private fun createClientChunk(): String {
