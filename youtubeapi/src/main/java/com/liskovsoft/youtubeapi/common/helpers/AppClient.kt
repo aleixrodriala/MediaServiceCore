@@ -129,7 +129,7 @@ internal enum class AppClient(
      * call-site notes in VideoInfoService.
      */
     val isAuthCapable: Boolean
-        get() = isAuthSupported || (this == WEB_EMBED && isWebEmbedAuthEnabled())
+        get() = isAuthSupported || this == webAuthClient()
     /**
      * Clients whose GVS policy carries yt-dlp's `not_required_with_player_token`: a PO token in
      * the /player REQUEST removes the requirement from the media URLs it returns. That list is
@@ -199,24 +199,56 @@ internal enum class AppClient(
          * cookie-derived SAPISIDHASH; it REMOVED OAuth support outright ("Login with OAuth is no
          * longer supported", _base.py) and drops every client lacking SUPPORTS_COOKIES when
          * authenticated, so it never mixes account and anonymous clients in one walk as we do.
-         * Ours is a TV device-flow OAuth bearer, and InnerTube will not take one on a web client.
          *
-         * So restoring authenticated playback is a CREDENTIAL problem, not a client-ordering one -
-         * that is the thread to pull next. The flag stays because it is cheap and self-correcting
-         * (WEB_EMBED leads, spends one round trip on the 400, falls through to VISIONOS, which
-         * plays) and re-running it is the cheapest way to notice if YouTube's auth handling moves.
+         * CONFIRMED 2026-09-07 by a three-arm run that isolated the bearer as the only variable
+         * (forced client, same video, same network, `scratchpad/webauth.py`):
+         *
+         *     WEB_EMBED + bearer   HTTP 400   body hash 7b125bdfc2
+         *     WEB       + bearer   HTTP 400   body hash 7b125bdfc2   <- identical body
+         *     WEB       anonymous  HTTP 200   40 formats
+         *
+         * The 400 follows the CREDENTIAL, not the embed context: the same WEB client answers 200
+         * without the bearer and 400 with it, and WEB and WEB_EMBED fail with a byte-identical
+         * body. Ours is a TV device-flow OAuth bearer, and InnerTube will not take one on a web
+         * client - that is now measured rather than inferred. (For contrast, the same bearer gets
+         * HTTP 200 from TV in the same run; TVHTML5's refusal is a playability verdict, not a
+         * transport-level rejection. See srvAuth= and HANDOFF S17.)
+         *
+         * So restoring authenticated playback is a CREDENTIAL problem, not a client-ordering one,
+         * and no reordering of web clients can route around it. The gate stays because it is cheap
+         * and self-correcting, and re-running the three arms is the cheapest way to notice if
+         * YouTube's auth handling moves.
          *
          * Never called on TV.
          */
         @Volatile
-        private var mWebEmbedAuthEnabled: Boolean = false
+        private var mWebAuthClient: AppClient? = null
 
+        /**
+         * Which web-family client carries the account, or null for none (the shipped default).
+         *
+         * Widened from a WEB_EMBED boolean on 2026-09-07 to answer the one question the 400 above
+         * leaves open: it was only ever measured on WEB_EMBED, so "InnerTube refuses an OAuth
+         * bearer on a web client" and "InnerTube refuses this bearer in an EMBED context" both fit
+         * the evidence. Pointing the same gate at plain [WEB] separates them in one round trip,
+         * which is worth knowing before anyone writes SAPISIDHASH plumbing on the strength of the
+         * first reading.
+         */
         @JvmStatic
-        fun setWebEmbedAuthEnabled(enabled: Boolean) {
-            mWebEmbedAuthEnabled = enabled
+        fun setWebAuthClient(client: AppClient?) {
+            mWebAuthClient = client
         }
 
         @JvmStatic
-        fun isWebEmbedAuthEnabled(): Boolean = mWebEmbedAuthEnabled
+        fun webAuthClient(): AppClient? = mWebAuthClient
+
+        /** Back-compat shim: `debug.arc.web_auth=1` still means exactly WEB_EMBED. */
+        @JvmStatic
+        fun setWebEmbedAuthEnabled(enabled: Boolean) {
+            mWebAuthClient = if (enabled) WEB_EMBED else null
+        }
+
+        @JvmStatic
+        fun isWebEmbedAuthEnabled(): Boolean = mWebAuthClient == WEB_EMBED
     }
 }

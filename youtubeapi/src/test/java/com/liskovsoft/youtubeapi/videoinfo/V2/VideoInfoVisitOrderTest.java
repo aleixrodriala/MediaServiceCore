@@ -558,6 +558,64 @@ public class VideoInfoVisitOrderTest {
         }
     }
 
+    // ---- The gate widened to a NAMED client (2026-09-07) ---------------------------------
+    //
+    // Measured on the Pixel 9 the same day: WEB_EMBED and plain WEB both answer HTTP 400 with a
+    // byte-identical body when the bearer is attached, and WEB answers 200 without it. The gate
+    // takes a client name so that comparison stays runnable if YouTube's auth handling moves.
+
+    /** Naming a client arms exactly that one, and leaves the TV predicate alone. */
+    @Test
+    public void namingAWebClientArmsOnlyThatClient() {
+        assertTrue(VideoInfoService.setWebAuthClient("WEB"));
+
+        assertTrue(AppClient.WEB.isAuthCapable());
+        assertFalse("the TV-only predicate must not move", AppClient.WEB.isAuthSupported());
+        assertFalse("arming WEB must not also arm WEB_EMBED",
+                AppClient.WEB_EMBED.isAuthCapable());
+        for (AppClient client : AppClient.values()) {
+            if (client != AppClient.WEB) {
+                assertEquals("no other client may change: " + client,
+                        client.isAuthSupported(), client.isAuthCapable());
+            }
+        }
+    }
+
+    /** The old boolean keeps its exact meaning, so debug.arc.web_auth=1 is unchanged. */
+    @Test
+    public void theBooleanShimStillMeansWebEmbed() {
+        VideoInfoService.setWebEmbedAuthEnabled(true);
+
+        assertTrue(AppClient.isWebEmbedAuthEnabled());
+        assertTrue(AppClient.WEB_EMBED.isAuthCapable());
+        assertFalse(AppClient.WEB.isAuthCapable());
+    }
+
+    /** A typo must never hand the account to a TV or native client. */
+    @Test
+    public void aNonWebClientNameIsRefused() {
+        assertFalse(VideoInfoService.setWebAuthClient("ANDROID_VR"));
+        assertFalse(VideoInfoService.setWebAuthClient("TV"));
+        assertFalse(VideoInfoService.setWebAuthClient("NOT_A_CLIENT"));
+
+        for (AppClient client : AppClient.values()) {
+            assertEquals("a refused name must arm nothing: " + client,
+                    client.isAuthSupported(), client.isAuthCapable());
+        }
+    }
+
+    /** Clearing it returns the ring to the shipped default. */
+    @Test
+    public void clearingTheGateDisarmsEveryWebClient() {
+        assertTrue(VideoInfoService.setWebAuthClient("WEB_EMBED"));
+        assertTrue(AppClient.WEB_EMBED.isAuthCapable());
+
+        assertTrue(VideoInfoService.setWebAuthClient(null));
+        assertFalse(AppClient.WEB_EMBED.isAuthCapable());
+        assertTrue(VideoInfoService.setWebAuthClient(""));
+        assertFalse(AppClient.WEB_EMBED.isAuthCapable());
+    }
+
     @After
     public void resetWebEmbedAuthGate() {
         VideoInfoService.setWebEmbedAuthEnabled(false);

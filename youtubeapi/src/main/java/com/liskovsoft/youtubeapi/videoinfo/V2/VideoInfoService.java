@@ -290,6 +290,30 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
+     * Debug playground, mobile-only: point the web-family account gate at a NAMED client
+     * instead of just WEB_EMBED, so the HTTP 400 measured on WEB_EMBED can be attributed.
+     * Accepts a client name; returns false for anything that is not a web-family client on
+     * the ring, so a typo cannot silently arm the account on a TV or native client.
+     */
+    public static boolean setWebAuthClient(@Nullable String clientName) {
+        if (clientName == null || clientName.trim().isEmpty()) {
+            AppClient.setWebAuthClient(null);
+            return true;
+        }
+        try {
+            AppClient client = AppClient.valueOf(
+                    clientName.trim().toUpperCase(java.util.Locale.US));
+            if (!client.isWebClient() && !client.isEmbedded()) {
+                return false;
+            }
+            AppClient.setWebAuthClient(client);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    /**
      * Called once from the mobile flavor (MobileMainApplication). Initializes the WebView/BotGuard
      * generator in the background so the first Web-family request finds it warm. Never called on
      * TV, and deliberately does not mint a cross-platform token for Android/TV/iOS clients.
