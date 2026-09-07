@@ -73,9 +73,10 @@ public class PlaylistServiceWrapper extends PlaylistService {
     }
 
     private List<PlaylistInfo> getCachedPlaylistInfo(List<PlaylistInfo> playlistsInfos, String videoId) {
+        // Keep remote titles even before the first local playlist group exists.
+        mCachedPlaylistInfos = playlistsInfos;
         List<ItemGroup> playlistGroups = PlaylistGroupServiceImpl.getPlaylistGroups();
         if (!playlistGroups.isEmpty()) {
-            mCachedPlaylistInfos = playlistsInfos;
             List<PlaylistInfo> result = new ArrayList<>();
 
             if (playlistsInfos != null && !playlistsInfos.isEmpty()) {
