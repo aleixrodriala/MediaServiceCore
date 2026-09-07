@@ -132,6 +132,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private static final long MIN_ATTEMPT_BUDGET_MS = 1_500;
     private static final long BOT_CHECK_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(15);
     /**
+     * While the circuit is armed, let ONE open per interval actually walk the ring instead of
+     * serving the canned challenge verdict. A guest-session throttle lifts on the server's clock,
+     * not ours, and without a probe the app would sit out the full {@link #BOT_CHECK_COOLDOWN_MS}
+     * after the block had already gone. One extra walk a minute is a rounding error next to
+     * telling the user "you are a bot" for fourteen minutes longer than YouTube did.
+     */
+    private static final long BOT_CHECK_PROBE_INTERVAL_MS = TimeUnit.MINUTES.toMillis(1);
+    /**
+     * DIFFERENT videos that must answer an account-bearing client with a no-media verdict before
+     * that route is quarantined (see {@link #isAuthRouteReloadVerdict}). One is meaningless - a
+     * private, deleted, age-gated or geo-blocked video is genuinely UNPLAYABLE with no formats, and
+     * demoting the account for it would cost the user authenticated playback on the NEXT video. The
+     * same shape on two different videoIds cannot be a per-video verdict; it is the route.
+     */
+    private static final int AUTH_RELOAD_QUARANTINE_MIN_HITS = 2;
+    /**
      * Signed-in probe head, most-likely-to-work first. yt-dlp's {@code _DEFAULT_AUTHED_CLIENTS} is
      * {@code ('tv_downgraded', 'web')} — plain {@code tv} appears in NO default client list — and
      * the 2026-07-27 Pixel-9 round measured why: TVHTML5 7.x (TV) is handed googlevideo URLs that
@@ -264,6 +280,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
+     * Debug playground, mobile-only, OFF by default: let WEB_EMBED carry the account on /player
+     * and lead the fallback walk with it, the way yt-dlp's signed-in client list does. AppClient
+     * is module-internal, so the phone flavor flips it through here like every other switch.
+     * Read {@link AppClient#setWebEmbedAuthEnabled} for why this is not a default.
+     */
+    public static void setWebEmbedAuthEnabled(boolean enabled) {
+        AppClient.setWebEmbedAuthEnabled(enabled);
+    }
+
+    /**
      * Called once from the mobile flavor (MobileMainApplication). Initializes the WebView/BotGuard
      * generator in the background so the first Web-family request finds it warm. Never called on
      * TV, and deliberately does not mint a cross-platform token for Android/TV/iOS clients.
@@ -330,8 +356,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private boolean mAuthBlock;
     private volatile long mBotCheckCooldownUntilMs;
     private volatile boolean mBotCheckAuthenticatedAttempted;
+    // Whether the walk that armed the circuit actually reached the END of the ring. Suppressing
+    // later opens is only defensible once every client has been asked and every one refused; a
+    // challenge seen at attempt 3 of 10 (the 2026-09-07 Rusowsky walk) establishes nothing about
+    // the seven clients that were never tried.
+    private volatile boolean mBotCheckRingExhausted;
+    private volatile long mBotCheckNextProbeAtMs;
     @Nullable
     private volatile VideoInfo mBotCheckResult;
+    // Consecutive no-media verdicts per account-bearing client, keyed by client and deduplicated by
+    // videoId (see AUTH_RELOAD_QUARANTINE_MIN_HITS). Cleared for a client as soon as it answers
+    // with anything else, so a route that recovers is never held down by stale hits.
+    private final java.util.Map<AppClient, ReloadStreak> mAuthReloadStreaks =
+            new java.util.concurrent.ConcurrentHashMap<>();
     // 403-quarantine of account-bearing routes, held PER CLIENT and scoped to one network. Per
     // client because the two TVHTML5 variants fail independently: TV (TVHTML5 7.x) hands out
     // googlevideo URLs that 403 every chunk past the pot-less ~60s mark, while TV_DOWNGRADED
@@ -355,6 +392,124 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
     public interface CancellationSignal {
         boolean isCanceled();
+    }
+
+    /** Per-client no-media streak. Mutated only under this service's monitor. */
+    private static final class ReloadStreak {
+        @Nullable
+        String lastVideoId;
+        int hits;
+    }
+
+    /**
+     * Walk-scoped bot-check bookkeeping, extracted from {@link #firstPlayable}'s loop so the
+     * decision it encodes can be tested without a network.
+     * <p>
+     * The decision: a challenge answered to an ANONYMOUS request is evidence about the guest
+     * identity, not about the video or the ring. Returning on it aborted the walk mid-ring - on
+     * 2026-09-07 (Fo89b8zAIE4, Pixel 9, cell) at attempt 3 of 10, before ANDROID_VR, which answered
+     * the identical prefix with playable=y and 28 usable formats eight minutes later on the same
+     * device, account and network (aqz-KE-bpKQ). So the verdict is HELD while any client remains
+     * that does not answer from the challenged identity, published only if the ring then ends with
+     * nothing playable, and discarded outright the moment something plays.
+     * <p>
+     * Separately it tracks whether the walk reached the END of the ring. Suppressing later opens
+     * (see {@link #mBotCheckRingExhausted}) is only defensible once every client has been asked;
+     * a walk that ran out of clock or link established nothing about the clients it never reached.
+     * <p>
+     * One instance per walk. Not thread-safe: {@code firstPlayable} runs under this service's
+     * monitor and the instance never escapes it.
+     */
+    static final class BotCheckWalkState {
+        @Nullable
+        private VideoInfo mResult;
+        @Nullable
+        private AppClient mClient;
+        @Nullable
+        private String mSignal;
+        private boolean mAuthAttempted;
+        private boolean mCutShort;
+
+        /** The verdict and the circuit arguments a finished walk should act on. */
+        static final class Outcome {
+            final VideoInfo result;
+            final AppClient client;
+            final String signal;
+            final boolean authAttempted;
+            final boolean ringExhausted;
+
+            Outcome(VideoInfo result, AppClient client, String signal, boolean authAttempted,
+                    boolean ringExhausted) {
+                this.result = result;
+                this.client = client;
+                this.signal = signal;
+                this.authAttempted = authAttempted;
+                this.ringExhausted = ringExhausted;
+            }
+        }
+
+        /** An early exit (cancel, walk budget, dead link): the ring was not finished. */
+        void markCutShort() {
+            mCutShort = true;
+        }
+
+        /** @see #mBotCheckRingExhausted */
+        boolean ringExhausted() {
+            return !mCutShort;
+        }
+
+        boolean hasHeldChallenge() {
+            return mResult != null;
+        }
+
+        /**
+         * Records a challenge and answers whether the walk may carry on past it. False means the
+         * caller must trip the circuit and return this result now, exactly as it always did.
+         * <p>
+         * Only the FIRST challenge of a walk is held: it is the one the user's error screen should
+         * name, and later ones are the same guest identity being refused again.
+         *
+         * @param mobile {@code sPreferNoPotClient}. TV never walks on - its historical
+         *               abort-and-return behaviour is preserved byte for byte.
+         */
+        boolean recordChallenge(VideoInfo result, AppClient client, String signal,
+                boolean authenticated, List<AppClient> order, int index, boolean mobile) {
+            if (!mobile || !hasUnchallengedClientAfter(order, index, authenticated)) {
+                return false;
+            }
+
+            if (mResult == null) {
+                mResult = result;
+                mClient = client;
+                mSignal = signal;
+                mAuthAttempted = authenticated;
+            }
+            return true;
+        }
+
+        /**
+         * A client served the video. Whatever challenge was held is no longer this walk's verdict -
+         * the guest identity being refused says nothing once something else has played.
+         */
+        void discardOnPlayable() {
+            mResult = null;
+            mClient = null;
+            mSignal = null;
+            mAuthAttempted = false;
+        }
+
+        /**
+         * What a walk that ended WITHOUT a playable client should publish, or null for "nothing was
+         * established". A dead link excludes everything: when nothing answered, nothing was learned
+         * about anything (see TRANSPORT_DOWN_STREAK).
+         */
+        @Nullable
+        Outcome finish(boolean transportDown) {
+            if (mResult == null || transportDown) {
+                return null;
+            }
+            return new Outcome(mResult, mClient, mSignal, mAuthAttempted, ringExhausted());
+        }
     }
 
     public static VideoInfoService instance() {
@@ -549,7 +704,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
                         + mAnonChallengeNetwork + " first=" + visitOrder.get(0));
             }
             if (authenticatedWebFirst) {
-                android.util.Log.w("NetPath", "player-ring authenticated-web-first reason=recent-gvs-403"
+                // Reason deliberately generic: the head can now be quarantined by a media 403 OR by
+                // the no-media verdict (see noteAuthRouteVerdict), and the per-client cause is
+                // already on the quarantine-auth-route line that armed it.
+                android.util.Log.w("NetPath", "player-ring authenticated-web-first reason=auth-head-quarantined"
                         + " failedClients=" + forbiddenAuthClients
                         + " network=" + mAuthRouteForbiddenNetwork);
             } else if (authenticated && !recoveryWalk && !forbiddenAuthClients.isEmpty()) {
@@ -570,6 +728,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
         VideoInfo firstUnplayable = null;
         VideoInfo firstLoginRequired = null;
         VideoInfo liveWithoutDash = null;
+        // Holds a challenge the walk carried on past, and tracks whether the ring was finished.
+        // See BotCheckWalkState.
+        final BotCheckWalkState botCheck = new BotCheckWalkState();
         boolean authenticatedClientAttempted = false;
         int anonChallengeHits = 0;
         int attempt = 0;
@@ -580,8 +741,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         int noResponseStreak = 0;
         boolean transportDown = false;
 
-        for (AppClient nextType : visitOrder) {
+        for (int visitIndex = 0; visitIndex < visitOrder.size(); visitIndex++) {
+            final AppClient nextType = visitOrder.get(visitIndex);
             if (abortCanceledRequest(videoId, "client-ring", cancellationSignal)) {
+                botCheck.markCutShort();
                 break;
             }
 
@@ -590,6 +753,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             long remainingBudgetMs = walkDeadlineMs - android.os.SystemClock.elapsedRealtime();
             if (sPreferNoPotClient && attempt > 0 && remainingBudgetMs < MIN_ATTEMPT_BUDGET_MS) {
                 budgetExhausted = true;
+                botCheck.markCutShort();
                 android.util.Log.w("NetPath", "player-ring budget-exhausted video=" + videoId
                         + " attempts=" + attempt + " budgetMs=" + RING_WALK_BUDGET_MS
                         + " remainingMs=" + remainingBudgetMs + " nextClient=" + nextType
@@ -612,13 +776,32 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     nextType, videoId, clickTrackingParams, cancellationSignal, remainingBudgetMs,
                     noResponse);
             if (abortCanceledRequest(videoId, "post-attempt", cancellationSignal)) {
+                botCheck.markCutShort();
                 break;
             }
-            if (authenticated && nextType.isAuthSupported()) {
+            // isAuthCapable, not isAuthSupported: this flag answers "has the account had its turn
+            // yet?", which gates the bot-check defer-until-auth-client branch below. If WEB_EMBED
+            // is carrying the account (see AppClient.setWebEmbedAuthEnabled) then once it has been
+            // attempted the account HAS had its turn, and holding the walk open for a TV client
+            // that is currently answering "reload page" to everything buys nothing.
+            if (authenticated && nextType.isAuthCapable()) {
                 authenticatedClientAttempted = true;
             }
             boolean playable = result != null && !result.isUnplayable();
             logPlayerOutcome(videoId, nextType, attempt, result);
+
+            // The account-bearing route is currently broken server-side (see
+            // isAuthRouteReloadVerdict). Demote it the same way a media 403 does, so the walk stops
+            // spending two guaranteed-dead round trips on the head of every signed-in open.
+            // isAuthSupported (TV family), NOT isAuthCapable - deliberately. Two reasons. The
+            // "reload page" shape is a TVHTML5 server behaviour; the same shape from an
+            // authenticated WEB_EMBED is far more likely to be a genuinely unplayable video, and
+            // quarantining on it would demote the account route for the wrong reason. And the
+            // quarantine set this feeds is counted against AUTHENTICATED_HEAD.length to decide
+            // authenticatedWebFirst, so admitting a non-head client would corrupt that arithmetic.
+            if (sPreferNoPotClient && authenticated && nextType.isAuthSupported()) {
+                noteAuthRouteVerdict(nextType, videoId, result);
+            }
 
             // NEWTUBE(net): a dead link is not a bad client - stop walking the ring.
             //
@@ -637,6 +820,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             if (noResponse[0]) {
                 if (sPreferNoPotClient && ++noResponseStreak >= TRANSPORT_DOWN_STREAK) {
                     transportDown = true;
+                    botCheck.markCutShort();
                     mLastWalkTransportDown = true;
                     android.util.Log.w("NetPath", "player-ring transport-down video=" + videoId
                             + " attempts=" + attempt + " streak=" + noResponseStreak
@@ -667,6 +851,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
                                 result.getRawPlayabilityStatus(),
                                 result.getPlayabilityStatus());
                 if (result.isBotCheckRequired() || repeatedLoginRequired) {
+                    final String signal =
+                            result.isBotCheckRequired() ? "explicit" : "repeated-login";
                     // A challenge answered to a request that carried no account is evidence about
                     // the ANONYMOUS identity, not about this video. Count it so the walk can learn
                     // to stop leading with a partition the network is currently rejecting.
@@ -678,12 +864,21 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     // verdicts prevent the later TV client from serving auth-only content.
                     if (authenticated && !authenticatedClientAttempted) {
                         android.util.Log.d("NetPath", "bot-check defer-until-auth-client client="
-                                + nextType + " signal="
-                                + (result.isBotCheckRequired() ? "explicit" : "repeated-login"));
+                                + nextType + " signal=" + signal);
+                    } else if (botCheck.recordChallenge(result, nextType, signal, authenticated,
+                            visitOrder, visitIndex, sPreferNoPotClient)) {
+                        // NEWTUBE(net): a guest challenge is not a verdict on the whole ring.
+                        //
+                        // The challenge is bound to the WEB client context, not to the visitor: the
+                        // ANDROID_VR request that DID serve the video carried the very same
+                        // visitorData (visitor=c3027841b6) as the WEB_EMBED request challenged
+                        // moments earlier. Every remaining !isWebPotRequired() client is therefore
+                        // still worth a round trip. See BotCheckWalkState for the full evidence.
+                        android.util.Log.d("NetPath", "bot-check walk-on client=" + nextType
+                                + " signal=" + signal + " attempt=" + attempt);
                     } else {
-                        tripBotCheckCircuit(result, nextType,
-                                result.isBotCheckRequired() ? "explicit" : "repeated-login",
-                                authenticated);
+                        tripBotCheckCircuit(result, nextType, signal, authenticated,
+                                botCheck.ringExhausted());
                         return result;
                     }
                 }
@@ -701,6 +896,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
 
             if (playable) {
+                // Something played, so a challenge this walk carried on past is no longer its
+                // verdict - and the circuit must not arm behind a successful open.
+                botCheck.discardOnPlayable();
                 // The anonymous partition just served a video, so whatever guest challenge was
                 // remembered has lifted. Drop it immediately rather than sitting out the TTL.
                 if (nextType.isWebPotRequired() && !result.isAuth()) {
@@ -739,6 +937,21 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // (ErrorFixerController's escalating budget) is built to handle.
         // Same reasoning for a walk cut short by a dead link (see TRANSPORT_DOWN_STREAK): nothing
         // was established about this video, so publish nothing about it.
+        //
+        // A CHALLENGE is the exception, and it is checked first: unlike `firstUnplayable` it is a
+        // verdict the server actually stated, and it is the most actionable thing the walk learned
+        // - the user gets YouTube's own reason instead of a bare "could not load". Arming the
+        // suppression circuit is still conditional on the walk having FINISHED (see
+        // mBotCheckRingExhausted), so a challenge seen before the clock ran out publishes the
+        // reason without silencing the next fifteen minutes of opens. A dead link is excluded
+        // outright: when nothing answered, nothing was established about anything.
+        BotCheckWalkState.Outcome challenge = botCheck.finish(transportDown);
+        if (challenge != null) {
+            tripBotCheckCircuit(challenge.result, challenge.client, challenge.signal,
+                    challenge.authAttempted, challenge.ringExhausted);
+            return challenge.result;
+        }
+
         if ((budgetExhausted || transportDown) && liveWithoutDash == null) {
             return null;
         }
@@ -746,6 +959,93 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // Nobody offered a dash manifest for this live stream: the held HLS-only result is
         // still strictly better than an unplayable verdict.
         return liveWithoutDash != null ? liveWithoutDash : firstUnplayable;
+    }
+
+    /**
+     * Whether any client AFTER {@code index} can still answer despite the anonymous web identity
+     * being challenged. Web-pot clients all share that identity, so they are not candidates; every
+     * other client either carries the account or presents a different platform identity. Mirrors
+     * the loop's own skip rule, including its authenticated TV_DOWNGRADED carve-out, so the walk
+     * never claims a candidate it would then skip.
+     */
+    static boolean hasUnchallengedClientAfter(List<AppClient> order, int index,
+            boolean authenticated) {
+        for (int i = index + 1; i < order.size(); i++) {
+            AppClient candidate = order.get(i);
+            if (candidate.isWebPotRequired()) {
+                continue;
+            }
+            if (isSkippedClient(candidate)
+                    && !(authenticated && candidate == AppClient.TV_DOWNGRADED)) {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * A /player verdict that carries the account, refuses the video and offers NO media at all.
+     * Deliberately structural rather than textual: the phone runs in whatever language the user
+     * picked, and the reason string is localized (the 2026-09-07 capture is Spanish). Shape alone
+     * cannot separate this from a genuinely unplayable video, which is why the caller requires the
+     * same shape on {@link #AUTH_RELOAD_QUARANTINE_MIN_HITS} DIFFERENT videos before acting.
+     * {@link BotCheckDetector#isReloadPageVerdict} only annotates the log line.
+     */
+    private static boolean isAuthRouteReloadVerdict(AppClient client, @Nullable VideoInfo result) {
+        // isAuthSupported, not isAuthCapable: this rule was written for the TVHTML5 "reload page"
+        // outage and must not be applied to an account-bearing WEB_EMBED. See the caller.
+        if (result == null || !client.isAuthSupported() || !result.isAuth()
+                || !result.isUnplayable()) {
+            return false;
+        }
+
+        boolean hasAdaptive = result.getAdaptiveFormats() != null
+                && !result.getAdaptiveFormats().isEmpty();
+        boolean hasRegular = result.getRegularFormats() != null
+                && !result.getRegularFormats().isEmpty();
+        return !hasAdaptive && !hasRegular
+                && result.getDashManifestUrl() == null
+                && result.getHlsManifestUrl() == null
+                && result.getServerAbrStreamingUrl() == null;
+    }
+
+    /**
+     * Tracks {@link #isAuthRouteReloadVerdict} per account-bearing client and quarantines the route
+     * once the same shape has come back for {@link #AUTH_RELOAD_QUARANTINE_MIN_HITS} different
+     * videos. Any other outcome from that client clears its streak, so the route is held down only
+     * while it is actually refusing everything.
+     */
+    private void noteAuthRouteVerdict(AppClient client, String videoId,
+            @Nullable VideoInfo result) {
+        if (!isAuthRouteReloadVerdict(client, result)) {
+            mAuthReloadStreaks.remove(client);
+            return;
+        }
+
+        ReloadStreak streak = mAuthReloadStreaks.get(client);
+        if (streak == null) {
+            streak = new ReloadStreak();
+            mAuthReloadStreaks.put(client, streak);
+        }
+        // Same video twice (a reload, a retry) is one piece of evidence, not two.
+        if (videoId.equals(streak.lastVideoId)) {
+            return;
+        }
+        streak.lastVideoId = videoId;
+        streak.hits++;
+
+        if (streak.hits < AUTH_RELOAD_QUARANTINE_MIN_HITS) {
+            android.util.Log.d("NetPath", "player-ring auth-route no-media client=" + client
+                    + " hits=" + streak.hits + "/" + AUTH_RELOAD_QUARANTINE_MIN_HITS
+                    + " reloadPage=" + (BotCheckDetector.isReloadPageVerdict(
+                            result.getRawPlayabilityStatus(), result.getPlayabilityStatus())
+                            ? "y" : "n"));
+            return;
+        }
+
+        mAuthReloadStreaks.remove(client);
+        quarantineAuthRoute(client, "no-media-verdict");
     }
 
     /** One credential-free line per parsed /player result, including HTTP-200 playback failures. */
@@ -772,12 +1072,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 + " attempt=" + attempt
                 + " status=" + safeLogValue(result.getRawPlayabilityStatus(), 32)
                 + " playable=" + (!result.isUnplayable() ? "y" : "n")
+                // auth = what WE sent. srvAuth = what the SERVER says it saw (logged_in tracking
+                // param), or "?" when the response carried none. Only the second can tell an
+                // honoured credential from one that was ignored and served anonymously.
                 + " auth=" + (result.isAuth() ? "y" : "n")
+                + " srvAuth=" + serverAuthFlag(result)
                 + " formats=" + adaptive + '+' + regular + " usableAdaptive=" + usableAdaptive
                 + " dash=" + (result.getDashManifestUrl() != null ? "y" : "n")
                 + " hls=" + (result.getHlsManifestUrl() != null ? "y" : "n")
                 + " sabr=" + (result.getServerAbrStreamingUrl() != null ? "y" : "n")
                 + " reason=\"" + safeLogValue(result.getPlayabilityStatus(), 160) + "\"");
+    }
+
+    /** "y"/"n" from the server's own logged_in tracking param, "?" when it did not send one. */
+    private static String serverAuthFlag(VideoInfo result) {
+        Boolean loggedIn = result.isServerLoggedIn();
+        return loggedIn == null ? "?" : (loggedIn ? "y" : "n");
     }
 
     private static String safeLogValue(@Nullable String value, int maxLength) {
@@ -807,6 +1117,71 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 result.add(type);
             }
         }
+        return result;
+    }
+
+    /**
+     * NEWTUBE(auth-probe): with WEB_EMBED carrying the account, it is no longer "the guest client
+     * we fall through to" - it is the account route, and yt-dlp puts it FIRST for a signed-in
+     * extraction ({@code _DEFAULT_AUTHED_CLIENTS[0]}, commit 5d5b634). So on the walk that has
+     * given up on the TV head it leads, and {@link #PREFERRED_FIRST_CLIENT} stays right behind it
+     * as the immediate safety net if the bearer is refused.
+     * <p>
+     * Applied only when {@link AppClient#getSWebEmbedAuthEnabled()} is on, so with the flag off
+     * the order is byte-identical to before. Deliberately composed AFTER
+     * {@link #leadWithTokenFreeClient} rather than replacing it: that keeps VISIONOS at index 1
+     * instead of dropping it back down the ring, which is what preserves the measured
+     * "0 bot checks, 0 403s" behaviour on the fallback path.
+     */
+    static List<AppClient> leadWithAuthenticatedWebClient(List<AppClient> order) {
+        if (order.isEmpty() || order.get(0) == AppClient.WEB_EMBED
+                || !order.contains(AppClient.WEB_EMBED)) {
+            return order;
+        }
+
+        List<AppClient> result = new java.util.ArrayList<>(order.size());
+        result.add(AppClient.WEB_EMBED);
+        for (AppClient type : order) {
+            if (type != AppClient.WEB_EMBED) {
+                result.add(type);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Slots {@link #PREFERRED_FIRST_CLIENT} in immediately BEFORE the first web-pot client, leaving
+     * everything ahead of it untouched. Used on a normal signed-in walk, where the account head
+     * keeps attempts 1-2 and this only decides which client the walk falls through to.
+     * <p>
+     * Why it belongs there: a signed-in open that falls through the TV head used to spend its first
+     * anonymous attempt on WEB_EMBED, which mints a PO token before it can even ask and answers
+     * from the guest identity the network is most likely to be challenging - the exact request that
+     * produced "Inicia sesión para confirmar que no eres un bot" on 2026-09-07. VISIONOS mints
+     * nothing, needs no JS player, and is yt-dlp's own {@code _DEFAULT_CLIENTS[0]}. It costs one
+     * round trip on the videos it cannot serve (made for kids) and then falls through to WEB_EMBED
+     * exactly as before. The account head is NOT displaced: this never inserts ahead of it.
+     */
+    static List<AppClient> insertTokenFreeClientBeforeWebPot(List<AppClient> order) {
+        if (order.contains(PREFERRED_FIRST_CLIENT)) {
+            return order;
+        }
+
+        int insertAt = -1;
+        for (int i = 0; i < order.size(); i++) {
+            if (order.get(i).isWebPotRequired()) {
+                insertAt = i;
+                break;
+            }
+        }
+        if (insertAt < 0) {
+            return order;
+        }
+
+        List<AppClient> result = new java.util.ArrayList<>(order.size() + 1);
+        result.addAll(order.subList(0, insertAt));
+        result.add(PREFERRED_FIRST_CLIENT);
+        result.addAll(order.subList(insertAt, order.size()));
         return result;
     }
 
@@ -883,6 +1258,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 recoveryWalk);
         if (authenticated && !recoveryWalk && !authenticatedWebFirst) {
             order = promoteAuthenticatedTvFallback(order, forbiddenAuthClients);
+            // Mobile only: preferWebFamily is sPreferAttestedWebFallback, which TV never sets.
+            if (preferWebFamily) {
+                order = insertTokenFreeClientBeforeWebPot(order);
+            }
         }
         // An authenticated walk that has fallen through to the anonymous partition should spend
         // its FIRST anonymous attempt on the client that mints nothing. Until now that attempt was
@@ -895,6 +1274,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // the embedded client - so this adds a third independent identity, not a false hit.
         if (authenticated && (recoveryWalk || authenticatedWebFirst)) {
             order = leadWithTokenFreeClient(order);
+            // ...unless WEB_EMBED is carrying the account, in which case it is the account route
+            // and goes in front of the token-free client. Off by default; see
+            // leadWithAuthenticatedWebClient.
+            if (authenticatedWebFirst && AppClient.isWebEmbedAuthEnabled()) {
+                order = leadWithAuthenticatedWebClient(order);
+            }
         }
         // Applied LAST, so it also overrides an attested-web-first or authenticated-web-first
         // preference: if the account head is exhausted AND the guest identity is challenged, the
@@ -909,9 +1294,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public void markCurrentPlaybackRouteForbidden() {
         AppClient failedClient = mActualInfoType;
+        // isAuthSupported, not isAuthCapable: the set this writes is counted against
+        // AUTHENTICATED_HEAD.length to decide authenticatedWebFirst, so it must only ever contain
+        // head clients. A 403 on an account-bearing WEB_EMBED is still handled - by the ordinary
+        // recovery walk, which defers the last winner - it just does not quarantine the TV head.
         if (!hasAuthentication() || failedClient == null || !failedClient.isAuthSupported()) {
             return;
         }
+        quarantineAuthRoute(failedClient, "media-403");
+    }
+
+    /**
+     * Demotes one account-bearing client on the ACTIVE network for
+     * {@link #AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS}. Shared by the media-403 evidence path and the
+     * no-media-verdict path so both keep identical network keying and TTL semantics.
+     */
+    private void quarantineAuthRoute(AppClient failedClient, String reason) {
         String network = activeNetworkKey();
         if (network == null) {
             return;
@@ -925,6 +1323,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         mAuthRouteForbiddenUntilMs.put(failedClient,
                 android.os.SystemClock.elapsedRealtime() + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS);
         android.util.Log.w("NetPath", "player-ring quarantine-auth-route client=" + failedClient
+                + " reason=" + reason
                 + " network=" + network + " cooldownMs=" + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS
                 + " quarantined=" + mAuthRouteForbiddenUntilMs.size()
                 + "/" + AUTHENTICATED_HEAD.length);
@@ -1063,21 +1462,50 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return null;
         }
 
+        // NEWTUBE(net): suppression has to be earned, and it has to expire on YouTube's clock.
+        //
+        // This gate used to answer EVERY open for fifteen minutes with the stored challenge, which
+        // is what turned one guest-session throttle on one client into "the app is banned" - the
+        // 2026-09-07 Rusowsky capture tripped at attempt 3 of 10 and then refused videos that
+        // ANDROID_VR was serving normally minutes later. Two conditions now apply, both mobile-only
+        // so the historical TV behavior above is untouched:
+        //   1. the walk that armed the circuit must have REACHED THE END of the ring, and
+        //   2. one open per BOT_CHECK_PROBE_INTERVAL_MS is let through to re-test the server.
+        // Cost on a healthy path is zero: the circuit is only consulted while it is armed.
+        if (sPreferNoPotClient) {
+            if (!mBotCheckRingExhausted) {
+                android.util.Log.d("NetPath", "bot-check bypass=partial-walk video=" + videoId);
+                return null;
+            }
+
+            long nowMs = android.os.SystemClock.elapsedRealtime();
+            if (nowMs - mBotCheckNextProbeAtMs >= 0) {
+                mBotCheckNextProbeAtMs = nowMs + BOT_CHECK_PROBE_INTERVAL_MS;
+                android.util.Log.d("NetPath", "bot-check probe video=" + videoId
+                        + " remainingMs=" + remainingMs);
+                return null;
+            }
+        }
+
         android.util.Log.w("NetPath", "bot-check cooldown video=" + videoId
                 + " remainingMs=" + remainingMs + " network=n");
         return result;
     }
 
     private void tripBotCheckCircuit(VideoInfo result, AppClient client, String signal,
-            boolean authenticatedAttempted) {
+            boolean authenticatedAttempted, boolean ringExhausted) {
         result.setBotCheckRequired(true);
         mBotCheckResult = result;
         mBotCheckCooldownUntilMs = android.os.SystemClock.elapsedRealtime() + BOT_CHECK_COOLDOWN_MS;
         mBotCheckAuthenticatedAttempted = authenticatedAttempted;
+        mBotCheckRingExhausted = ringExhausted;
+        mBotCheckNextProbeAtMs =
+                android.os.SystemClock.elapsedRealtime() + BOT_CHECK_PROBE_INTERVAL_MS;
         mNextInfoType = null;
         mRecoveryWalk = false;
         android.util.Log.w("NetPath", "bot-check trip client=" + client
                 + " signal=" + signal + " authAttempted=" + (authenticatedAttempted ? "y" : "n")
+                + " ringExhausted=" + (ringExhausted ? "y" : "n")
                 + " cooldownMs=" + BOT_CHECK_COOLDOWN_MS);
     }
 
@@ -1085,6 +1513,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
         mBotCheckResult = null;
         mBotCheckCooldownUntilMs = 0;
         mBotCheckAuthenticatedAttempted = false;
+        mBotCheckRingExhausted = false;
+        mBotCheckNextProbeAtMs = 0;
     }
     /**
      * Pure visit-order builder, split out so the 403 recovery semantics can be unit-tested without
@@ -1400,7 +1830,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     private VideoInfo getVideoInfo(AppClient client, VideoInfoApiHelper.PlayerRequest request) {
-        boolean auth = client.isAuthSupported() && mAuthBlock;
+        boolean auth = client.isAuthCapable() && mAuthBlock;
 
         if (client.isReelClient()) {
             Call<VideoInfoReel> wrapper = mVideoInfoApi.getVideoInfoReel(request.query, request.visitorData,
@@ -1447,7 +1877,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         Call<VideoInfoHls> wrapper = mVideoInfoApi.getVideoInfoHls(request.query, request.visitorData,
                 client.getUserAgent(), client.getInnerTubeName(), client.getClientVersion());
 
-        return RetrofitHelper.get(wrapper, client.isAuthSupported() && mAuthBlock);
+        return RetrofitHelper.get(wrapper, client.isAuthCapable() && mAuthBlock);
     }
 
     private void applyFixesIfNeeded(VideoInfo result, String videoId, String clickTrackingParams) {
@@ -1518,8 +1948,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * The video's own caption tracks and playable formats are already set from the winning client,
      * so base subtitles/CC still render immediately; only the extra auto-translate language list for
      * this first video may be smaller (it becomes full for later videos once the cache is warm).
-     * WEB and IOS are not auth-supported (see AppClient.isAuthSupported), so these fetches run
-     * unauthenticated regardless of mAuthBlock - the worker never touches that shared field.
+     * WEB and IOS are not auth-CAPABLE (see AppClient.isAuthCapable - and the WEB_EMBED auth gate
+     * is deliberately scoped to that one client, so it does not reach WEB here), so these fetches
+     * run unauthenticated regardless of mAuthBlock - the worker never touches that shared field.
      */
     private void applyFixesAsync(VideoInfo result, String videoId, String clickTrackingParams) {
         final boolean warmCache = mCachedTranslationLanguages != null && mCachedTranslationLanguages.size() >= 100;

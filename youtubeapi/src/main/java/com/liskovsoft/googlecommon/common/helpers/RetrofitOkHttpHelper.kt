@@ -307,11 +307,7 @@ internal object RetrofitOkHttpHelper {
                     " ms=$elapsed net=${activeNetworkId()} ${responseSummary(response)}",
             )
             if (!response.isSuccessful) {
-                val errorText = try {
-                    response.peekBody(512).string()
-                } catch (_: Exception) {
-                    ""
-                }
+                val errorText = errorBodyText(response)
                 android.util.Log.w(
                     "NetPath",
                     "player-http[E] rid=$id code=${response.code} bodyHash=${fingerprint(errorText)}" +
@@ -407,6 +403,66 @@ internal object RetrofitOkHttpHelper {
         } catch (_: Exception) {
             PlayerBodyInfo("?", false, false, false, false)
         }
+    }
+
+    /**
+     * The error body of a failed /player call, decompressed when it needs to be.
+     *
+     * This interceptor sits ABOVE the brotli decoder, so for a `Content-Encoding: br` response the
+     * peeked bytes are still compressed - and every InnerTube error is br-encoded. The log line
+     * therefore printed pure mojibake for exactly the responses worth reading. Found the hard way
+     * on 2026-09-07 chasing a repeatable HTTP 400 from an account-bearing WEB_EMBED /player, whose
+     * message was the entire point of the experiment.
+     *
+     * Decoding is best-effort by construction: the caller peeks a bounded prefix, so the brotli
+     * stream is usually truncated and throws partway. Whatever decoded before that is kept - the
+     * message lives at the front of these payloads.
+     */
+    private fun errorBodyText(response: okhttp3.Response): String {
+        val raw = try {
+            response.peekBody(2048).bytes()
+        } catch (_: Exception) {
+            return ""
+        }
+
+        if (!response.header("Content-Encoding").equals("br", ignoreCase = true)) {
+            return String(raw, Charsets.UTF_8)
+        }
+
+        val decoded = java.io.ByteArrayOutputStream()
+        var input: java.io.InputStream? = null
+        try {
+            input = brotliStream(java.io.ByteArrayInputStream(raw)) ?: return ""
+            val chunk = ByteArray(256)
+            while (true) {
+                val read = input.read(chunk)
+                if (read <= 0) break
+                decoded.write(chunk, 0, read)
+            }
+        } catch (_: Exception) {
+            // Truncated prefix - fall through with what we already have.
+        } finally {
+            try {
+                input?.close()
+            } catch (_: Exception) {
+            }
+        }
+        return String(decoded.toByteArray(), Charsets.UTF_8)
+    }
+
+    /**
+     * The brotli decoder reaches us only as a runtime transitive of SharedModules' okhttp-brotli,
+     * which is `implementation`-scoped and therefore absent from this module's COMPILE classpath.
+     * Reflection keeps the fix inside this file: adding a dependency to a submodule build file for
+     * a logging-path nicety would put churn in front of every upstream merge, and the honest
+     * fallback if the class is ever gone is simply an unreadable body, which is today's behaviour.
+     */
+    private fun brotliStream(source: java.io.InputStream): java.io.InputStream? = try {
+        Class.forName("org.brotli.dec.BrotliInputStream")
+            .getConstructor(java.io.InputStream::class.java)
+            .newInstance(source) as java.io.InputStream
+    } catch (_: Throwable) {
+        null
     }
 
     private fun fingerprint(value: String?): String {

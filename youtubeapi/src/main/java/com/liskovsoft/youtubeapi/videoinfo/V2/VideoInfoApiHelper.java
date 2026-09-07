@@ -21,7 +21,11 @@ public class VideoInfoApiHelper {
     }
 
     public static PlayerRequest getVideoInfoRequest(AppClient client, String videoId, String clickTrackingParams) {
-        String poToken = PoTokenGate.getPoToken(client, videoId);
+        // The /player REQUEST body, not a media URL: this is the one site allowed to present a
+        // Web-minted token for a non-Web client (see PoTokenGate.getPlayerRequestPoToken). The
+        // other three PoTokenGate.getPoToken call sites decorate googlevideo URLs and must keep
+        // using the media-URL entry point, which refuses to hand a Web token to any non-Web client.
+        String poToken = PoTokenGate.getPlayerRequestPoToken(client, videoId);
         String visitorData = getPlayerVisitorData(client);
         boolean webVisitor = usesWebVisitorData(client);
         long visitorAgeMs = webVisitor ? PoTokenGate.getWebVisitorAgeMs() : -1;

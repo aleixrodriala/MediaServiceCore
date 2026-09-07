@@ -114,6 +114,22 @@ internal enum class AppClient(
         (postDataBrowser ?: "") + (postData ?: "")) }
 
     val isAuthSupported by lazy { Helpers.equalsAny(this, TV, TV_LEGACY, TV_EMBED, TV_KIDS, TV_DOWNGRADED) } // NOTE: TV_SIMPLY doesn't support auth
+
+    /**
+     * Clients allowed to CARRY the account on a /player request. Identical to [isAuthSupported]
+     * unless the phone flavor has opted WEB_EMBED in (see [setWebEmbedAuthEnabled]).
+     *
+     * Deliberately a getter and not a `by lazy` val: the gate is flipped at process start from a
+     * debug property, and a lazy val would freeze whichever value was read first. [isAuthSupported]
+     * itself is left exactly as it was, so TV - which never calls the setter - keeps the cached
+     * lazy path and byte-identical behaviour.
+     *
+     * NOT interchangeable with [isAuthSupported] at every call site. The TV-family predicate still
+     * governs the account-route quarantines, whose arithmetic is sized to the TV head; see the
+     * call-site notes in VideoInfoService.
+     */
+    val isAuthCapable: Boolean
+        get() = isAuthSupported || (this == WEB_EMBED && isWebEmbedAuthEnabled())
     /**
      * Clients whose GVS policy carries yt-dlp's `not_required_with_player_token`: a PO token in
      * the /player REQUEST removes the requirement from the media URLs it returns. That list is
@@ -157,5 +173,50 @@ internal enum class AppClient(
 
     companion object {
         fun hasName(name: String): Boolean = values().any { it.name == name }
+
+        /**
+         * NEWTUBE(auth-probe, mobile-only, OFF by default): let WEB_EMBED carry the account on a
+         * /player request.
+         *
+         * Motivation: as of 2026-09-07 YouTube answers every authenticated TVHTML5 request with
+         * UNPLAYABLE "the page needs to be reloaded" (yt-dlp issue #17389), so the phone's ring
+         * falls through the whole TV head and is served by an ANONYMOUS client - verified on the
+         * Pixel 9, where every winning line reads `client=VISIONOS ... auth=n`. The account never
+         * reaches /player at all, which silently costs age-restricted and members-only videos and
+         * server-side watch history. yt-dlp's answer is `_DEFAULT_AUTHED_CLIENTS =
+         * ('web_embedded', 'tv_downgraded', 'web')` (commit 5d5b634, 2026-08-18) - web_embedded
+         * FIRST, ahead of the broken TV client.
+         *
+         * MEASURED ON THE PIXEL 9, 2026-09-07: our credential is REJECTED here, so this stays off.
+         * Three opens, three identical responses, before any playability verdict:
+         *
+         *     HTTP 400, {"error":{"code":400,"message":"Request contains an invalid argument.",
+         *                ... "reason":"badRequest"}}
+         *
+         * Not 401, and not "accepted but ignored" - InnerTube refuses the request outright. The
+         * same string is already recorded against [WEB_CREATOR] a few lines above: upstream met
+         * this long ago. The reason yt-dlp's web_embedded head works is that it authenticates with
+         * cookie-derived SAPISIDHASH; it REMOVED OAuth support outright ("Login with OAuth is no
+         * longer supported", _base.py) and drops every client lacking SUPPORTS_COOKIES when
+         * authenticated, so it never mixes account and anonymous clients in one walk as we do.
+         * Ours is a TV device-flow OAuth bearer, and InnerTube will not take one on a web client.
+         *
+         * So restoring authenticated playback is a CREDENTIAL problem, not a client-ordering one -
+         * that is the thread to pull next. The flag stays because it is cheap and self-correcting
+         * (WEB_EMBED leads, spends one round trip on the 400, falls through to VISIONOS, which
+         * plays) and re-running it is the cheapest way to notice if YouTube's auth handling moves.
+         *
+         * Never called on TV.
+         */
+        @Volatile
+        private var mWebEmbedAuthEnabled: Boolean = false
+
+        @JvmStatic
+        fun setWebEmbedAuthEnabled(enabled: Boolean) {
+            mWebEmbedAuthEnabled = enabled
+        }
+
+        @JvmStatic
+        fun isWebEmbedAuthEnabled(): Boolean = mWebEmbedAuthEnabled
     }
 }

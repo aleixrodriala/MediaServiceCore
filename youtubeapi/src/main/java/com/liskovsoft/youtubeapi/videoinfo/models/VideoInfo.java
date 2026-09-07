@@ -1,11 +1,14 @@
 package com.liskovsoft.youtubeapi.videoinfo.models;
 
+import androidx.annotation.Nullable;
+
 import com.liskovsoft.sharedutils.helpers.Helpers;
 import com.liskovsoft.sharedutils.querystringparser.UrlQueryString;
 import com.liskovsoft.sharedutils.querystringparser.UrlQueryStringFactory;
 import com.liskovsoft.googlecommon.common.converters.jsonpath.JsonPath;
 import com.liskovsoft.googlecommon.common.helpers.ServiceHelper;
 import com.liskovsoft.googlecommon.common.models.V2.TextItem;
+import com.liskovsoft.youtubeapi.browse.v1.models.guide.TrackingParam;
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.youtubeapi.videoinfo.models.formats.AdaptiveVideoFormat;
 import com.liskovsoft.youtubeapi.videoinfo.models.formats.RegularVideoFormat;
@@ -95,6 +98,17 @@ public class VideoInfo {
 
     @JsonPath("$.playerConfig.mediaCommonConfig.mediaUstreamerRequestConfig.videoPlaybackUstreamerConfig")
     private String mVideoPlaybackUstreamerConfig; // SABR config
+
+    /**
+     * NEWTUBE(auth-probe): the SERVER's own view of whether this request was signed in.
+     * {@link #isAuth()} is set from our outgoing flag, so it only says we ATTACHED a credential -
+     * it cannot distinguish "the account was honoured" from "the header was ignored and the video
+     * was served anonymously". YouTube echoes the truth back in the GFEEDBACK service tracking
+     * params as {@code logged_in=1|0}; the same shape the guide response already parses
+     * (browse/v1 Guide + TrackingParam).
+     */
+    @JsonPath("$.responseContext.serviceTrackingParams[*]")
+    private List<TrackingParam> mTrackingParams;
 
     // Values used in tracking actions
     private String mEventId;
@@ -407,6 +421,32 @@ public class VideoInfo {
 
     public void setAuth(boolean auth) {
         mIsAuth = auth;
+    }
+
+    /**
+     * The SERVER's verdict on whether this /player request was signed in, or null when the
+     * response carried no {@code logged_in} tracking param. Unlike {@link #isAuth()} this is not
+     * our own outgoing flag, so it is the only thing that can tell an honoured credential from an
+     * ignored one. See the field doc on {@code mTrackingParams}.
+     */
+    @Nullable
+    public Boolean isServerLoggedIn() {
+        if (mTrackingParams == null) {
+            return null;
+        }
+
+        for (TrackingParam param : mTrackingParams) {
+            if (param == null || param.getParams() == null) {
+                continue;
+            }
+            for (TrackingParam.Param inner : param.getParams()) {
+                if (inner != null && TrackingParam.Param.KEY_LOGGED_IN.equals(inner.getKey())) {
+                    return "1".equals(inner.getValue());
+                }
+            }
+        }
+
+        return null;
     }
 
     public boolean isAuth() {
