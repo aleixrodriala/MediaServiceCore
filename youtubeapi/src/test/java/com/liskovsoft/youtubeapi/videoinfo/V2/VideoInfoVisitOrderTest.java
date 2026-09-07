@@ -532,6 +532,32 @@ public class VideoInfoVisitOrderTest {
         assertEquals(noWebEmbed, VideoInfoService.leadWithAuthenticatedWebClient(noWebEmbed));
     }
 
+    /**
+     * A live result with no dash manifest is held and the walk continues (see
+     * sPreferDashManifestForLive). Only a client that can actually RETURN a dash manifest is worth
+     * the extra round trip.
+     *
+     * <p>Pixel 9, 2026-09-07, two 24/7 live streams: every web-family client answered dash=n and
+     * ANDROID_VR answered dash=y for both. Probing the rest cost five extra /player round trips on
+     * 5yx6BWlEVcY - the flag is documented as costing ONE.
+     */
+    @Test
+    public void onlyDashCapableClientsAreWorthProbingForALiveStream() {
+        assertTrue(VideoInfoService.isLiveDashCandidate(AppClient.ANDROID_VR));
+        assertTrue(VideoInfoService.isLiveDashCandidate(AppClient.TV));
+        assertTrue(VideoInfoService.isLiveDashCandidate(AppClient.TV_DOWNGRADED));
+    }
+
+    /** The measured dash=n set: probing these can only repeat the answer already held. */
+    @Test
+    public void webFamilyClientsAreNotProbedForALiveDashManifest() {
+        for (AppClient client : Arrays.asList(AppClient.VISIONOS, AppClient.WEB_EMBED,
+                AppClient.WEB, AppClient.WEB_SAFARI, AppClient.MWEB, AppClient.GEO)) {
+            assertFalse(client + " answered dash=n on both measured live streams",
+                    VideoInfoService.isLiveDashCandidate(client));
+        }
+    }
+
     @After
     public void resetWebEmbedAuthGate() {
         VideoInfoService.setWebEmbedAuthEnabled(false);

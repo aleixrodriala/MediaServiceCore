@@ -511,6 +511,72 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return new Outcome(mResult, mClient, mSignal, mAuthAttempted, ringExhausted());
         }
     }
+    /**
+     * Holds the "account-bearing client answered with no media at all" observations of ONE walk
+     * until something proves what they mean.
+     *
+     * <p>The shape {@link #isAuthRouteReloadVerdict} matches is produced by a broken auth route AND
+     * by a video that is simply unavailable to everyone - a deleted upload, a region block, an
+     * ended live stream whose recording was never published. Requiring
+     * {@link #AUTH_RELOAD_QUARANTINE_MIN_HITS} different videoIds was meant to separate the two and
+     * does not: two unavailable videos in a row is an ordinary afternoon, and the cost of getting
+     * it wrong is silent - the account route is demoted and every later open is served anonymously,
+     * losing age-restricted/members-only videos and server-side history with nothing on screen.
+     *
+     * <p>Measured on the Pixel 9 on 2026-09-07: opening the lofi 24/7 stream (jfKfPfyJRdk, whose
+     * recording is not available) walked all eleven clients, every one of them refusing with the
+     * same reason, and the two authenticated heads each scored a quarantine hit - on a route that
+     * had answered correctly, with `reloadPage=n` right there on the log line.
+     *
+     * <p>The discriminator is free and already in the walk: did any OTHER client serve this video?
+     * If yes, the auth head is the outlier and the observation is real evidence. If no, the video
+     * is the outlier and it is evidence about nothing.
+     */
+    static final class AuthRouteWalkState {
+        /** One held observation. The reload-page flag is captured here because the caller counts
+         *  it later, once the result object it came from is out of scope. */
+        static final class Held {
+            final String videoId;
+            final boolean reloadPage;
+
+            Held(String videoId, boolean reloadPage) {
+                this.videoId = videoId;
+                this.reloadPage = reloadPage;
+            }
+        }
+
+        private final java.util.Map<AppClient, Held> mHeld = new java.util.LinkedHashMap<>();
+        private boolean mServedElsewhere;
+
+        /**
+         * @return true if the caller should count this observation now. False means it is held
+         *         until a client serves the video; if none does, it is dropped.
+         */
+        boolean hold(AppClient client, String videoId, boolean reloadPage) {
+            if (mServedElsewhere) {
+                return true;
+            }
+            mHeld.put(client, new Held(videoId, reloadPage));
+            return false;
+        }
+
+        /**
+         * A client served this video. Everything held so far is now evidence about the route, and
+         * anything observed later in the same walk counts immediately (a live result held for a
+         * dash manifest keeps walking past clients that have already been outvoted).
+         */
+        java.util.Map<AppClient, Held> onPlayable() {
+            mServedElsewhere = true;
+            java.util.Map<AppClient, Held> proven = new java.util.LinkedHashMap<>(mHeld);
+            mHeld.clear();
+            return proven;
+        }
+
+        int heldCount() {
+            return mHeld.size();
+        }
+    }
+
 
     public static VideoInfoService instance() {
         VideoInfoService result = sInstance;
@@ -728,9 +794,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
         VideoInfo firstUnplayable = null;
         VideoInfo firstLoginRequired = null;
         VideoInfo liveWithoutDash = null;
+        // Round trips saved by not probing clients that cannot return a live dash manifest.
+        int liveDashSkipped = 0;
         // Holds a challenge the walk carried on past, and tracks whether the ring was finished.
         // See BotCheckWalkState.
         final BotCheckWalkState botCheck = new BotCheckWalkState();
+        // Holds auth-route no-media observations until a client proves the video is playable at
+        // all. See AuthRouteWalkState.
+        final AuthRouteWalkState authRoute = new AuthRouteWalkState();
         boolean authenticatedClientAttempted = false;
         int anonChallengeHits = 0;
         int attempt = 0;
@@ -770,6 +841,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 continue;
             }
 
+            // A playable live result is already held and ONLY a dash manifest can improve on it
+            // (see sPreferDashManifestForLive), so a client that never returns one cannot change
+            // the outcome - it can only add a round trip. See isLiveDashCandidate.
+            if (liveWithoutDash != null && !isLiveDashCandidate(nextType)) {
+                liveDashSkipped++;
+                continue;
+            }
+
             attempt++;
             boolean[] noResponse = new boolean[1];
             VideoInfo result = getVideoInfoWithTimeout(
@@ -800,7 +879,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             // quarantine set this feeds is counted against AUTHENTICATED_HEAD.length to decide
             // authenticatedWebFirst, so admitting a non-head client would corrupt that arithmetic.
             if (sPreferNoPotClient && authenticated && nextType.isAuthSupported()) {
-                noteAuthRouteVerdict(nextType, videoId, result);
+                noteAuthRouteVerdict(nextType, videoId, result, authRoute);
             }
 
             // NEWTUBE(net): a dead link is not a bad client - stop walking the ring.
@@ -899,6 +978,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 // Something played, so a challenge this walk carried on past is no longer its
                 // verdict - and the circuit must not arm behind a successful open.
                 botCheck.discardOnPlayable();
+                // ...and this video demonstrably plays, so any auth-route no-media verdict the
+                // walk collected is about the route rather than about the video. Only now is it
+                // evidence (see AuthRouteWalkState).
+                for (java.util.Map.Entry<AppClient, AuthRouteWalkState.Held> held
+                        : authRoute.onPlayable().entrySet()) {
+                    countAuthRouteVerdict(held.getKey(), held.getValue());
+                }
                 // The anonymous partition just served a video, so whatever guest challenge was
                 // remembered has lifted. Drop it immediately rather than sitting out the TTL.
                 if (nextType.isWebPotRequired() && !result.isAuth()) {
@@ -958,8 +1044,33 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         // Nobody offered a dash manifest for this live stream: the held HLS-only result is
         // still strictly better than an unplayable verdict.
+        if (liveWithoutDash != null) {
+            android.util.Log.d("NetPath", "player-ring live-no-dash exhausted video=" + videoId
+                    + " attempts=" + attempt + " nonCandidatesSkipped=" + liveDashSkipped);
+        }
         return liveWithoutDash != null ? liveWithoutDash : firstUnplayable;
     }
+
+    /**
+     * Whether {@code client} can still improve a live result that is being held only because it
+     * carries no dash manifest (see {@code sPreferDashManifestForLive}). Everything else can only
+     * repeat the answer we already have, one round trip at a time.
+     *
+     * <p>Measured on the Pixel 9 on 2026-09-07 across two 24/7 live streams: every web-family
+     * client answered {@code dash=n} and ANDROID_VR answered {@code dash=y} for both, which is
+     * exactly what the flag's own comment predicted. Probing the rest cost five extra round trips
+     * on 5yx6BWlEVcY (first frame +3220ms against +2472ms for the stream that reached ANDROID_VR
+     * sooner) - the flag was documented as costing ONE extra round trip per live open, and stopped
+     * doing so once the auth-route quarantine reordered the ring and pushed ANDROID_VR to seventh.
+     *
+     * <p>The TV family is kept as a candidate on the strength of that comment rather than on
+     * evidence: both live streams came back UNPLAYABLE there while the auth route is broken, so
+     * this round could not observe it either way.
+     */
+    static boolean isLiveDashCandidate(AppClient client) {
+        return client == AppClient.ANDROID_VR || client.isAuthSupported();
+    }
+
 
     /**
      * Whether any client AFTER {@code index} can still answer despite the anonymous web identity
@@ -1017,30 +1128,47 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * while it is actually refusing everything.
      */
     private void noteAuthRouteVerdict(AppClient client, String videoId,
-            @Nullable VideoInfo result) {
+            @Nullable VideoInfo result, AuthRouteWalkState authRoute) {
         if (!isAuthRouteReloadVerdict(client, result)) {
+            // Direct evidence the route is healthy: it answered this client with something.
             mAuthReloadStreaks.remove(client);
             return;
         }
 
+        boolean reloadPage = BotCheckDetector.isReloadPageVerdict(
+                result.getRawPlayabilityStatus(), result.getPlayabilityStatus());
+        if (!authRoute.hold(client, videoId, reloadPage)) {
+            android.util.Log.d("NetPath", "player-ring auth-route held client=" + client
+                    + " video=" + videoId + " reloadPage=" + (reloadPage ? "y" : "n"));
+            return;
+        }
+        countAuthRouteVerdict(client, new AuthRouteWalkState.Held(videoId, reloadPage));
+    }
+
+    /**
+     * Counts one PROVEN auth-route no-media verdict and quarantines the route once the same shape
+     * has come back for {@link #AUTH_RELOAD_QUARANTINE_MIN_HITS} different videos. Proven means a
+     * client served the video in the same walk - see {@link AuthRouteWalkState}. Any other outcome
+     * from that client clears its streak, so the route is held down only while it is actually
+     * refusing videos that demonstrably play.
+     */
+    private void countAuthRouteVerdict(AppClient client, AuthRouteWalkState.Held held) {
         ReloadStreak streak = mAuthReloadStreaks.get(client);
         if (streak == null) {
             streak = new ReloadStreak();
             mAuthReloadStreaks.put(client, streak);
         }
         // Same video twice (a reload, a retry) is one piece of evidence, not two.
-        if (videoId.equals(streak.lastVideoId)) {
+        if (held.videoId.equals(streak.lastVideoId)) {
             return;
         }
-        streak.lastVideoId = videoId;
+        streak.lastVideoId = held.videoId;
         streak.hits++;
 
         if (streak.hits < AUTH_RELOAD_QUARANTINE_MIN_HITS) {
             android.util.Log.d("NetPath", "player-ring auth-route no-media client=" + client
                     + " hits=" + streak.hits + "/" + AUTH_RELOAD_QUARANTINE_MIN_HITS
-                    + " reloadPage=" + (BotCheckDetector.isReloadPageVerdict(
-                            result.getRawPlayabilityStatus(), result.getPlayabilityStatus())
-                            ? "y" : "n"));
+                    + " reloadPage=" + (held.reloadPage ? "y" : "n"));
             return;
         }
 
