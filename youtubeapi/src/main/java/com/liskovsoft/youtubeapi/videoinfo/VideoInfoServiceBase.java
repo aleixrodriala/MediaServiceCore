@@ -93,6 +93,8 @@ public abstract class VideoInfoServiceBase {
                 + " holders=" + urlHolders.size()
                 + " n=" + distinctCount(nParams) + "/" + nonNullCount(nParams)
                 + " s=" + distinctCount(sParams) + "/" + nonNullCount(sParams)
+                + " nOut=" + FormatTransformDiagnostics.summarize(nParams, result != null ? result.getFirst() : null)
+                + " sOut=" + FormatTransformDiagnostics.summarize(sParams, result != null ? result.getSecond() : null)
                 + " ms=" + (android.os.SystemClock.elapsedRealtime() - sigStartMs));
 
         if (result != null) {

@@ -181,6 +181,11 @@ public class AppService {
         mAppServiceInt.invalidateVisitorData();
     }
 
+    /** See {@link AppServiceInt#rotateVisitorData()}. */
+    public void rotateVisitorData() {
+        mAppServiceInt.rotateVisitorData();
+    }
+
     public boolean isPlayerCacheActual() {
         return mAppServiceInt.isPlayerCacheActual();
     }

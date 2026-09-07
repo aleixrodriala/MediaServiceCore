@@ -83,6 +83,16 @@ public class AppServiceInt {
         getData().setVisitorCookie(null);
     }
 
+    /**
+     * Drops the anonymous browsing identity so the next app-info refresh mints a NEW visitorData.
+     * Invalidating the cookie alone is not enough: the visitorData itself lives in the cached app
+     * info, so the cache has to go too or the same identity is replayed.
+     */
+    public void rotateVisitorData() {
+        invalidateVisitorData();
+        invalidateCache();
+    }
+
     public void invalidateCache() {
         // NOP
     }

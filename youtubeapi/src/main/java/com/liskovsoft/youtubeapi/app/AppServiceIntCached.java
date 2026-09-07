@@ -122,6 +122,16 @@ public class AppServiceIntCached extends AppServiceInt {
     }
 
     @Override
+    public void rotateVisitorData() {
+        synchronized (mAppInfoSync) {
+            super.rotateVisitorData();
+            // Without this the persisted copy adopted at cold start (see getAppInfoSync) would
+            // hand the challenged visitorData straight back on the next process.
+            getData().setAppInfo(null);
+        }
+    }
+
+    @Override
     public void invalidateCache() {
         mAppInfo = null;
         // Don't reset Player's cache. It's too heavy to recreate often.

@@ -70,8 +70,15 @@ internal class QueryBuilder(private val client: AppClient) {
             if (cpn == null)
                 cpn = appService.clientPlaybackNonce // get it somewhere else?
 
+            // TVHTML5 requests use the TV timestamp format even when the extractor has a Web
+            // value. Upstream: five-digit 20522 -> 20522001; already-TV timestamps stay unchanged.
+            // Scoped to the Cobalt client (upstream applies it to every "TV*" enum) because
+            // TVHTML5_SIMPLY is served working media URLs by the real five-digit value and dead,
+            // instantly-403 URLs by the suffixed one -- see [AppClient.usesTvSignatureTimestamp].
             if (signatureTimestamp == null || signatureTimestamp == -1)
-                signatureTimestamp = Helpers.parseInt(appService.signatureTimestamp) // get it somewhere else?
+                signatureTimestamp = Helpers.parseInt(appService.signatureTimestamp?.let {
+                    if (client.usesTvSignatureTimestamp && it.length == 5) it + "001" else it
+                })
         }
 
         val json = """

@@ -207,6 +207,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // this flag used to perform. Kept purely as an observation logged once per transition, because
     // "TV went SABR-only" is a useful marker when reading a session's NetPath trace.
     private static volatile boolean sAuthTvSabrOnly;
+    // Mobile-only: rotate the anonymous visitor identity when the guest partition is challenged
+    // (see rotateAnonymousIdentity). TV never enables it and keeps recording the cooldown against
+    // the identity it already has.
+    private static volatile boolean sRotateVisitorOnAnonChallenge;
     // See setSkipStoryboardEnrichment.
     private static volatile boolean sSkipStoryboardEnrichment;
     @Nullable
@@ -218,6 +222,15 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setPreferNoPotClient(boolean prefer) {
         sPreferNoPotClient = prefer;
+    }
+
+    /**
+     * Enabled once from the mobile flavor (MobileMainApplication). Lets a fresh bot challenge on
+     * the anonymous partition start a NEW guest identity instead of only starting its cooldown.
+     * See {@link #rotateAnonymousIdentity()}. Never called on TV.
+     */
+    public static void setRotateVisitorOnAnonChallenge(boolean rotate) {
+        sRotateVisitorOnAnonChallenge = rotate;
     }
 
     /**
@@ -402,6 +415,30 @@ public class VideoInfoService extends VideoInfoServiceBase {
             new java.util.concurrent.ConcurrentHashMap<>();
     @Nullable
     private volatile String mAuthRouteForbiddenNetwork;
+    /**
+     * Optional persistence for the 403-quarantine, supplied by the app layer (phones only, set
+     * once at process start like the other mobile gates). Without it the quarantine is
+     * process-local, so the FIRST open after every cold start re-probes a route this device has
+     * already proven dead on this network -- measured 2026-09-07 on the Pixel 9 as 5.48s to first
+     * frame instead of 2.80s, plus a wasted /player round trip, two dead media opens and a player
+     * reload. Persisted, the cooldown keeps its meaning across restarts and the route is still
+     * re-probed once it expires.
+     */
+    public interface AuthRouteQuarantineStore {
+        /** Last saved snapshot, or null. */
+        @Nullable
+        String load();
+        /** Stores a snapshot; null clears it. */
+        void save(@Nullable String snapshot);
+    }
+    @Nullable
+    private static volatile AuthRouteQuarantineStore sAuthRouteQuarantineStore;
+    private volatile boolean mAuthRouteQuarantineRestored;
+
+    /** Phone flavor only; TV leaves this null and keeps the process-local quarantine. */
+    public static void setAuthRouteQuarantineStore(@Nullable AuthRouteQuarantineStore store) {
+        sAuthRouteQuarantineStore = store;
+    }
     // Per-network memory that the ANONYMOUS partition is under a bot challenge (see
     // noteAnonymousChallenge). While set, web-pot clients are probed after everything else.
     private volatile long mAnonChallengeUntilMs;
@@ -1146,6 +1183,45 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
+     * The other shape of "this account route cannot serve media": a response whose only delivery
+     * is SABR.
+     *
+     * <p>This build has no SABR streaming source (see the phone port's HANDOFF -- the accepted TV
+     * response needs a protocol module the Media3 port does not have, and adding it is a real
+     * integration, not a classification change). So an authenticated head that answers with a
+     * serverAbrStreamingUrl, broken adaptive formats and nothing else playable has told us it
+     * cannot serve THIS build, exactly as conclusively as an empty response does.
+     *
+     * <p>Kept separate from {@link #isAuthRouteReloadVerdict} on purpose: that one is about a
+     * server outage returning nothing at all, this one is about a capability we do not have. Both
+     * feed the same two-different-videos streak, so a per-video SABR rollout still cannot quarantine
+     * a route on one observation.
+     *
+     * <p>Package-private for {@link AuthRouteSabrOnlyVerdictTest}.
+     */
+    static boolean isAuthRouteSabrOnlyVerdict(AppClient client, @Nullable VideoInfo result) {
+        if (result == null || !client.isAuthSupported() || !result.isAuth()
+                || result.getServerAbrStreamingUrl() == null
+                || !result.isAdaptiveFormatsBroken()) {
+            return false;
+        }
+
+        // A restricted video is a verdict about the VIDEO. Only the SABR signature above may
+        // speak for the route, so age/geo/visibility gates are excluded even though
+        // VideoInfo.isUnplayable() lumps them in with broken formats.
+        if (result.isUnknownRestricted() || result.isVisibilityRestricted()
+                || result.isAgeRestricted()) {
+            return false;
+        }
+
+        // A manifest IS a delivery this build can play, so its presence means the response was
+        // usable and the route is fine. A lone progressive format is not the same thing: the walk
+        // already rejects a broken-adaptive response (VideoInfo.isUnplayable) and never selects
+        // it, which is exactly the observed TV shape - formats=22+1, usableAdaptive=0, sabr=y.
+        return result.getDashManifestUrl() == null && result.getHlsManifestUrl() == null;
+    }
+
+    /**
      * Tracks {@link #isAuthRouteReloadVerdict} per account-bearing client and quarantines the route
      * once the same shape has come back for {@link #AUTH_RELOAD_QUARANTINE_MIN_HITS} different
      * videos. Any other outcome from that client clears its streak, so the route is held down only
@@ -1153,17 +1229,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     private void noteAuthRouteVerdict(AppClient client, String videoId,
             @Nullable VideoInfo result, AuthRouteWalkState authRoute) {
-        if (!isAuthRouteReloadVerdict(client, result)) {
+        boolean sabrOnly = isAuthRouteSabrOnlyVerdict(client, result);
+        if (!sabrOnly && !isAuthRouteReloadVerdict(client, result)) {
             // Direct evidence the route is healthy: it answered this client with something.
             mAuthReloadStreaks.remove(client);
             return;
         }
 
-        boolean reloadPage = BotCheckDetector.isReloadPageVerdict(
+        boolean reloadPage = !sabrOnly && BotCheckDetector.isReloadPageVerdict(
                 result.getRawPlayabilityStatus(), result.getPlayabilityStatus());
         if (!authRoute.hold(client, videoId, reloadPage)) {
             android.util.Log.d("NetPath", "player-ring auth-route held client=" + client
-                    + " video=" + videoId + " reloadPage=" + (reloadPage ? "y" : "n"));
+                    + " video=" + videoId + " shape=" + (sabrOnly ? "sabr-only" : "empty")
+                    + " reloadPage=" + (reloadPage ? "y" : "n"));
             return;
         }
         countAuthRouteVerdict(client, new AuthRouteWalkState.Held(videoId, reloadPage));
@@ -1441,8 +1519,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
     /**
      * Called only after the player surfaced an actual HTTP 403. It remembers a failed
-     * account-bearing route against the current Android default network, without persisting it
-     * across processes or leaking any network identifiers beyond the in-memory framework hash.
+     * account-bearing route against the current Android default network. The phone flavor also
+     * writes that memory through {@link AuthRouteQuarantineStore} so a cold start does not re-probe
+     * a route this device just proved dead; the stored value is the framework's own ephemeral
+     * network handle plus a client name and an expiry, and carries no network identifiers.
      */
     public void markCurrentPlaybackRouteForbidden() {
         AppClient failedClient = mActualInfoType;
@@ -1474,6 +1554,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
         mAuthRouteForbiddenUntilMs.put(failedClient,
                 android.os.SystemClock.elapsedRealtime() + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS);
+        persistAuthRouteQuarantine();
         android.util.Log.w("NetPath", "player-ring quarantine-auth-route client=" + failedClient
                 + " reason=" + reason
                 + " network=" + network + " cooldownMs=" + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS
@@ -1486,6 +1567,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * entries are dropped as they are seen, and a network change wipes the whole set.
      */
     private java.util.Set<AppClient> forbiddenAuthClients() {
+        restoreAuthRouteQuarantineOnce();
         if (mAuthRouteForbiddenUntilMs.isEmpty()) {
             return java.util.Collections.emptySet();
         }
@@ -1505,6 +1587,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 result.add(entry.getKey());
             } else {
                 mAuthRouteForbiddenUntilMs.remove(entry.getKey());
+                persistAuthRouteQuarantine();
             }
         }
         return result;
@@ -1513,6 +1596,46 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private void clearAuthenticatedRouteQuarantine() {
         mAuthRouteForbiddenUntilMs.clear();
         mAuthRouteForbiddenNetwork = null;
+        persistAuthRouteQuarantine();
+    }
+
+    private void persistAuthRouteQuarantine() {
+        AuthRouteQuarantineStore store = sAuthRouteQuarantineStore;
+        if (store == null) {
+            return;
+        }
+
+        store.save(AuthRouteQuarantineSnapshot.encode(mAuthRouteForbiddenNetwork,
+                mAuthRouteForbiddenUntilMs, android.os.SystemClock.elapsedRealtime(),
+                System.currentTimeMillis()));
+    }
+
+    private void restoreAuthRouteQuarantineOnce() {
+        if (mAuthRouteQuarantineRestored) {
+            return;
+        }
+        mAuthRouteQuarantineRestored = true;
+
+        AuthRouteQuarantineStore store = sAuthRouteQuarantineStore;
+        if (store == null) {
+            return;
+        }
+
+        java.util.Map<AppClient, Long> restored = AuthRouteQuarantineSnapshot.decode(
+                store.load(), activeNetworkKey(), AUTHENTICATED_HEAD,
+                android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis(),
+                AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS);
+        if (restored.isEmpty()) {
+            // Nothing survived: a different network, an expired cooldown or an unreadable value.
+            store.save(null);
+            return;
+        }
+
+        mAuthRouteForbiddenUntilMs.putAll(restored);
+        mAuthRouteForbiddenNetwork = activeNetworkKey();
+        android.util.Log.d("NetPath", "player-ring restore-auth-route-quarantine network="
+                + mAuthRouteForbiddenNetwork + " quarantined=" + restored.size()
+                + "/" + AUTHENTICATED_HEAD.length);
     }
 
     /**
@@ -1535,13 +1658,39 @@ public class VideoInfoService extends VideoInfoServiceBase {
         mAnonChallengeNetwork = network;
         mAnonChallengeUntilMs = now + ANON_CHALLENGE_COOLDOWN_MS;
         if (fresh) {
-            // The challenged guest identity is the app's own long-lived visitor, and re-minting a
-            // pot for it changes nothing (measured: every rejected call already carried a valid
-            // pot). Abandoning the identity is the only lever the client actually has.
-            boolean rotated = PoTokenGate.rotateWebVisitor();
+            boolean rotated = sRotateVisitorOnAnonChallenge && rotateAnonymousIdentity();
             android.util.Log.w("NetPath", "player-ring anon-challenged network=" + network
                     + " hits=" + hits + " cooldownMs=" + ANON_CHALLENGE_COOLDOWN_MS
                     + " visitorRotated=" + (rotated ? "y" : "n"));
+        }
+    }
+
+    /**
+     * Starts a NEW anonymous identity after the guest partition is challenged.
+     * <p>
+     * Measured 2026-09-07 off-device, same client and same IP: an anonymous {@code /player} with no
+     * visitorData answers {@code LOGIN_REQUIRED "Sign in to confirm you're not a bot"}, and the
+     * same request with a freshly minted visitorData answers OK. Rotating is therefore worth a
+     * round trip when the identity we are carrying has just been challenged.
+     * <p>
+     * It is NOT a proven cure, and the log line says which happened rather than assuming. The
+     * counter-evidence is in {@code firstPlayable}: a WEB_EMBED challenge once arrived on the very
+     * same visitorData that ANDROID_VR then played from, so a challenge can be bound to the client
+     * context instead of the identity, and ANDROID_VR is challenged in this round even with a
+     * brand-new visitor. Rotation is bounded to once per {@link #ANON_CHALLENGE_COOLDOWN_MS} per
+     * network by its {@code fresh} caller, and the account keeps its own credential: feeds and
+     * history ride {@code auth=y}, so what is discarded here is signed-out personalization only.
+     */
+    private boolean rotateAnonymousIdentity() {
+        try {
+            AppService.instance().rotateVisitorData();
+            // The Web partition caches its own visitor alongside the PO token; leaving it would
+            // keep handing the challenged identity to exactly the clients that were challenged.
+            PoTokenGate.resetCache(AppClient.WEB);
+            return true;
+        } catch (Exception e) {
+            android.util.Log.w("NetPath", "player-ring visitor-rotate-failed " + e);
+            return false;
         }
     }
 

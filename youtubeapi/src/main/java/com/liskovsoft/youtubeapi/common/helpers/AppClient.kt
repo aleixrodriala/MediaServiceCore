@@ -144,6 +144,22 @@ internal enum class AppClient(
     val isPlaybackBroken by lazy { Helpers.equalsAny(this, INITIAL, WEB, WEB_CREATOR, WEB_MUSIC, WEB_SAFARI, ANDROID_VR, GEO, MWEB, WEB_EMBED, TV_EMBED, IOS) }
     val isReelClient by lazy { Helpers.equalsAny(this, ANDROID_REEL) }
     val isTVClient by lazy { name.startsWith("TV") }
+    /**
+     * Clients that must send the Cobalt TV form of the signature timestamp (the five-digit web
+     * value with a "001" suffix) instead of the extractor's own value.
+     *
+     * NOT the same set as [isTVClient], and the difference is measured, not stylistic. Three
+     * arms on one video, one session, one network, 2026-09-07, only the timestamp differing:
+     *
+     *  - TVHTML5 (TV, TV_LEGACY, TV_DOWNGRADED): five-digit -> UNPLAYABLE "the page needs to be
+     *    reloaded", suffixed -> OK with formats. The suffix is the only way to get a response.
+     *  - TVHTML5_SIMPLY: five-digit -> OK and its media URLs serve HTTP 206; suffixed -> OK with
+     *    the same 22 formats, every one of which 403s on its FIRST byte range. Suffixing this
+     *    client silently poisons the URLs it hands back.
+     *  - TVHTML5_SIMPLY_EMBEDDED_PLAYER and TVHTML5_KIDS answer identically either way (they fail
+     *    for unrelated reasons), so they follow the true player value.
+     */
+    val usesTvSignatureTimestamp by lazy { clientName == CLIENTS.TV.NAME }
     val isWebClient by lazy { Helpers.startsWithAny(name, "WEB", "MWEB", "INITIAL", "GEO") }
     val isEmbedded by lazy { Helpers.equalsAny(this, WEB_EMBED, TV_EMBED) }
 

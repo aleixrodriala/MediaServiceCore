@@ -292,7 +292,8 @@ internal object RetrofitOkHttpHelper {
                 " cookie=${yn(request.header("Cookie") != null)}" +
                 " authUser=${yn(request.header("X-Goog-AuthUser") != null)}" +
                 " contentOk=${yn(body.contentCheckOk)} racyOk=${yn(body.racyCheckOk)}" +
-                " sts=${yn(body.hasSignatureTimestamp)} ua=${fingerprint(request.header("User-Agent"))}" +
+                " sts=${yn(body.hasSignatureTimestamp)} stsDigits=${body.signatureTimestampDigits}" +
+                " ua=${fingerprint(request.header("User-Agent"))}" +
                 " origin=${if (origin == YOUTUBE_ORIGIN) "youtube" else if (origin == null) "none" else "other"}" +
                 " referer=${if (referer == null) "none" else "present"}" +
                 " key=${yn(request.url.queryParameter("key") != null)} net=${activeNetworkId()}",
@@ -384,6 +385,7 @@ internal object RetrofitOkHttpHelper {
         val contentCheckOk: Boolean,
         val racyCheckOk: Boolean,
         val hasSignatureTimestamp: Boolean,
+        val signatureTimestampDigits: Int,
     )
 
     private fun inspectPlayerBody(request: Request): PlayerBodyInfo {
@@ -393,15 +395,20 @@ internal object RetrofitOkHttpHelper {
             val body = buffer.readUtf8()
             val videoId = Regex("\\\"videoId\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
                 .find(body)?.groupValues?.getOrNull(1) ?: "?"
+            // Format only, never the timestamp itself. A full positive integer token is required:
+            // decimal/exponent/string/negative values must not be mistaken for an integer prefix.
+            val signatureTimestampDigits = Regex(""""signatureTimestamp"\s*:\s*([1-9][0-9]*)\s*(?=[,}])""")
+                .find(body)?.groupValues?.getOrNull(1)?.length ?: 0
             PlayerBodyInfo(
                 videoId,
                 Regex("\\\"poToken\\\"\\s*:").containsMatchIn(body),
                 Regex("\\\"contentCheckOk\\\"\\s*:\\s*true").containsMatchIn(body),
                 Regex("\\\"racyCheckOk\\\"\\s*:\\s*true").containsMatchIn(body),
                 Regex("\\\"signatureTimestamp\\\"\\s*:").containsMatchIn(body),
+                signatureTimestampDigits,
             )
         } catch (_: Exception) {
-            PlayerBodyInfo("?", false, false, false, false)
+            PlayerBodyInfo("?", false, false, false, false, 0)
         }
     }
 
