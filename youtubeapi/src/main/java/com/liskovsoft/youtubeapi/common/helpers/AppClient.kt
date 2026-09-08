@@ -154,6 +154,16 @@ internal enum class AppClient(
      *    port cannot mint one, so the TV family is deliberately absent - see HANDOFF section 26,
      *    where TVHTML5's ordinary media URLs die the same way at every timestamp we can send.
      *
+     * That probe only asked for position 0, and position 0 is inside a free window. Re-measured on
+     * 2026-09-08 by sweeping the start position on three videos: without a PO token IOS and
+     * ANDROID_VR are served only up to somewhere between 56.2 s and 60.0 s, after which
+     * STREAM_PROTECTION_STATUS turns ATTESTATION_REQUIRED and the response carries no media at
+     * all. VISIONOS answers status OK at every position, to the end of the video, and sustains
+     * real playback (verified on the Pixel 9 past 2.5 minutes). The wall is positional, not a
+     * session quota: a FRESH session asking for 60 s is refused, while one asking for 0 s
+     * repeatedly is served every time. So membership here means "can be answered", and for every
+     * client except VISIONOS that currently means only the first minute. See HANDOFF section 28.
+     *
      * This is a DELIVERY predicate, not a routing one: it says a SABR request from this client can
      * be answered, never that the client should win the /player ring.
      */
