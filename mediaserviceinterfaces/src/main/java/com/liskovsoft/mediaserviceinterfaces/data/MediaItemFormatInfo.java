@@ -23,6 +23,8 @@ public interface MediaItemFormatInfo extends FormatInfoProvision {
     boolean isLiveContent();
     boolean containsMedia();
     boolean containsSabrFormats();
+    /** Accepted ordinary VOD metadata a SABR decoder can consume. False for unknown implementations. */
+    default boolean isSabrVodEligible() { return false; }
     boolean containsDashFormats();
     boolean containsHlsUrl();
     boolean containsDashUrl();

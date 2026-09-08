@@ -1200,6 +1200,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * <p>Package-private for {@link AuthRouteSabrOnlyVerdictTest}.
      */
     static boolean isAuthRouteSabrOnlyVerdict(AppClient client, @Nullable VideoInfo result) {
+        if (com.liskovsoft.youtubeapi.videoinfo.models.SabrVodCapability.accepts(result)) {
+            return false; // Optional VOD engine can consume this accepted response; not a route failure.
+        }
         if (result == null || !client.isAuthSupported() || !result.isAuth()
                 || result.getServerAbrStreamingUrl() == null
                 || !result.isAdaptiveFormatsBroken()) {

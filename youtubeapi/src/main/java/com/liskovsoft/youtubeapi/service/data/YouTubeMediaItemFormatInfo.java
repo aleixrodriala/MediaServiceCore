@@ -66,6 +66,7 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
     private String mClickTrackingParams;
     private String mVideoPlaybackUstreamerConfig;
     private String mServerAbrStreamingUrl;
+    private boolean mSabrVodEligible;
     private String mPoToken;
     private String mVisitorCookie;
     private AppClient mClient;
@@ -84,7 +85,16 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
         YouTubeMediaItemFormatInfo formatInfo = new YouTubeMediaItemFormatInfo();
 
         if (videoInfo.getAdaptiveFormats() != null) {
-            formatInfo.mContainsAdaptiveVideoFormats = videoInfo.containsAdaptiveVideoInfo();
+            // containsAdaptiveVideoInfo() reports a URL-less ("broken") adaptive list as no
+            // adaptive video at all - upstream's "TODO: remove when SABR parser will be fixed".
+            // With an accepted SABR decoder that parser exists, so those formats are real media
+            // and must be published as adaptive; otherwise containsSabrFormats() stays false and
+            // the SABR-only route is unreachable, leaving isUnplayable()==false (it already
+            // consults the same capability) with nothing for the player to open. Measured on the
+            // Pixel 9 on 2026-09-08: an IOS response (23 formats, 0 with URLs, SABR endpoint
+            // present) reached the player as dash=0/sabr=n and no source was ever built.
+            formatInfo.mContainsAdaptiveVideoFormats = videoInfo.containsAdaptiveVideoInfo()
+                    || com.liskovsoft.youtubeapi.videoinfo.models.SabrVodCapability.accepts(videoInfo);
 
             formatInfo.mAdaptiveFormats = new ArrayList<>();
 
@@ -140,6 +150,7 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
         formatInfo.mPaidContentText = videoInfo.getPaidContentText();
         formatInfo.mVideoPlaybackUstreamerConfig = videoInfo.getVideoPlaybackUstreamerConfig();
         formatInfo.mServerAbrStreamingUrl = videoInfo.getServerAbrStreamingUrl();
+        formatInfo.mSabrVodEligible = com.liskovsoft.youtubeapi.videoinfo.models.SabrVodCapability.isEligible(videoInfo);
         formatInfo.mPoToken = videoInfo.getPoToken();
         formatInfo.mVisitorCookie = videoInfo.getVisitorCookie();
         formatInfo.mClient = videoInfo.getClient();
@@ -232,6 +243,9 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
     public boolean containsSabrFormats() {
         return mContainsAdaptiveVideoFormats && mAdaptiveFormats.get(0).getFormatType() == MediaFormat.FORMAT_TYPE_SABR;
     }
+
+    @Override
+    public boolean isSabrVodEligible() { return mSabrVodEligible; }
 
     @Override
     public boolean containsDashFormats() {

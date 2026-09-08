@@ -18,6 +18,7 @@ public interface MediaFormat extends Comparable<MediaFormat> {
     String getBitrate();
     String getProjectionType();
     String getXtags();
+    default String getAudioTrackId() { return null; }
     int getWidth();
     int getHeight();
     String getIndex();

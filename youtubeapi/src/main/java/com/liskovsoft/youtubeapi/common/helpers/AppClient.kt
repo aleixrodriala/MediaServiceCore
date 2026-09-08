@@ -140,6 +140,24 @@ internal enum class AppClient(
      */
     val isPlayerPotSupported by lazy { Helpers.equalsAny(this, ANDROID_VR) }
     val isWebPotRequired by lazy { Helpers.equalsAny(this, WEB, MWEB, WEB_EMBED, WEB_SAFARI, INITIAL, GEO) }
+    /**
+     * Clients whose `serverAbrStreamingUrl` actually serves media, measured rather than assumed.
+     *
+     * Off-device probe of 2026-09-08 (one video, one anonymous session, one IP, no PO token of any
+     * kind, the app's own per-track request shape). Every arm POSTed the endpoint that response
+     * itself returned:
+     *
+     *  - VISIONOS, IOS, ANDROID_VR, ANDROID: HTTP 200 and 133,605 bytes of UMP MEDIA, decoding as
+     *    H.264 640x360 + AAC 44.1 kHz once demuxed.
+     *  - TVHTML5 7.x: HTTP 403 with a ZERO-byte body, reproducing the phone's failure from a
+     *    different network and identity. yt-dlp marks the TV family GVS-PO-token-required and this
+     *    port cannot mint one, so the TV family is deliberately absent - see HANDOFF section 26,
+     *    where TVHTML5's ordinary media URLs die the same way at every timestamp we can send.
+     *
+     * This is a DELIVERY predicate, not a routing one: it says a SABR request from this client can
+     * be answered, never that the client should win the /player ring.
+     */
+    val isSabrSupported by lazy { Helpers.equalsAny(this, VISIONOS, IOS, ANDROID, ANDROID_SDK_LESS, ANDROID_REEL, ANDROID_VR) }
     // TODO: remove after implement SABR
     val isPlaybackBroken by lazy { Helpers.equalsAny(this, INITIAL, WEB, WEB_CREATOR, WEB_MUSIC, WEB_SAFARI, ANDROID_VR, GEO, MWEB, WEB_EMBED, TV_EMBED, IOS) }
     val isReelClient by lazy { Helpers.equalsAny(this, ANDROID_REEL) }

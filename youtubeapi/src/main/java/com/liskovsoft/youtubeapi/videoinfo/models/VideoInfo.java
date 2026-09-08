@@ -233,7 +233,8 @@ public class VideoInfo {
     }
 
     public boolean isUnplayable() {
-        return isUnknownRestricted() || isVisibilityRestricted() || isAgeRestricted() || isAdaptiveFormatsBroken();
+        return isUnknownRestricted() || isVisibilityRestricted() || isAgeRestricted()
+                || (isAdaptiveFormatsBroken() && !SabrVodCapability.accepts(this));
     }
 
     /**
