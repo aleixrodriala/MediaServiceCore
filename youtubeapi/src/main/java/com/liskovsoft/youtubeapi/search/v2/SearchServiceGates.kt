@@ -12,8 +12,9 @@ object SearchServiceGates {
      * NEWTUBE(search-history): when the suggest endpoint has nothing for a TYPED query, upstream
      * falls back to the user's WHOLE search history - on a phone that list is drawn under the
      * query as if it were suggestions for it ("xqzv" listed every past search). With this on, the
-     * whole history is only the answer to an EMPTY field; a typed query falls back to just the past
-     * searches that match it (possibly none, which hides the overlay).
+     * whole history is only the answer to an EMPTY field; a typed query gets the past searches that
+     * match it on top of the server's suggestions (all of them, when the server has nothing or
+     * cannot be reached - offline, history is the only help there is).
      */
     @JvmStatic
     @Volatile
@@ -22,6 +23,25 @@ object SearchServiceGates {
     /** Whether [tag] is one of the user's past searches (the phone draws those with a clock). */
     @JvmStatic
     fun isHistoryTag(tag: String?): Boolean = tag != null && SearchTagStorage.tags.contains(tag)
+
+    /** How many matching past searches lead the server's suggestions (YouTube shows a few). */
+    private const val HISTORY_ABOVE_SUGGESTIONS = 3
+
+    /**
+     * Matching past searches first (capped when the server also answered), then the server's
+     * suggestions that aren't already listed.
+     */
+    @JvmStatic
+    fun mergeWithHistory(server: List<String>?, history: List<String>, query: String): List<String> {
+        val matches = matchHistory(history, query)
+        val result = ArrayList(if (server.isNullOrEmpty()) matches else matches.take(HISTORY_ABOVE_SUGGESTIONS))
+        server?.forEach { suggestion ->
+            if (result.none { it.equals(suggestion, ignoreCase = true) }) {
+                result.add(suggestion)
+            }
+        }
+        return result
+    }
 
     /**
      * The past searches that match [query]: the query starts the entry or one of its words,

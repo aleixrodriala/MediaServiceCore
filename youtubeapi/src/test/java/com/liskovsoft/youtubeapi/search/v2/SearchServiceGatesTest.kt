@@ -31,4 +31,23 @@ class SearchServiceGatesTest {
     fun blankQueryKeepsTheWholeHistory() {
         assertEquals(history, SearchServiceGates.matchHistory(history, "  "))
     }
+
+    @Test
+    fun historyMatchesLeadServerSuggestionsWithoutDuplicates() {
+        assertEquals(listOf("Linus Tech Tips", "tech news", "technology", "tech tips"),
+                SearchServiceGates.mergeWithHistory(listOf("Tech News", "technology", "tech tips"), history, "tech"))
+    }
+
+    @Test
+    fun offlineOrEmptyServerFallsBackToAllMatchingHistory() {
+        assertEquals(listOf("Linus Tech Tips", "tech news"), SearchServiceGates.mergeWithHistory(null, history, "tech"))
+        assertEquals(listOf("veritasium"), SearchServiceGates.mergeWithHistory(emptyList(), history, "ver"))
+    }
+
+    @Test
+    fun onlyThreeHistoryRowsLeadTheServer() {
+        val many = listOf("cat 1", "cat 2", "cat 3", "cat 4")
+        assertEquals(listOf("cat 1", "cat 2", "cat 3", "cats"),
+                SearchServiceGates.mergeWithHistory(listOf("cats"), many, "cat"))
+    }
 }
