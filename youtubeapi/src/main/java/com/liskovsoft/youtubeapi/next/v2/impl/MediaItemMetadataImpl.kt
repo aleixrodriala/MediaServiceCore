@@ -229,6 +229,10 @@ internal data class MediaItemMetadataImpl(private val watchNextResult: WatchNext
         return publishedTime
     }
 
+    override fun getRelativePublishedDate(): String? {
+        return publishedDateText
+    }
+
     override fun getVideoId(): String? {
         return videoIdItem
     }
