@@ -14,6 +14,12 @@ import com.liskovsoft.youtubeapi.next.v2.gen.getItems
 import com.liskovsoft.youtubeapi.next.v2.gen.getContinuationToken
 import com.liskovsoft.youtubeapi.next.v2.gen.getShelves
 import com.liskovsoft.youtubeapi.service.YouTubeSignInService
+import com.liskovsoft.mediaserviceinterfaces.SignInService
+import com.liskovsoft.mediaserviceinterfaces.oauth.Account
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
 
 internal open class BrowseService2 {
     private val mBrowseApi = RetrofitHelper.create(BrowseApi::class.java)
@@ -40,20 +46,17 @@ internal open class BrowseService2 {
         // the Explore sections). FEtrending itself is RETIRED - 400 on every client since
         // YouTube killed the Trending page.
         if (!YouTubeSignInService.instance().isSigned()) {
-            val home = getBrowseRowsTV(BrowseApiHelper::getHomeQuery, MediaGroup.TYPE_HOME)
+            // NEWTUBE(home-parallel): the topic feeds used to run one after another behind the probe
+            // (5 serial /browse, ~2.75 s before first paint on a fresh install). See AnonymousHome.
+            AnonymousHome.watchAccountChanges()
 
-            if (home?.first?.any { it?.isEmpty == false } == true) {
-                return home
-            }
-
-            val rows = mutableListOf<MediaGroup?>()
-
-            for (query in listOf(BrowseApiHelper::getMusicQuery, BrowseApiHelper::getGamingQuery,
-                    BrowseApiHelper::getNewsQuery, BrowseApiHelper::getSportsQuery)) {
-                getBrowseRowsTV(query, MediaGroup.TYPE_HOME)?.first?.let { rows.addAll(it) }
-            }
-
-            return Pair(rows.ifEmpty { null }, null)
+            return AnonymousHome.resolve(
+                { getBrowseRowsTV(BrowseApiHelper::getHomeQuery, MediaGroup.TYPE_HOME) },
+                listOf(BrowseApiHelper::getMusicQuery, BrowseApiHelper::getGamingQuery,
+                    BrowseApiHelper::getNewsQuery, BrowseApiHelper::getSportsQuery).map { query ->
+                    { getBrowseRowsTV(query, MediaGroup.TYPE_HOME) }
+                }
+            )
         }
 
         return getBrowseRowsTV(BrowseApiHelper::getHomeQuery, MediaGroup.TYPE_HOME)
@@ -671,5 +674,134 @@ internal open class BrowseService2 {
         }
 
         return Pair(combinedItems, combinedKey)
+    }
+}
+
+internal typealias HomeRows = Pair<List<MediaGroup?>?, String?>
+
+/**
+ * NEWTUBE(home-parallel): signed-out Home. The personalized home query ("probe") is empty for a
+ * visitor with no watch history, and the fallback is four TV topic feeds. Two changes, both keeping
+ * the old result: feed order and merge are unchanged, and the first feed failure (in feed order)
+ * still propagates, exactly as the serial loop did.
+ *  - The topic feeds run in parallel (one round trip instead of four).
+ *  - An empty probe is remembered for the process (30 min, cleared by any account change or by a
+ *    personalized answer). While it holds, a refresh fires the probe TOGETHER with the topic feeds
+ *    instead of in front of them, so the moment watch history personalizes the visitor's home the
+ *    next refresh still shows it - at the cost of one extra request, never an extra round trip.
+ * Signed-in and non-empty homes take the same single request as before.
+ */
+internal object AnonymousHome : SignInService.OnAccountChange {
+    const val VERDICT_TTL_MS = 30 * 60 * 1_000L
+    private const val NO_VERDICT = -1L
+
+    @Volatile
+    private var emptySinceMs = NO_VERDICT
+    @Volatile
+    private var watchingAccounts = false
+    /** Test seam. */
+    @Volatile
+    internal var clock: () -> Long = { System.currentTimeMillis() }
+
+    fun resolve(probe: () -> HomeRows?, topicFeeds: List<() -> HomeRows?>): HomeRows? {
+        val startMs = clock()
+        val verdictSinceMs = emptySinceMs
+        val verdictAgeMs = if (verdictSinceMs == NO_VERDICT) -1L else clock() - verdictSinceMs
+
+        if (verdictAgeMs in 0 until VERDICT_TTL_MS) {
+            val results = fetchAll(listOf(probe) + topicFeeds)
+            val home = results[0].getOrNull()
+
+            if (isPersonalized(home)) {
+                clearVerdict()
+                logNetPath("home-anon probe=personalized verdict=cleared parallel=${results.size} ms=${clock() - startMs}")
+                return home
+            }
+
+            if (home != null) {
+                markEmpty() // re-confirmed
+            }
+
+            val merged = mergeTopicFeeds(results.drop(1))
+            logNetPath("home-anon verdict=empty age=${verdictAgeMs / 1_000}s probe+topics parallel=${results.size} " +
+                    "probe=${describe(results[0])} rows=${merged.first?.size ?: 0} ms=${clock() - startMs}")
+            return merged
+        }
+
+        val home = probe()
+
+        if (isPersonalized(home)) {
+            if (verdictSinceMs != NO_VERDICT) {
+                clearVerdict() // expired verdict, and the visitor has history now
+            }
+            return home
+        }
+
+        if (home != null) {
+            markEmpty()
+        }
+
+        val merged = mergeTopicFeeds(fetchAll(topicFeeds))
+        logNetPath("home-anon probe=${if (home != null) "empty" else "null"} topics parallel=${topicFeeds.size} " +
+                "rows=${merged.first?.size ?: 0} ms=${clock() - startMs}")
+        return merged
+    }
+
+    /** Same merge as the old serial loop: feed order, and the first failure in feed order propagates. */
+    internal fun mergeTopicFeeds(results: List<Result<HomeRows?>>): HomeRows {
+        val rows = mutableListOf<MediaGroup?>()
+
+        for (result in results) {
+            result.getOrThrow()?.first?.let { rows.addAll(it) }
+        }
+
+        return Pair(rows.ifEmpty { null }, null)
+    }
+
+    /** Runs [tasks] concurrently (blocking calls, IO dispatcher) and returns their outcomes in input order. */
+    internal fun <T> fetchAll(tasks: List<() -> T>): List<Result<T>> {
+        if (tasks.size <= 1) {
+            return tasks.map { runCatching { it() } }
+        }
+
+        return runBlocking {
+            tasks.map { task -> async(Dispatchers.IO) { runCatching { task() } } }.awaitAll()
+        }
+    }
+
+    internal fun isPersonalized(home: HomeRows?): Boolean = home?.first?.any { it?.isEmpty == false } == true
+
+    internal fun hasEmptyVerdict(): Boolean = emptySinceMs != NO_VERDICT && clock() - emptySinceMs < VERDICT_TTL_MS
+
+    fun watchAccountChanges() {
+        if (!watchingAccounts) {
+            watchingAccounts = true
+            // The account manager holds listeners weakly; this object is a static singleton.
+            YouTubeSignInService.instance().addOnAccountChange(this)
+        }
+    }
+
+    override fun onAccountChanged(account: Account?) {
+        // Sign in/out or switch regenerates the visitor (AppService.invalidateCache): verdict is stale.
+        if (emptySinceMs != NO_VERDICT) {
+            logNetPath("home-anon verdict=cleared reason=account-change")
+        }
+        clearVerdict()
+    }
+
+    internal fun clearVerdict() {
+        emptySinceMs = NO_VERDICT
+    }
+
+    private fun markEmpty() {
+        emptySinceMs = clock()
+    }
+
+    private fun describe(result: Result<HomeRows?>): String {
+        return result.exceptionOrNull()?.let { "error:" + it.javaClass.simpleName } ?: if (result.getOrNull() == null) "null" else "empty"
+    }
+
+    private fun logNetPath(message: String) {
+        android.util.Log.d("NetPath", message)
     }
 }

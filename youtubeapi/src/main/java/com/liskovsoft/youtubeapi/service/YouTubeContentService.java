@@ -36,10 +36,20 @@ import io.reactivex.rxjava3.core.ObservableEmitter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 class YouTubeContentService implements ContentService {
     private static final String TAG = YouTubeContentService.class.getSimpleName();
+    // NEWTUBE(channel-tabs): concurrent fetches for a channel page's lazily-loaded tabs
+    private static final int EMPTY_GROUP_PREFETCH_THREADS = 3;
     private static YouTubeContentService sInstance;
+    private static volatile ExecutorService sEmptyGroupExecutor;
 
     private YouTubeContentService() {
         Log.d(TAG, "Starting...");
@@ -400,11 +410,11 @@ class YouTubeContentService implements ContentService {
                     emitGroups(emitter, Collections.singletonList(gridChannel));
                 } else {
                     kotlin.Pair<List<MediaGroup>, String> channel = getBrowseService2().getChannel(canonicalId, params);
-                    emitGroups(emitter, channel);
+                    emitGroups(emitter, channel, true);
                 }
             } else {
                 kotlin.Pair<List<MediaGroup>, String> channel = getBrowseService2().getChannel(canonicalId, params);
-                emitGroups(emitter, channel);
+                emitGroups(emitter, channel, true);
             }
         });
     }
@@ -439,12 +449,18 @@ class YouTubeContentService implements ContentService {
     }
 
     private void emitGroups(ObservableEmitter<List<MediaGroup>> emitter, kotlin.Pair<List<MediaGroup>, String> groupsAndKey) {
-        emitGroupsPartial(emitter, groupsAndKey);
+        emitGroups(emitter, groupsAndKey, false);
+    }
+
+    private void emitGroups(ObservableEmitter<List<MediaGroup>> emitter, kotlin.Pair<List<MediaGroup>, String> groupsAndKey,
+                            boolean prefetchEmptyGroups) {
+        emitGroupsPartial(emitter, groupsAndKey, prefetchEmptyGroups);
 
         emitter.onComplete();
     }
 
-    private void emitGroupsPartial(ObservableEmitter<List<MediaGroup>> emitter, kotlin.Pair<List<MediaGroup>, String> groupsAndKey) {
+    private void emitGroupsPartial(ObservableEmitter<List<MediaGroup>> emitter, kotlin.Pair<List<MediaGroup>, String> groupsAndKey,
+                                   boolean prefetchEmptyGroups) {
         if (groupsAndKey == null) {
             Log.e(TAG, "emitGroupsPartial: groupsAndKey is null");
             return;
@@ -452,12 +468,25 @@ class YouTubeContentService implements ContentService {
 
         List<MediaGroup> groups = groupsAndKey.getFirst();
         String nextKey = groupsAndKey.getSecond();
+        int page = 0;
 
         while (groups != null && !groups.isEmpty()) {
-            emitGroupsPartial(emitter, groups);
+            if (!emitGroupsPartial(emitter, groups, prefetchEmptyGroups)) {
+                return;
+            }
+
+            // NEWTUBE(dispose-stop): a Home/channel section list walks EVERY continuation page back to
+            // back; leaving the screen mid-load used to keep that walk going to the end.
+            if (emitter.isDisposed()) {
+                android.util.Log.d("NetPath", "browse-stop disposed before continuation page=" + (page + 1)
+                        + " type=" + groups.get(0).getType());
+                return;
+            }
+
             groupsAndKey = getBrowseService2().continueSectionList(nextKey, groups.get(0).getType());
             groups = groupsAndKey != null ? groupsAndKey.getFirst() : null;
             nextKey = groupsAndKey != null ? groupsAndKey.getSecond() : null;
+            page++;
         }
     }
 
@@ -468,40 +497,191 @@ class YouTubeContentService implements ContentService {
     }
 
     private void emitGroupsPartial(ObservableEmitter<List<MediaGroup>> emitter, List<MediaGroup> groups) {
+        emitGroupsPartial(emitter, groups, false);
+    }
+
+    /**
+     * @param prefetchEmptyGroups NEWTUBE(channel-tabs): fetch the empty (lazily-loaded) groups of this
+     *                            page concurrently instead of one after another
+     * @return false if the subscriber went away and the walk stopped early
+     */
+    private boolean emitGroupsPartial(ObservableEmitter<List<MediaGroup>> emitter, List<MediaGroup> groups, boolean prefetchEmptyGroups) {
+        return emitGroupsPartial(emitter, groups, group -> getBrowseService2().continueEmptyGroup(group),
+                prefetchEmptyGroups ? getEmptyGroupExecutor() : null);
+    }
+
+    /** Loads the content of an empty (lazily-loaded) group. */
+    interface EmptyGroupLoader {
+        List<MediaGroup> load(MediaGroup group);
+    }
+
+    /**
+     * Emits a page of groups in order, loading each empty group in its turn.<br/>
+     * NEWTUBE(channel-tabs): with a {@code prefetchExecutor}, the page's empty groups are loaded
+     * concurrently instead of one after another. Emission order and error propagation are unchanged:
+     * results are still emitted in page order, and a failing load still throws when its turn comes.
+     * Nothing new starts after the subscriber goes away (queued loads are cancelled on dispose); a
+     * request already in flight completes - threads are never interrupted.
+     * @return false if the subscriber went away and the walk stopped early
+     */
+    static boolean emitGroupsPartial(ObservableEmitter<List<MediaGroup>> emitter, List<MediaGroup> groups,
+                                     EmptyGroupLoader loader, @Nullable ExecutorService prefetchExecutor) {
         if (groups == null || groups.isEmpty()) {
             Log.e(TAG, "emitGroupsPartial: groups are null or empty");
-            return;
+            return true;
         }
 
         MediaGroup firstGroup = groups.get(0);
         Log.d(TAG, "emitGroupsPartial: begin emitting group of type %s...", firstGroup != null ? firstGroup.getType() : null);
 
-        List<MediaGroup> collector = new ArrayList<>();
+        List<Future<List<MediaGroup>>> prefetched = prefetchExecutor != null ?
+                prefetchEmptyGroups(emitter, groups, loader, prefetchExecutor) : null;
 
-        for (MediaGroup group : groups) { // Preserve positions
-            if (group == null) {
-                continue;
+        try {
+            List<MediaGroup> collector = new ArrayList<>();
+
+            for (int i = 0; i < groups.size(); i++) { // Preserve positions
+                MediaGroup group = groups.get(i);
+
+                if (group == null) {
+                    continue;
+                }
+
+                if (group.isEmpty()) { // Contains Chips (nested sections)?
+                    if (!collector.isEmpty()) {
+                        emitter.onNext(collector);
+                        collector = new ArrayList<>();
+                    }
+
+                    // NEWTUBE(dispose-stop): each empty group costs a request (a channel's tabs)
+                    if (emitter.isDisposed()) {
+                        android.util.Log.d("NetPath", "browse-stop disposed before empty group " + i + "/" + groups.size()
+                                + " type=" + group.getType());
+                        return false;
+                    }
+
+                    List<MediaGroup> sections = prefetched != null && prefetched.get(i) != null ?
+                            awaitPrefetched(prefetched.get(i)) : loader.load(group);
+
+                    if (sections != null) {
+                        emitter.onNext(sections);
+                    }
+                } else {
+                    collector.add(group);
+                }
             }
 
-            if (group.isEmpty()) { // Contains Chips (nested sections)?
-                if (!collector.isEmpty()) {
-                    emitter.onNext(collector);
-                    collector = new ArrayList<>();
-                }
+            if (!collector.isEmpty()) {
+                emitter.onNext(collector);
+            }
+        } finally {
+            cancelAll(prefetched); // early exit: drop what hasn't started
+        }
 
-                List<MediaGroup> sections = getBrowseService2().continueEmptyGroup(group);
+        return true;
+    }
 
-                if (sections != null) {
-                    emitter.onNext(sections);
-                }
-            } else {
-                collector.add(group);
+    /**
+     * NEWTUBE(channel-tabs): a channel page arrives with one filled tab and the rest empty, each
+     * needing its own /browse. They used to load strictly one after another (the tab bar filling in
+     * one round trip per tab). Returns one future per position (null for non-empty groups), or null
+     * when there is nothing to overlap or the subscriber is already gone.
+     */
+    @Nullable
+    private static List<Future<List<MediaGroup>>> prefetchEmptyGroups(ObservableEmitter<List<MediaGroup>> emitter, List<MediaGroup> groups,
+                                                                      EmptyGroupLoader loader, ExecutorService executor) {
+        int count = 0;
+
+        for (MediaGroup group : groups) {
+            if (group != null && group.isEmpty()) {
+                count++;
             }
         }
 
-        if (!collector.isEmpty()) {
-            emitter.onNext(collector);
+        if (count < 2) {
+            return null; // nothing to overlap: keep the plain serial path
         }
+
+        // The channel's first /browse can finish after the user already left: start nothing then
+        if (emitter.isDisposed()) {
+            return null;
+        }
+
+        List<Future<List<MediaGroup>>> futures = new ArrayList<>(Collections.nCopies(groups.size(), null));
+
+        for (int i = 0; i < groups.size(); i++) {
+            MediaGroup group = groups.get(i);
+
+            if (group != null && group.isEmpty()) {
+                // A queued load that gets its thread after dispose (before the cancel lands) does nothing
+                futures.set(i, executor.submit(() -> emitter.isDisposed() ? null : loader.load(group)));
+            }
+        }
+
+        // Dispose cancels whatever hasn't started. Set after the list is complete: an emitter that got
+        // disposed meanwhile runs the cancellable right away.
+        emitter.setCancellable(() -> cancelAll(futures));
+
+        android.util.Log.d("NetPath", "channel-tabs prefetch empty=" + count + " of " + groups.size()
+                + " parallel=" + Math.min(count, EMPTY_GROUP_PREFETCH_THREADS));
+
+        return futures;
+    }
+
+    private static void cancelAll(@Nullable List<Future<List<MediaGroup>>> futures) {
+        if (futures == null) {
+            return;
+        }
+
+        for (Future<List<MediaGroup>> future : futures) {
+            if (future != null) {
+                future.cancel(false); // never interrupt: a request in flight completes
+            }
+        }
+    }
+
+    @Nullable
+    private static List<MediaGroup> awaitPrefetched(Future<List<MediaGroup>> future) {
+        try {
+            return future.get();
+        } catch (CancellationException e) {
+            return null; // disposed meanwhile - the caller's next isDisposed() check ends the walk
+        } catch (ExecutionException e) {
+            // Same exception the serial call would have thrown on this thread
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            if (cause instanceof Error) {
+                throw (Error) cause;
+            }
+            throw new IllegalStateException(cause);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static ExecutorService getEmptyGroupExecutor() {
+        ExecutorService result = sEmptyGroupExecutor;
+
+        if (result == null) {
+            synchronized (YouTubeContentService.class) {
+                result = sEmptyGroupExecutor;
+                if (result == null) {
+                    ThreadPoolExecutor executor = new ThreadPoolExecutor(EMPTY_GROUP_PREFETCH_THREADS, EMPTY_GROUP_PREFETCH_THREADS,
+                            30, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), r -> {
+                                Thread thread = new Thread(r, "channel-tabs");
+                                thread.setDaemon(true);
+                                return thread;
+                            });
+                    executor.allowCoreThreadTimeOut(true);
+                    sEmptyGroupExecutor = result = executor;
+                }
+            }
+        }
+
+        return result;
     }
 
     private void emitGroup(ObservableEmitter<MediaGroup> emitter, MediaGroup group) {

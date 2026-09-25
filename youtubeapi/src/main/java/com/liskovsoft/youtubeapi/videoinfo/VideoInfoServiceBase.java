@@ -1,5 +1,7 @@
 package com.liskovsoft.youtubeapi.videoinfo;
 
+import androidx.annotation.Nullable;
+
 import com.liskovsoft.sharedutils.helpers.Helpers;
 import com.liskovsoft.sharedutils.mylogger.Log;
 import com.liskovsoft.youtubeapi.app.AppService;
@@ -29,6 +31,54 @@ public abstract class VideoInfoServiceBase {
     private final DashInfoApi mDashInfoApi;
     private final FileApi mFileApi;
     protected final AppService mAppService;
+    // See setSkipLiveDashInfoWithManifest.
+    private static volatile boolean sSkipLiveDashInfoWithManifest;
+
+    /**
+     * NEWTUBE(live-ttff): enabled once from the mobile flavor (MobileMainApplication, through
+     * {@code VideoInfoService.setSkipLiveDashInfoWithManifest}). Never called on TV.
+     * <p>
+     * {@link #getDashInfo} costs up to six SERIAL googlevideo GETs (headers, url, content, then
+     * the whole chain again as a blind retry) through the shared OkHttp client - not the player's
+     * warm Cronet engine - and it runs inside {@link #transformFormats}, i.e. before the /player
+     * result is handed to the player at all. Everything it computes (segment duration, start
+     * segment, start time) is for ONE consumer that needs it: the generated-MPD live route
+     * (YouTubeMPDBuilder's live SegmentTemplate). The loader only takes that route when a live
+     * stream has NEITHER a dashManifestUrl NOR an hlsManifestUrl (VideoLoaderController opens the
+     * manifest URL otherwise, and media3 derives the live window from the manifest itself), and
+     * next-video prebuild and direct cast both refuse live outright. So with a manifest URL present
+     * the probe's result is dead weight on the critical path, and it is skipped; without one it
+     * still runs, synchronously, exactly as before, because the generated MPD needs it up front.
+     * <p>
+     * What else reads the fields, all non-critical with a manifest URL: Video.startTimeMs (the
+     * duration fallback for a broken engine duration - falls back to the microformat start
+     * timestamp instead), Video.startSegmentNum (isFullLive: now 0, which is what every FRESH live
+     * Video already carries at onNewVideo, so only a same-object reopen of a >24 h stream changes -
+     * it keeps its position like every <24 h stream does), the live storyboard (the touch UI's
+     * loadStoryboard is a stub) and isStreamSeekable (no reader in the app).
+     */
+    public static void setSkipLiveDashInfoWithManifest(boolean skip) {
+        sSkipLiveDashInfoWithManifest = skip;
+    }
+
+    /**
+     * Why the live dash-info probe is skipped, or null when it must run. Pure so the decision is
+     * testable: only the phone gate plus a manifest URL the loader will actually open skips it.
+     */
+    @Nullable
+    static String liveDashInfoSkipReason(boolean gate, @Nullable String dashManifestUrl,
+            @Nullable String hlsManifestUrl) {
+        if (!gate) {
+            return null;
+        }
+        if (dashManifestUrl != null) {
+            return "dash-manifest";
+        }
+        if (hlsManifestUrl != null) {
+            return "hls-manifest";
+        }
+        return null;
+    }
 
     protected VideoInfoServiceBase() {
         mAppService = AppService.instance();
@@ -52,8 +102,24 @@ public abstract class VideoInfoServiceBase {
         decipherFormats(videoInfo);
 
         if (videoInfo.isLive()) {
-            Log.d(TAG, "Enable seeking support on live streams...");
-            videoInfo.sync(getDashInfo(videoInfo));
+            String videoId = videoInfo.getVideoDetails() != null
+                    ? videoInfo.getVideoDetails().getVideoId() : null;
+            String skipReason = liveDashInfoSkipReason(sSkipLiveDashInfoWithManifest,
+                    videoInfo.getDashManifestUrl(), videoInfo.getHlsManifestUrl());
+            if (skipReason != null) {
+                // NEWTUBE(live-ttff): see setSkipLiveDashInfoWithManifest.
+                android.util.Log.d("NetPath", "live-dashinfo skipped reason=" + skipReason
+                        + " video=" + videoId + " client=" + videoInfo.getClient());
+            } else {
+                Log.d(TAG, "Enable seeking support on live streams...");
+                long dashInfoStartMs = android.os.SystemClock.elapsedRealtime();
+                DashInfo dashInfo = getDashInfo(videoInfo);
+                videoInfo.sync(dashInfo);
+                android.util.Log.d("NetPath", "live-dashinfo fetched video=" + videoId
+                        + " client=" + videoInfo.getClient()
+                        + " ok=" + (dashInfo != null ? "y" : "n")
+                        + " ms=" + (android.os.SystemClock.elapsedRealtime() - dashInfoStartMs));
+            }
 
             // A web-family client may require its own platform-valid streaming/GVS token on the
             // manifest URL. Never synthesize one for Android/TV/iOS: BotGuard tokens are Web-only

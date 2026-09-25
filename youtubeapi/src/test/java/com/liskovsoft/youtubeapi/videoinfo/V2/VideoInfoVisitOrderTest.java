@@ -202,7 +202,10 @@ public class VideoInfoVisitOrderTest {
                 14, order.size());
     }
 
-    /** A quarantined head client is demoted WITHIN the head, never dropped or skipped past. */
+    /**
+     * A quarantined head client is demoted behind its healthy account-bearing sibling AND, on the
+     * phone, behind the token-free client - never dropped, and still ahead of anonymous Web.
+     */
     @Test
     public void quarantinedHeadClientIsDemotedBehindItsAccountBearingSibling() {
         List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
@@ -210,8 +213,79 @@ public class VideoInfoVisitOrderTest {
                 forbidden(AppClient.TV_DOWNGRADED));
 
         assertEquals(AppClient.TV, order.get(0));
-        assertEquals(AppClient.TV_DOWNGRADED, order.get(1));
+        assertEquals(order.indexOf(AppClient.VISIONOS) + 1, order.indexOf(AppClient.TV_DOWNGRADED));
+        assertTrue(order.indexOf(AppClient.TV_DOWNGRADED) < order.indexOf(AppClient.WEB_EMBED));
         assertEquals(14, order.size());
+        assertEquals(order.size(), new HashSet<>(order).size());
+    }
+
+    /**
+     * NEWTUBE(auth-route), the common phone case: the last winner is VISIONOS, TV_DOWNGRADED is
+     * quarantined by its media 403 and TV's quarantine has expired. TV keeps attempt 1 (it may have
+     * recovered), but its fall-through is VISIONOS - not TV_DOWNGRADED winning with dead URLs and
+     * paying a 403 + reload (HANDOFF section 26).
+     */
+    @Test
+    public void quarantinedDowngradedHeadFallsThroughToTheTokenFreeClientFirst() {
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.TV_DOWNGRADED, AppClient.VISIONOS, true, false, true,
+                forbidden(AppClient.TV_DOWNGRADED));
+
+        assertEquals(Arrays.asList(AppClient.TV, AppClient.VISIONOS, AppClient.TV_DOWNGRADED),
+                order.subList(0, 3));
+        assertEquals(14, order.size());
+    }
+
+    /** The mirror case: TV (SABR-only) is quarantined, so it is not paid for before VISIONOS. */
+    @Test
+    public void quarantinedTvHeadIsNotProbedBeforeTheTokenFreeClient() {
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.TV_DOWNGRADED, AppClient.VISIONOS, true, false, true,
+                forbidden(AppClient.TV));
+
+        assertEquals(Arrays.asList(AppClient.TV_DOWNGRADED, AppClient.VISIONOS, AppClient.TV),
+                order.subList(0, 3));
+        assertEquals(14, order.size());
+    }
+
+    /** No quarantine: the account head keeps attempts 1-2 exactly as before. */
+    @Test
+    public void healthyHeadIsNotReorderedByTheDemotion() {
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.TV_DOWNGRADED, AppClient.VISIONOS, true, false, true, noneForbidden());
+
+        assertEquals(Arrays.asList(AppClient.TV_DOWNGRADED, AppClient.TV, AppClient.VISIONOS),
+                order.subList(0, 3));
+    }
+
+    /** TV builds (no web-family preference, no token-free client) keep the in-head demotion. */
+    @Test
+    public void withoutThePhoneOrderingTheDemotionStaysWithinTheHead() {
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.TV_DOWNGRADED, AppClient.ANDROID_VR, false, false, true,
+                forbidden(AppClient.TV_DOWNGRADED));
+
+        assertEquals(Arrays.asList(AppClient.TV, AppClient.TV_DOWNGRADED), order.subList(0, 2));
+        assertFalse(order.contains(AppClient.VISIONOS));
+    }
+
+    /** Both quarantined is authenticatedWebFirst's job; the pure helper leaves it alone. */
+    @Test
+    public void demotionNeedsAHealthySiblingToLead() {
+        List<AppClient> order = Arrays.asList(AppClient.TV_DOWNGRADED, AppClient.TV,
+                AppClient.VISIONOS, AppClient.WEB_EMBED);
+
+        assertEquals(order, VideoInfoService.demoteQuarantinedHeadBehindTokenFreeClient(order,
+                forbidden(AppClient.TV, AppClient.TV_DOWNGRADED)));
+        assertEquals(order, VideoInfoService.demoteQuarantinedHeadBehindTokenFreeClient(order,
+                noneForbidden()));
+        assertEquals(order, VideoInfoService.demoteQuarantinedHeadBehindTokenFreeClient(order,
+                null));
+        assertEquals("no anchor, no move",
+                Arrays.asList(AppClient.TV_DOWNGRADED, AppClient.TV, AppClient.WEB_EMBED),
+                VideoInfoService.demoteQuarantinedHeadBehindTokenFreeClient(
+                        Arrays.asList(AppClient.TV_DOWNGRADED, AppClient.TV, AppClient.WEB_EMBED),
+                        forbidden(AppClient.TV)));
     }
 
     /**

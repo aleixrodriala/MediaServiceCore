@@ -193,6 +193,14 @@ internal object PoTokenGate {
      */
     @JvmStatic
     fun getWebVisitorDataForPlayer(): String? {
+        // NEWTUBE(ttff): VISIONOS/ANDROID_VR present the session's visitor but no token, so they must
+        // not queue behind the BotGuard WebView that warmUp is still building at app start. Measured
+        // on a cold share-link open: the VISIONOS /player request waited 1.3 s for GenerateIT and the
+        // session mint, then took 136 ms itself. Peeking returns the SAME visitor the session adopts
+        // (see PoTokenProviderImpl.peekSessionVisitorData), so the one-visitor invariant above holds.
+        if (mWebPoToken == null && PoTokenProviderImpl.isWebPotSupported) {
+            PoTokenProviderImpl.peekSessionVisitorData()?.let { return it }
+        }
         getWebSessionPoToken()
         return getWebVisitorData()
     }

@@ -159,15 +159,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private static final AppClient[] AUTHENTICATED_HEAD = {
             AppClient.TV_DOWNGRADED, AppClient.TV
     };
-    /**
+    /*
      * A real media 403 from an authenticated TV-family URL is route evidence, not an invitation to
-     * select the same route for every next video. Held per client on that SAME Android default
-     * network: the quarantined client is demoted behind its account-bearing sibling, and only when
-     * EVERY client in {@link #AUTHENTICATED_HEAD} is quarantined does the walk give up on the
-     * account and lead with the attested Web partition. Network replacement clears the quarantine
-     * by key mismatch and the short TTL self-heals server-side changes.
+     * select the same route for every next video. Held per client and per TRANSPORT (see
+     * AuthRouteQuarantineBook): the quarantined client is demoted behind its healthy account-bearing
+     * sibling - on the phone behind the token-free client too, see
+     * demoteQuarantinedHeadBehindTokenFreeClient - and only when EVERY client in
+     * AUTHENTICATED_HEAD is quarantined does the walk give up on the account and lead with the
+     * token-free client and the attested Web partition.
+     *
+     * NEWTUBE(auth-route): the cooldown was a fixed 10 minutes keyed on the Network handle. It now
+     * escalates per re-quarantine (10 min x 4^(strikes-1), capped at 24 h, strikes forgotten after
+     * 48 h without a quarantine) and is keyed on the transport, so neither the expiry nor a
+     * reconnect makes every signed-in user re-pay the dead TVHTML5 probe (HANDOFF section 26: ~2.5 s
+     * of first frame on 2-3 consecutive opens). Policy, clocks and rationale live in
+     * AuthRouteQuarantineBook; persistence in AuthRouteQuarantineSnapshot.
      */
-    private static final long AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(10);
     /**
      * How long the anonymous partition stays deprioritized after it answers with bot challenges.
      * Matches {@link #BOT_CHECK_COOLDOWN_MS} — same underlying guest-session restriction.
@@ -367,6 +374,15 @@ public class VideoInfoService extends VideoInfoServiceBase {
         sPreferDashManifestForLive = prefer;
     }
 
+    /**
+     * Enabled once from the mobile flavor (MobileMainApplication). Never called on TV. Skips the
+     * blocking googlevideo dash-info probe of a live open when the response already carries a DASH
+     * or HLS manifest URL. See {@link VideoInfoServiceBase#setSkipLiveDashInfoWithManifest}.
+     */
+    public static void setSkipLiveDashInfoWithManifest(boolean skip) {
+        VideoInfoServiceBase.setSkipLiveDashInfoWithManifest(skip);
+    }
+
     private static boolean isSkippedClient(AppClient client) {
         return sSkipTvFallbackClients && Helpers.equalsAny(client, (Object[]) TV_FALLBACK_CLIENTS);
     }
@@ -406,23 +422,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // with anything else, so a route that recovers is never held down by stale hits.
     private final java.util.Map<AppClient, ReloadStreak> mAuthReloadStreaks =
             new java.util.concurrent.ConcurrentHashMap<>();
-    // 403-quarantine of account-bearing routes, held PER CLIENT and scoped to one network. Per
-    // client because the two TVHTML5 variants fail independently: TV (TVHTML5 7.x) hands out
-    // googlevideo URLs that 403 every chunk past the pot-less ~60s mark, while TV_DOWNGRADED
-    // (TVHTML5 5.x) keeps serving the same video on the same session. Quarantining "the
-    // authenticated route" as a whole threw away the client that actually works.
-    private final java.util.Map<AppClient, Long> mAuthRouteForbiddenUntilMs =
-            new java.util.concurrent.ConcurrentHashMap<>();
-    @Nullable
-    private volatile String mAuthRouteForbiddenNetwork;
+    // 403-quarantine of account-bearing routes, held PER CLIENT and per transport. Per client
+    // because the two TVHTML5 variants fail independently: TV (TVHTML5 7.x) hands out googlevideo
+    // URLs that 403 every chunk past the pot-less ~60s mark, while TV_DOWNGRADED (TVHTML5 5.x) kept
+    // serving the same video on the same session. Quarantining "the authenticated route" as a whole
+    // threw away the client that actually worked. Per transport and with escalating cooldowns: see
+    // AuthRouteQuarantineBook. Thread-safe on its own lock - the player's 403 writes it outside
+    // this service's monitor.
+    private final AuthRouteQuarantineBook mAuthRouteQuarantine = new AuthRouteQuarantineBook();
     /**
      * Optional persistence for the 403-quarantine, supplied by the app layer (phones only, set
      * once at process start like the other mobile gates). Without it the quarantine is
      * process-local, so the FIRST open after every cold start re-probes a route this device has
      * already proven dead on this network -- measured 2026-09-07 on the Pixel 9 as 5.48s to first
      * frame instead of 2.80s, plus a wasted /player round trip, two dead media opens and a player
-     * reload. Persisted, the cooldown keeps its meaning across restarts and the route is still
-     * re-probed once it expires.
+     * reload. Persisted, the cooldown AND its strike count keep their meaning across restarts, and
+     * the route is still re-probed once the (escalating) cooldown expires.
      */
     public interface AuthRouteQuarantineStore {
         /** Last saved snapshot, or null. */
@@ -836,10 +851,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 // already on the quarantine-auth-route line that armed it.
                 android.util.Log.w("NetPath", "player-ring authenticated-web-first reason=auth-head-quarantined"
                         + " failedClients=" + forbiddenAuthClients
-                        + " network=" + mAuthRouteForbiddenNetwork);
+                        + " network=" + activeTransportKey());
             } else if (authenticated && !recoveryWalk && !forbiddenAuthClients.isEmpty()) {
                 android.util.Log.d("NetPath", "player-ring authenticated-first=" + visitOrder.get(0)
                         + " demoted=" + forbiddenAuthClients);
+                logHeadDemotedBehindTokenFreeClient(visitOrder, forbiddenAuthClients);
             } else if (authenticated && !recoveryWalk) {
                 android.util.Log.d("NetPath", "player-ring authenticated-first=" + visitOrder.get(0));
             } else if (authenticatedRecovery) {
@@ -1419,6 +1435,76 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
+     * NEWTUBE(auth-route): when exactly ONE account head is quarantined, move it from attempt 2
+     * to immediately BEHIND {@link #PREFERRED_FIRST_CLIENT}. The healthy sibling keeps attempt 1,
+     * so the account still gets its turn first; what changes is the fall-through.
+     * <p>
+     * {@link #promoteAuthenticatedTvFallback} keeps a quarantined head at attempt 2 on the theory
+     * that an account route is a better bet than an anonymous one. HANDOFF section 26 retired that
+     * theory for TVHTML5: it has no working configuration today, so a quarantined head reached at
+     * attempt 2 either burns a /player on a SABR-only answer (TV) or WINS with URLs that 403 on the
+     * first byte (TV_DOWNGRADED) - a media 403, a quarantine refresh and a player reload - while
+     * VISIONOS, one slot later, would have played. The measured cost of the TV_DOWNGRADED case is
+     * the 5.15-5.48 s vs 2.80 s first frame of section 26.
+     * <p>
+     * Only reordered, never dropped: the demoted head still precedes the whole web-pot partition,
+     * so a video only the account can serve (VISIONOS answers LOGIN_REQUIRED) still reaches it
+     * before any anonymous Web client. The section 17/18 safeguards are untouched: observations are
+     * still held by AuthRouteWalkState until some client serves the video, and restricted videos
+     * still never count against the route. A FULLY quarantined head is not handled here - that is
+     * authenticatedWebFirst, which already leads with the token-free client. Mobile only, like the
+     * token-free injection it anchors on.
+     */
+    static List<AppClient> demoteQuarantinedHeadBehindTokenFreeClient(List<AppClient> order,
+            @Nullable java.util.Set<AppClient> forbidden) {
+        if (forbidden == null || forbidden.isEmpty()) {
+            return order;
+        }
+
+        java.util.List<AppClient> demoted = new java.util.ArrayList<>(AUTHENTICATED_HEAD.length);
+        boolean healthySibling = false;
+        for (AppClient head : AUTHENTICATED_HEAD) {
+            if (!forbidden.contains(head)) {
+                healthySibling = true;
+            } else if (order.contains(head)) {
+                demoted.add(head);
+            }
+        }
+        if (!healthySibling || demoted.isEmpty() || !order.contains(PREFERRED_FIRST_CLIENT)) {
+            return order;
+        }
+
+        List<AppClient> result = new java.util.ArrayList<>(order.size());
+        for (AppClient client : order) {
+            if (demoted.contains(client)) {
+                continue;
+            }
+            result.add(client);
+            if (client == PREFERRED_FIRST_CLIENT) {
+                result.addAll(demoted);
+            }
+        }
+        return result;
+    }
+
+    /** One NetPath line per walk in which a quarantined head sits behind the token-free client. */
+    private static void logHeadDemotedBehindTokenFreeClient(List<AppClient> order,
+            java.util.Set<AppClient> forbidden) {
+        int anchor = order.indexOf(PREFERRED_FIRST_CLIENT);
+        if (anchor < 0) {
+            return;
+        }
+        for (AppClient client : forbidden) {
+            int at = order.indexOf(client);
+            if (at > anchor) {
+                android.util.Log.d("NetPath", "player-ring auth-head-demoted client=" + client
+                        + " behind=" + PREFERRED_FIRST_CLIENT + " orderIndex=" + at
+                        + " first=" + order.get(0));
+            }
+        }
+    }
+
+    /**
      * Puts the account-bearing head ({@link #AUTHENTICATED_HEAD}) in front of the rest of the ring.
      * A head client currently 403-quarantined on this network is DEMOTED to the back of the head
      * rather than dropped: a quarantined account route is still a better bet than an anonymous
@@ -1494,6 +1580,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             // Mobile only: preferWebFamily is sPreferAttestedWebFallback, which TV never sets.
             if (preferWebFamily) {
                 order = insertTokenFreeClientBeforeWebPot(order);
+                order = demoteQuarantinedHeadBehindTokenFreeClient(order, forbiddenAuthClients);
             }
         }
         // An authenticated walk that has fallen through to the anonymous partition should spend
@@ -1522,10 +1609,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
     /**
      * Called only after the player surfaced an actual HTTP 403. It remembers a failed
-     * account-bearing route against the current Android default network. The phone flavor also
-     * writes that memory through {@link AuthRouteQuarantineStore} so a cold start does not re-probe
-     * a route this device just proved dead; the stored value is the framework's own ephemeral
-     * network handle plus a client name and an expiry, and carries no network identifiers.
+     * account-bearing route against the current transport. The phone flavor also writes that
+     * memory through {@link AuthRouteQuarantineStore} so a cold start does not re-probe a route
+     * this device just proved dead; the stored value is a transport name (wifi/cell/...), a client
+     * name, an expiry, a strike count and when that strike was armed - no network identifiers.
      */
     public void markCurrentPlaybackRouteForbidden() {
         AppClient failedClient = mActualInfoType;
@@ -1540,66 +1627,52 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
-     * Demotes one account-bearing client on the ACTIVE network for
-     * {@link #AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS}. Shared by the media-403 evidence path and the
-     * no-media-verdict path so both keep identical network keying and TTL semantics.
+     * Demotes one account-bearing client on the ACTIVE transport. Shared by the media-403 evidence
+     * path and the no-media-verdict path so both keep identical keying, strike and TTL semantics:
+     * a first strike holds {@link AuthRouteQuarantineBook#BASE_TTL_MS}, each re-quarantine of the
+     * same client multiplies it (see {@link AuthRouteQuarantineBook#quarantine}).
      */
     private void quarantineAuthRoute(AppClient failedClient, String reason) {
-        String network = activeNetworkKey();
-        if (network == null) {
+        restoreAuthRouteQuarantineOnce();
+        String transport = activeTransportKey();
+        if (transport == null) {
             return;
         }
-        // A quarantine only means anything against the network it was observed on; moving networks
-        // starts a clean slate rather than carrying a stale verdict across.
-        if (!network.equals(mAuthRouteForbiddenNetwork)) {
-            mAuthRouteForbiddenUntilMs.clear();
-            mAuthRouteForbiddenNetwork = network;
-        }
-        mAuthRouteForbiddenUntilMs.put(failedClient,
-                android.os.SystemClock.elapsedRealtime() + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS);
+
+        long nowElapsedMs = android.os.SystemClock.elapsedRealtime();
+        boolean wasLive = mAuthRouteQuarantine.active(transport, nowElapsedMs)
+                .contains(failedClient);
+        AuthRouteQuarantineBook.Record record = mAuthRouteQuarantine.quarantine(
+                transport, failedClient, nowElapsedMs, System.currentTimeMillis());
         persistAuthRouteQuarantine();
         android.util.Log.w("NetPath", "player-ring quarantine-auth-route client=" + failedClient
                 + " reason=" + reason
-                + " network=" + network + " cooldownMs=" + AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS
-                + " quarantined=" + mAuthRouteForbiddenUntilMs.size()
+                + " network=" + transport
+                + " strike=" + record.strikes
+                // refresh = it was still quarantined (same episode), so no escalation.
+                + " escalation=" + (wasLive ? "refresh" : (record.strikes > 1 ? "up" : "first"))
+                + " cooldownMs=" + (record.untilElapsedMs - nowElapsedMs)
+                + " quarantined=" + mAuthRouteQuarantine.active(transport, nowElapsedMs).size()
                 + "/" + AUTHENTICATED_HEAD.length);
     }
 
     /**
-     * Account-bearing clients currently 403-quarantined on the ACTIVE network. Never null; expired
-     * entries are dropped as they are seen, and a network change wipes the whole set.
+     * Account-bearing clients currently quarantined on the ACTIVE transport. Never null. Expired
+     * records are kept while their strike memory lasts (so the next failure escalates) and pruned
+     * after; another transport's records are left alone rather than wiped, so moving between
+     * Wi-Fi and cellular never evicts the verdict the next open on the other one depends on.
      */
     private java.util.Set<AppClient> forbiddenAuthClients() {
         restoreAuthRouteQuarantineOnce();
-        if (mAuthRouteForbiddenUntilMs.isEmpty()) {
+        if (mAuthRouteQuarantine.isEmpty()) {
             return java.util.Collections.emptySet();
         }
 
-        String currentNetwork = activeNetworkKey();
-        if (currentNetwork == null || !currentNetwork.equals(mAuthRouteForbiddenNetwork)) {
-            android.util.Log.d("NetPath", "player-ring clear-auth-route-quarantine reason=network-change"
-                    + " old=" + mAuthRouteForbiddenNetwork + " new=" + currentNetwork);
-            clearAuthenticatedRouteQuarantine();
-            return java.util.Collections.emptySet();
+        long nowElapsedMs = android.os.SystemClock.elapsedRealtime();
+        if (mAuthRouteQuarantine.prune(nowElapsedMs, System.currentTimeMillis())) {
+            persistAuthRouteQuarantine();
         }
-
-        long now = android.os.SystemClock.elapsedRealtime();
-        java.util.Set<AppClient> result = new java.util.HashSet<>();
-        for (java.util.Map.Entry<AppClient, Long> entry : mAuthRouteForbiddenUntilMs.entrySet()) {
-            if (entry.getValue() - now > 0) {
-                result.add(entry.getKey());
-            } else {
-                mAuthRouteForbiddenUntilMs.remove(entry.getKey());
-                persistAuthRouteQuarantine();
-            }
-        }
-        return result;
-    }
-
-    private void clearAuthenticatedRouteQuarantine() {
-        mAuthRouteForbiddenUntilMs.clear();
-        mAuthRouteForbiddenNetwork = null;
-        persistAuthRouteQuarantine();
+        return mAuthRouteQuarantine.active(activeTransportKey(), nowElapsedMs);
     }
 
     private void persistAuthRouteQuarantine() {
@@ -1608,37 +1681,56 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return;
         }
 
-        store.save(AuthRouteQuarantineSnapshot.encode(mAuthRouteForbiddenNetwork,
-                mAuthRouteForbiddenUntilMs, android.os.SystemClock.elapsedRealtime(),
-                System.currentTimeMillis()));
+        // Encode and save as one step: the player thread (403) and the walk (prune) both persist,
+        // and an older encode landing after a newer one would silently drop a fresh strike.
+        synchronized (mAuthRouteQuarantine) {
+            store.save(AuthRouteQuarantineSnapshot.encode(mAuthRouteQuarantine.records(),
+                    android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis()));
+        }
     }
 
     private void restoreAuthRouteQuarantineOnce() {
         if (mAuthRouteQuarantineRestored) {
             return;
         }
-        mAuthRouteQuarantineRestored = true;
+        // The player thread (media 403) can race the walk here; restore exactly once.
+        synchronized (mAuthRouteQuarantine) {
+            if (mAuthRouteQuarantineRestored) {
+                return;
+            }
+            mAuthRouteQuarantineRestored = true;
 
-        AuthRouteQuarantineStore store = sAuthRouteQuarantineStore;
-        if (store == null) {
-            return;
+            AuthRouteQuarantineStore store = sAuthRouteQuarantineStore;
+            if (store == null) {
+                return;
+            }
+
+            String saved = store.load();
+            long nowElapsedMs = android.os.SystemClock.elapsedRealtime();
+            java.util.List<AuthRouteQuarantineBook.Record> restored =
+                    AuthRouteQuarantineSnapshot.decode(saved, AUTHENTICATED_HEAD, nowElapsedMs,
+                            System.currentTimeMillis());
+            if (restored.isEmpty()) {
+                // Nothing survived: forgotten strikes, an unreadable value, or nothing stored.
+                if (saved != null) {
+                    store.save(null);
+                }
+                return;
+            }
+
+            mAuthRouteQuarantine.restore(restored);
+            if (!AuthRouteQuarantineSnapshot.isCurrentFormat(saved)) {
+                persistAuthRouteQuarantine(); // migrate a legacy (1.9.0) value in place
+            }
+            String transport = activeTransportKey();
+            android.util.Log.d("NetPath", "player-ring restore-auth-route-quarantine network="
+                    + transport
+                    + " quarantined=" + mAuthRouteQuarantine.active(transport, nowElapsedMs).size()
+                    + "/" + AUTHENTICATED_HEAD.length
+                    + " format=" + (AuthRouteQuarantineSnapshot.isCurrentFormat(saved)
+                            ? "v2" : "legacy")
+                    + " records=" + mAuthRouteQuarantine.describe(nowElapsedMs));
         }
-
-        java.util.Map<AppClient, Long> restored = AuthRouteQuarantineSnapshot.decode(
-                store.load(), activeNetworkKey(), AUTHENTICATED_HEAD,
-                android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis(),
-                AUTH_ROUTE_FORBIDDEN_COOLDOWN_MS);
-        if (restored.isEmpty()) {
-            // Nothing survived: a different network, an expired cooldown or an unreadable value.
-            store.save(null);
-            return;
-        }
-
-        mAuthRouteForbiddenUntilMs.putAll(restored);
-        mAuthRouteForbiddenNetwork = activeNetworkKey();
-        android.util.Log.d("NetPath", "player-ring restore-auth-route-quarantine network="
-                + mAuthRouteForbiddenNetwork + " quarantined=" + restored.size()
-                + "/" + AUTHENTICATED_HEAD.length);
     }
 
     /**
@@ -1719,6 +1811,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
         mAnonChallengeNetwork = null;
     }
 
+    /**
+     * One specific network ATTACHMENT ({@code transport:netIdHash}); a reconnect is a new key.
+     * Right for the anonymous-challenge memory, which is a joint verdict on (client, identity,
+     * IP) - HANDOFF section 26 - and so genuinely may not survive a new public IP.
+     */
     @Nullable
     private static String activeNetworkKey() {
         try {
@@ -1731,15 +1828,40 @@ public class VideoInfoService extends VideoInfoServiceBase {
             if (network == null || caps == null) {
                 return null;
             }
-            String transport = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ? "vpn"
-                    : caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "wifi"
-                    : caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ? "cell"
-                    : caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ? "ethernet"
-                    : "other";
-            return transport + ':' + network.hashCode();
+            return transportName(caps) + ':' + network.hashCode();
         } catch (RuntimeException e) {
             return null;
         }
+    }
+
+    /**
+     * NEWTUBE(auth-route): the transport alone (wifi / cell / vpn / ethernet / other), which is
+     * what the account-route quarantine is keyed on. Deliberately NOT {@link #activeNetworkKey}:
+     * that changes on every reconnect, and the auth-route 403 is not a property of the attachment
+     * or its IP - section 26 reproduced it from a laptop on a different IP and traced it to the
+     * TVHTML5 request's signatureTimestamp suffix. See AuthRouteQuarantineBook.
+     */
+    @Nullable
+    private static String activeTransportKey() {
+        try {
+            Context context = AppService.instance().getContext();
+            ConnectivityManager manager = (ConnectivityManager)
+                    context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            Network network = manager != null ? manager.getActiveNetwork() : null;
+            NetworkCapabilities caps = network != null
+                    ? manager.getNetworkCapabilities(network) : null;
+            return caps != null ? transportName(caps) : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static String transportName(NetworkCapabilities caps) {
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ? "vpn"
+                : caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "wifi"
+                : caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ? "cell"
+                : caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ? "ethernet"
+                : "other";
     }
 
     private static boolean hasAuthentication() {
@@ -2331,6 +2453,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
 
         AppClient restored = AppClient.values()[videoInfoType];
+        // NEWTUBE(live-winner): ANDROID_VR is never a useful VOD head on the phone - its media hits
+        // the deep-range 403 wall (HANDOFF §17) - and until live answers stopped updating the winner
+        // (see persistRecentTypeIfNeeded) every live open persisted it here. A restored ANDROID_VR
+        // then began every cold-start VOD open on it and, while it kept "winning" /player, never
+        // healed. VISIONOS remains the default head; the ring still reaches ANDROID_VR as a fallback.
+        if (sPreferDashManifestForLive && restored == AppClient.ANDROID_VR) {
+            android.util.Log.d("NetPath", "player-ring restore-skipped client=" + restored
+                    + " reason=live-dash-client");
+            return;
+        }
         // Skipped (TV-only) clients aren't restored either: a winner persisted before the phone
         // ring trim existed must not make the ring begin at a client it would skip anyway.
         if (!restored.isWebPotRequired() && !isSkippedClient(restored) && Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(restored)) {
@@ -2360,6 +2492,20 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
 
         mActualInfoType = videoInfo.getClient();
+
+        // NEWTUBE(live-winner): a live answer's client was chosen by manifest type, not by health -
+        // the walk holds HLS-only answers and goes on to the one client with a live DASH manifest
+        // (ANDROID_VR, see sPreferDashManifestForLive). It stays the CURRENT client above, because
+        // recovery and the route quarantine must blame the client that actually served the stream,
+        // but it is not persisted: as the cold-start hint it made the first VOD open after the next
+        // launch begin on ANDROID_VR and hit its deep-range 403 wall about a second in (emulator:
+        // first frame, then 403 and three recovery reloads).
+        if (sPreferDashManifestForLive && videoInfo.isLive()) {
+            android.util.Log.d("NetPath", "player-ring winner-kept reason=live client="
+                    + videoInfo.getClient() + " persisted=n");
+            return;
+        }
+
         persistVideoInfoType();
     }
 

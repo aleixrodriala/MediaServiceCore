@@ -88,6 +88,25 @@ public class YouTubeMediaItemService implements MediaItemService {
                         }
                     });
 
+    // NEWTUBE(history-ping): watch-time pings need the playback's tracking ids (eventId,
+    // visitorMonitoringData, ofParam, length), not its media URLs. The playback cache above expires
+    // after 5 min because its URLs go stale, so every history save for a video watched longer than
+    // that re-walked the /player ring (plus a TV-auth /player when signed in) mid-playback - and on a
+    // video switch that walk shares VideoInfoService's lock with the NEW video's open. Official clients
+    // keep one cpn/ei for the whole playback, so a tracking lookup accepts entries for hours.
+    private static final int MOBILE_TRACKING_CACHE_MAX = 8;
+    private static final long MOBILE_TRACKING_CACHE_TTL_MS = 6 * 60 * 60_000L;
+    private final java.util.Map<String, CachedFormatEntry> mMobileTrackingCache =
+            java.util.Collections.synchronizedMap(
+                    new java.util.LinkedHashMap<String, CachedFormatEntry>(
+                            MOBILE_TRACKING_CACHE_MAX + 1, 0.75f, true) {
+                        @Override
+                        protected boolean removeEldestEntry(
+                                java.util.Map.Entry<String, CachedFormatEntry> eldest) {
+                            return size() > MOBILE_TRACKING_CACHE_MAX;
+                        }
+                    });
+
     private static final class CachedFormatEntry {
         final MediaItemFormatInfo formatInfo;
         final long timeMs = android.os.SystemClock.elapsedRealtime();
@@ -450,7 +469,11 @@ public class YouTubeMediaItemService implements MediaItemService {
     public void updateHistoryPosition(String videoId, float positionSec) {
         checkSigned();
 
-        MediaItemFormatInfo formatInfo = getFormatInfo(videoId);
+        MediaItemFormatInfo formatInfo = getTrackingFormatInfo(videoId);
+
+        if (formatInfo == null) {
+            formatInfo = getFormatInfo(videoId);
+        }
 
         if (formatInfo == null) {
             Log.e(TAG, "Can't update history for video id %s. formatInfo == null", videoId);
@@ -769,7 +792,15 @@ public class YouTubeMediaItemService implements MediaItemService {
     @Override
     public Observable<DeArrowData> getDeArrowDataObserve(List<String> videoIds) {
         return RxHelper.create(emitter -> {
+            int done = 0;
             for (String videoId : videoIds) {
+                // NEWTUBE(dispose-stop): one request per card; a scrolled-away/closed screen disposes
+                // this mid-list and the rest of the batch used to be fetched anyway.
+                if (emitter.isDisposed()) {
+                    android.util.Log.d("NetPath", "dearrow-stop disposed remaining=" + (videoIds.size() - done));
+                    return;
+                }
+                done++;
                 DeArrowData result = getDeArrowData(videoId);
                 if (result != null) {
                     emitter.onNext(result);
@@ -796,7 +827,29 @@ public class YouTubeMediaItemService implements MediaItemService {
     public void invalidateCache() {
         mCachedFormatInfo = null;
         mMobileFormatInfoCache.clear();
+        mMobileTrackingCache.clear(); // an account switch must not credit the old identity
         mUnplayableEntry = null; // also ends the unplayable-reuse window
+    }
+
+    /** Stale-URL-tolerant lookup for watch-time pings only; never hand this to the player. */
+    private MediaItemFormatInfo getTrackingFormatInfo(String videoId) {
+        if (!sSingleFlightEnabled || videoId == null) {
+            return null;
+        }
+
+        CachedFormatEntry entry = mMobileTrackingCache.get(videoId);
+        if (entry == null) {
+            return null;
+        }
+
+        if (android.os.SystemClock.elapsedRealtime() - entry.timeMs > MOBILE_TRACKING_CACHE_TTL_MS) {
+            mMobileTrackingCache.remove(videoId);
+            return null;
+        }
+
+        android.util.Log.d("NetPath", "history-ping tracking-cache hit video=" + videoId
+                + " ageMs=" + (android.os.SystemClock.elapsedRealtime() - entry.timeMs));
+        return entry.formatInfo;
     }
 
     private MediaItemFormatInfo getCachedFormatInfo(String videoId) {
@@ -849,6 +902,7 @@ public class YouTubeMediaItemService implements MediaItemService {
             if (sSingleFlightEnabled && requestedVideoId != null && !formatInfo.isUnplayable()
                     && formatInfo.containsMedia()) {
                 mMobileFormatInfoCache.put(requestedVideoId, new CachedFormatEntry(formatInfo));
+                mMobileTrackingCache.put(requestedVideoId, new CachedFormatEntry(formatInfo));
                 android.util.Log.d("NetPath", "format-cache store video=" + requestedVideoId
                         + " entries=" + mMobileFormatInfoCache.size());
             }

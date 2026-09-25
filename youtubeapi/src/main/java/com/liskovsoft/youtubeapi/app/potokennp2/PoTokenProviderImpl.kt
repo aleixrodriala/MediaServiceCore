@@ -21,6 +21,8 @@ internal object PoTokenProviderImpl : PoTokenProvider {
     private var webViewBadImpl = false // whether the system has a bad WebView implementation
 
     private object WebPoTokenGenLock
+    // Volatile: [peekSessionVisitorData] reads it without the lock while a recreate is in flight.
+    @Volatile
     private var webPoTokenVisitorData: String? = null
     private var webPoTokenStreamingPot: String? = null
     private var webPoTokenGenerator: PoTokenGenerator? = null
@@ -36,9 +38,34 @@ internal object PoTokenProviderImpl : PoTokenProvider {
     // AppService.visitorData keeps driving browse/Home personalization untouched.
     @Volatile
     private var forceFreshVisitor = false
+    // Bumped by anything that retires the session visitor, so a peek racing a rotation can tell.
+    @Volatile
+    private var visitorGeneration = 0
 
     fun requestFreshVisitor() {
+        // Flag first: a peek that already passed the flag check then sees the generation move.
         forceFreshVisitor = true
+        visitorGeneration++
+    }
+
+    /**
+     * NEWTUBE(ttff): the visitor the web-pot session is using or is about to adopt, WITHOUT waiting
+     * for BotGuard. The recreate block below assigns [webPoTokenVisitorData] first and only then
+     * spends ~1-1.5 s building the WebView generator, and when no rotation is armed it adopts
+     * AppService.visitorData verbatim - so before that block runs the answer is already known.
+     * Returns null whenever it cannot be sure (rotation armed, no persisted visitor yet), and the
+     * caller then takes the blocking path.
+     */
+    fun peekSessionVisitorData(): String? {
+        // Snapshot the generation before anything else: rotateWebVisitor bumps it (and arms the
+        // flag) before clearing the old visitor, so the re-check below catches a rotation mid-read.
+        val generation = visitorGeneration
+        if (forceFreshVisitor || !isWebPotSupported) {
+            return null
+        }
+        val visitor = webPoTokenVisitorData ?: AppService.instance().visitorData
+        // A rotation that landed while reading would make this the retired identity.
+        return if (generation == visitorGeneration && !forceFreshVisitor) visitor else null
     }
 
     override fun getWebClientPoToken(videoId: String): PoTokenResult? {
@@ -88,12 +115,17 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                     // Rotation inverts the preference for exactly one recreate: mint a brand new
                     // visitor and only fall back to the persistent one if minting fails, so a
                     // challenged identity is genuinely left behind rather than re-adopted.
-                    webPoTokenVisitorData = if (forceFreshVisitor) {
-                        forceFreshVisitor = false
+                    // Publish the fresh visitor BEFORE disarming the rotation: peekSessionVisitorData
+                    // reads both without this lock, and in between it would hand out the very
+                    // identity being rotated away from.
+                    if (forceFreshVisitor) {
                         Log.d(TAG, "Rotating web visitor after a bot challenge")
-                        VisitorService.getVisitorData() ?: AppService.instance().visitorData
+                        webPoTokenVisitorData =
+                            VisitorService.getVisitorData() ?: AppService.instance().visitorData
+                        forceFreshVisitor = false
                     } else {
-                        AppService.instance().visitorData ?: VisitorService.getVisitorData()
+                        webPoTokenVisitorData =
+                            AppService.instance().visitorData ?: VisitorService.getVisitorData()
                     }
 
                     val latch = if (webPoTokenGenerator != null) CountDownLatch(1) else null
@@ -190,6 +222,7 @@ internal object PoTokenProviderImpl : PoTokenProvider {
     override fun isWebPotSupported() = webViewSupported && !webViewBadImpl
 
     fun resetCache() {
+        visitorGeneration++
         webPoTokenVisitorData = null
         webPoTokenStreamingPot = null
     }

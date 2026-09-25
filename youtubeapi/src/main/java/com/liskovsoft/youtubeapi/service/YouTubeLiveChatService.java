@@ -25,8 +25,11 @@ class YouTubeLiveChatService implements LiveChatService {
     @Override
     public Observable<ChatItem> openLiveChatObserve(String chatKey) {
         return RxHelper.createLong(emitter -> {
+            // NEWTUBE(chat-backoff): the poll loop never ends on its own, so hand it the subscriber's
+            // disposed state - disposal used to leave it polling (the interrupted read came back
+            // wrapped in IllegalStateException and was retried like any other error).
             mLiveChatServiceInt.openLiveChat(
-                    chatKey, emitter::onNext
+                    chatKey, emitter::onNext, emitter::isDisposed
             );
 
             emitter.onComplete();
