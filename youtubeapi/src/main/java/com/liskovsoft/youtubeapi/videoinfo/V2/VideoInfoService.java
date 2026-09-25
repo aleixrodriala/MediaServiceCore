@@ -145,8 +145,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * private, deleted, age-gated or geo-blocked video is genuinely UNPLAYABLE with no formats, and
      * demoting the account for it would cost the user authenticated playback on the NEXT video. The
      * same shape on two different videoIds cannot be a per-video verdict; it is the route.
+     * <p>
+     * NEWTUBE(auth-route): the streak itself now lives in {@link AuthRouteQuarantineBook} (per
+     * transport, persisted, bounded in age) so that cold opens add up; a client with a remembered
+     * strike is on probation and needs only one. See {@link #countAuthRouteVerdict}.
      */
-    private static final int AUTH_RELOAD_QUARANTINE_MIN_HITS = 2;
+    private static final int AUTH_RELOAD_QUARANTINE_MIN_HITS =
+            AuthRouteQuarantineBook.NO_MEDIA_MIN_HITS;
     /**
      * Signed-in probe head, most-likely-to-work first. yt-dlp's {@code _DEFAULT_AUTHED_CLIENTS} is
      * {@code ('tv_downgraded', 'web')} — plain {@code tv} appears in NO default client list — and
@@ -417,11 +422,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private volatile long mBotCheckNextProbeAtMs;
     @Nullable
     private volatile VideoInfo mBotCheckResult;
-    // Consecutive no-media verdicts per account-bearing client, keyed by client and deduplicated by
-    // videoId (see AUTH_RELOAD_QUARANTINE_MIN_HITS). Cleared for a client as soon as it answers
-    // with anything else, so a route that recovers is never held down by stale hits.
-    private final java.util.Map<AppClient, ReloadStreak> mAuthReloadStreaks =
-            new java.util.concurrent.ConcurrentHashMap<>();
+    // NEWTUBE(auth-route): the no-media streak (consecutive proven no-media verdicts per
+    // account-bearing client, deduplicated by video - see AUTH_RELOAD_QUARANTINE_MIN_HITS) used to
+    // be a field here, so it died with the process and a cold open never reached two hits. It is
+    // held in mAuthRouteQuarantine now, beside the records it leads to, and persisted with them.
+    // Still cleared for a client as soon as it answers with anything else.
+    //
     // 403-quarantine of account-bearing routes, held PER CLIENT and per transport. Per client
     // because the two TVHTML5 variants fail independently: TV (TVHTML5 7.x) hands out googlevideo
     // URLs that 403 every chunk past the pot-less ~60s mark, while TV_DOWNGRADED (TVHTML5 5.x) kept
@@ -430,6 +436,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // AuthRouteQuarantineBook. Thread-safe on its own lock - the player's 403 writes it outside
     // this service's monitor.
     private final AuthRouteQuarantineBook mAuthRouteQuarantine = new AuthRouteQuarantineBook();
+    /** Bumped by onAccountChanged under the book's lock; see countAuthRouteVerdict. */
+    private volatile long mAccountGeneration;
     /**
      * Optional persistence for the 403-quarantine, supplied by the app layer (phones only, set
      * once at process start like the other mobile gates). Without it the quarantine is
@@ -468,13 +476,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
     public interface CancellationSignal {
         boolean isCanceled();
-    }
-
-    /** Per-client no-media streak. Mutated only under this service's monitor. */
-    private static final class ReloadStreak {
-        @Nullable
-        String lastVideoId;
-        int hits;
     }
 
     /**
@@ -614,25 +615,53 @@ public class VideoInfoService extends VideoInfoServiceBase {
         static final class Held {
             final String videoId;
             final boolean reloadPage;
+            /**
+             * The empty answer carried a sign-in/age/visibility gate (LOGIN_REQUIRED,
+             * AGE_CHECK_REQUIRED, CONTENT_CHECK_REQUIRED, ERROR) rather than the UNPLAYABLE of the
+             * reload-page outage. Still counts toward the two-video streak as it always did, but
+             * is too ambiguous to re-quarantine a client on probation by itself: an age-gated video
+             * this account may not watch can still be served by anonymous WEB_EMBED.
+             */
+            final boolean gated;
 
             Held(String videoId, boolean reloadPage) {
+                this(videoId, reloadPage, false);
+            }
+
+            Held(String videoId, boolean reloadPage, boolean gated) {
                 this.videoId = videoId;
                 this.reloadPage = reloadPage;
+                this.gated = gated;
             }
         }
 
         private final java.util.Map<AppClient, Held> mHeld = new java.util.LinkedHashMap<>();
         private boolean mServedElsewhere;
+        /** The service's account generation when this walk began (see onAccountChanged). */
+        final long accountGeneration;
+
+        AuthRouteWalkState() {
+            this(0);
+        }
+
+        AuthRouteWalkState(long accountGeneration) {
+            this.accountGeneration = accountGeneration;
+        }
 
         /**
          * @return true if the caller should count this observation now. False means it is held
          *         until a client serves the video; if none does, it is dropped.
          */
         boolean hold(AppClient client, String videoId, boolean reloadPage) {
+            return hold(client, videoId, reloadPage, false);
+        }
+
+        /** @see Held#gated */
+        boolean hold(AppClient client, String videoId, boolean reloadPage, boolean gated) {
             if (mServedElsewhere) {
                 return true;
             }
-            mHeld.put(client, new Held(videoId, reloadPage));
+            mHeld.put(client, new Held(videoId, reloadPage, gated));
             return false;
         }
 
@@ -650,6 +679,89 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         int heldCount() {
             return mHeld.size();
+        }
+    }
+
+    /**
+     * NEWTUBE(net): when every client says the same thing, the ring has nothing left to find.
+     *
+     * <p>Pixel 9, 2026-09-25, jfKfPfyJRdk (an ended stream whose recording was never published):
+     * all eleven clients were asked, nine answered UNPLAYABLE "La grabación de esta emisión en
+     * directo no está disponible." and the two others answered embed/outdated-client ERRORs - 11
+     * /player calls and 4-5 s before the app could say so. The verdict was settled at attempt 3.
+     *
+     * <p>Definitive = at least {@link #MIN_CLIENTS} distinct clients, at least one the SERVER
+     * confirmed signed in ({@code srvAuth=y} - sending the credential is not enough) and one that
+     * carried no account, all answering with the same reason that
+     * {@link BotCheckDetector#definitiveUnplayableKey} ALLOWLISTS as terminal for the content (an
+     * unpublished live recording, a removal, a terminated account, a copyright takedown), and no
+     * parsed answer so far saying anything else. Stability over speed: a generic "Video
+     * unavailable" never qualifies. A credential the server did not confirm still counts as a
+     * distinct client, not as the signed-in witness. ERROR answers with no allowlisted reason are
+     * neutral (they are the client-specific ones here: embedding disabled, client too old); no
+     * answer at all is no evidence. Anything else - a playable or OK answer, a sign-in or age gate,
+     * any other reason - ends the consensus for the rest of the walk. Mobile only.
+     *
+     * <p>One instance per walk. Not thread-safe: {@code firstPlayable} runs under this service's
+     * monitor and the instance never escapes it.
+     */
+    static final class UnplayableConsensus {
+        static final int MIN_CLIENTS = 3;
+
+        @Nullable
+        private String mKey;
+        private boolean mBroken;
+        private boolean mAuth;
+        private boolean mAnonymous;
+        private final java.util.Set<AppClient> mClients = new java.util.LinkedHashSet<>();
+
+        /**
+         * @param signedIn TRUE: sent with the account and the server confirmed it; FALSE: sent
+         *                 without one; null: sent with the account, not confirmed
+         * @param status the answer's raw playability status, or null for no answer
+         * @param key {@link BotCheckDetector#definitiveUnplayableKey} of the answer
+         * @return true once the verdict is definitive (stays true for later calls)
+         */
+        boolean note(AppClient client, @Nullable Boolean signedIn, @Nullable String status,
+                @Nullable String key) {
+            if (mBroken || status == null || (key == null && "ERROR".equals(status))) {
+                return !mBroken && isDefinitive();
+            }
+            if (key == null || (mKey != null && !mKey.equals(key))) {
+                mBroken = true;
+                return false;
+            }
+            mKey = key;
+            mClients.add(client);
+            mAuth |= Boolean.TRUE.equals(signedIn);
+            mAnonymous |= Boolean.FALSE.equals(signedIn);
+            return isDefinitive();
+        }
+
+        /** The witness a parsed answer can be; see {@link #note}. */
+        @Nullable
+        static Boolean witness(VideoInfo result) {
+            if (!result.isAuth()) {
+                return Boolean.FALSE;
+            }
+            return Boolean.TRUE.equals(result.isServerLoggedIn()) ? Boolean.TRUE : null;
+        }
+
+        private boolean isDefinitive() {
+            return mAuth && mAnonymous && mClients.size() >= MIN_CLIENTS;
+        }
+
+        String clients() {
+            StringBuilder result = new StringBuilder();
+            for (AppClient client : mClients) {
+                result.append(result.length() > 0 ? "," : "").append(client);
+            }
+            return result.toString();
+        }
+
+        /** Credential- and content-free: the reason text itself stays on its player-result line. */
+        String reasonHash() {
+            return mKey != null ? Integer.toHexString(mKey.hashCode()) : "none";
         }
     }
 
@@ -878,7 +990,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
         final BotCheckWalkState botCheck = new BotCheckWalkState();
         // Holds auth-route no-media observations until a client proves the video is playable at
         // all. See AuthRouteWalkState.
-        final AuthRouteWalkState authRoute = new AuthRouteWalkState();
+        final AuthRouteWalkState authRoute = new AuthRouteWalkState(mAccountGeneration);
+        // Stops the walk once the ring agrees the video cannot play. See UnplayableConsensus.
+        final UnplayableConsensus unplayable = new UnplayableConsensus();
         boolean authenticatedClientAttempted = false;
         int anonChallengeHits = 0;
         int attempt = 0;
@@ -1043,6 +1157,21 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 }
             }
 
+            if (sPreferNoPotClient && liveWithoutDash == null && result != null
+                    && unplayable.note(nextType, UnplayableConsensus.witness(result),
+                            result.getRawPlayabilityStatus(),
+                            result.isBotCheckRequired() || result.isRent() ? null
+                                    : BotCheckDetector.definitiveUnplayableKey(
+                                            result.getRawPlayabilityStatus(),
+                                            result.getPlayabilityStatus()))) {
+                android.util.Log.d("NetPath", "player-ring definitive-unplayable video=" + videoId
+                        + " clients=" + unplayable.clients()
+                        + " reason-hash=" + unplayable.reasonHash()
+                        + " attempts=" + attempt
+                        + " skipped=" + (visitOrder.size() - visitIndex - 1));
+                return result;
+            }
+
             // Failover walks leave one logcat line per extra /player attempt (happy path =
             // one attempt = silent) so ring behavior is measurable in verify runs/forensics.
             // NetPath itself lives in the common module, which youtubeapi can't see -> raw tag.
@@ -1060,7 +1189,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 // evidence (see AuthRouteWalkState).
                 for (java.util.Map.Entry<AppClient, AuthRouteWalkState.Held> held
                         : authRoute.onPlayable().entrySet()) {
-                    countAuthRouteVerdict(held.getKey(), held.getValue());
+                    countAuthRouteVerdict(held.getKey(), held.getValue(),
+                            authRoute.accountGeneration);
                 }
                 // The anonymous partition just served a video, so whatever guest challenge was
                 // remembered has lifted. Drop it immediately rather than sitting out the TTL.
@@ -1131,21 +1261,23 @@ public class VideoInfoService extends VideoInfoServiceBase {
     /**
      * Whether {@code client} can still improve a live result that is being held only because it
      * carries no dash manifest (see {@code sPreferDashManifestForLive}). Everything else can only
-     * repeat the answer we already have, one round trip at a time.
+     * repeat the answer we already have, one round trip at a time. Skipped clients cost nothing,
+     * so once a result is held the walk goes straight to ANDROID_VR wherever it sits in the order.
      *
      * <p>Measured on the Pixel 9 on 2026-09-07 across two 24/7 live streams: every web-family
-     * client answered {@code dash=n} and ANDROID_VR answered {@code dash=y} for both, which is
-     * exactly what the flag's own comment predicted. Probing the rest cost five extra round trips
-     * on 5yx6BWlEVcY (first frame +3220ms against +2472ms for the stream that reached ANDROID_VR
-     * sooner) - the flag was documented as costing ONE extra round trip per live open, and stopped
-     * doing so once the auth-route quarantine reordered the ring and pushed ANDROID_VR to seventh.
+     * client answered {@code dash=n} and ANDROID_VR answered {@code dash=y} for both. Probing the
+     * rest cost five extra round trips on 5yx6BWlEVcY (first frame +3220ms against +2472ms for the
+     * stream that reached ANDROID_VR sooner).
      *
-     * <p>The TV family is kept as a candidate on the strength of that comment rather than on
-     * evidence: both live streams came back UNPLAYABLE there while the auth route is broken, so
-     * this round could not observe it either way.
+     * <p>The TV family used to be kept as a candidate on the strength of the flag's comment rather
+     * than evidence. It now has evidence against it: signed in on 2026-09-25 (nI725iVsyoQ, LTE),
+     * TV answered live with {@code dash=n hls=n sabr=y} and TV_DOWNGRADED - quarantined and
+     * demoted on that network, yet still probed because it was a candidate - answered
+     * {@code dash=n hls=n sabr=n}, a ~0.9 s round trip before ANDROID_VR's {@code dash=y}. No
+     * client other than ANDROID_VR has ever returned a live dashManifestUrl here.
      */
     static boolean isLiveDashCandidate(AppClient client) {
-        return client == AppClient.ANDROID_VR || client.isAuthSupported();
+        return client == AppClient.ANDROID_VR;
     }
 
 
@@ -1250,20 +1382,27 @@ public class VideoInfoService extends VideoInfoServiceBase {
             @Nullable VideoInfo result, AuthRouteWalkState authRoute) {
         boolean sabrOnly = isAuthRouteSabrOnlyVerdict(client, result);
         if (!sabrOnly && !isAuthRouteReloadVerdict(client, result)) {
-            // Direct evidence the route is healthy: it answered this client with something.
-            mAuthReloadStreaks.remove(client);
+            // Direct evidence the route is healthy: it answered this client with something. A null
+            // result (timeout, dead link) is NOT an answer and says nothing either way - it used to
+            // clear the streak too, which is harmless in memory but would now also cost a write.
+            if (result != null) {
+                clearAuthRouteNoMediaStreak(client);
+            }
             return;
         }
 
         boolean reloadPage = !sabrOnly && BotCheckDetector.isReloadPageVerdict(
                 result.getRawPlayabilityStatus(), result.getPlayabilityStatus());
-        if (!authRoute.hold(client, videoId, reloadPage)) {
+        // The SABR-only shape already excludes every gate; see AuthRouteWalkState.Held#gated.
+        boolean gated = !sabrOnly && (result.isAgeRestricted() || result.isVisibilityRestricted());
+        if (!authRoute.hold(client, videoId, reloadPage, gated)) {
             android.util.Log.d("NetPath", "player-ring auth-route held client=" + client
                     + " video=" + videoId + " shape=" + (sabrOnly ? "sabr-only" : "empty")
-                    + " reloadPage=" + (reloadPage ? "y" : "n"));
+                    + " reloadPage=" + (reloadPage ? "y" : "n") + (gated ? " gated=y" : ""));
             return;
         }
-        countAuthRouteVerdict(client, new AuthRouteWalkState.Held(videoId, reloadPage));
+        countAuthRouteVerdict(client, new AuthRouteWalkState.Held(videoId, reloadPage, gated),
+                authRoute.accountGeneration);
     }
 
     /**
@@ -1272,29 +1411,96 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * client served the video in the same walk - see {@link AuthRouteWalkState}. Any other outcome
      * from that client clears its streak, so the route is held down only while it is actually
      * refusing videos that demonstrably play.
+     * <p>
+     * NEWTUBE(auth-route): the streak is held per transport in {@link AuthRouteQuarantineBook} and
+     * persisted with the quarantine, so two cold opens (one video each) add up instead of each
+     * ending at {@code hits=1/2}; and a client with a remembered strike is on probation - its first
+     * proven verdict re-quarantines it with escalation. Policy: {@link AuthRouteQuarantineBook#noteNoMedia}.
      */
-    private void countAuthRouteVerdict(AppClient client, AuthRouteWalkState.Held held) {
-        ReloadStreak streak = mAuthReloadStreaks.get(client);
-        if (streak == null) {
-            streak = new ReloadStreak();
-            mAuthReloadStreaks.put(client, streak);
-        }
-        // Same video twice (a reload, a retry) is one piece of evidence, not two.
-        if (held.videoId.equals(streak.lastVideoId)) {
-            return;
-        }
-        streak.lastVideoId = held.videoId;
-        streak.hits++;
-
-        if (streak.hits < AUTH_RELOAD_QUARANTINE_MIN_HITS) {
+    private void countAuthRouteVerdict(AppClient client, AuthRouteWalkState.Held held,
+            long walkAccountGeneration) {
+        restoreAuthRouteQuarantineOnce();
+        String transport = activeTransportKey();
+        String reloadPage = (held.reloadPage ? "y" : "n") + (held.gated ? " gated=y" : "");
+        if (transport == null) {
+            // Nothing to key it on - the quarantine it could lead to would be dropped as well.
             android.util.Log.d("NetPath", "player-ring auth-route no-media client=" + client
-                    + " hits=" + streak.hits + "/" + AUTH_RELOAD_QUARANTINE_MIN_HITS
-                    + " reloadPage=" + (held.reloadPage ? "y" : "n"));
+                    + " reloadPage=" + reloadPage + " counted=n reason=no-network");
             return;
         }
 
-        mAuthReloadStreaks.remove(client);
-        quarantineAuthRoute(client, "no-media-verdict");
+        long nowElapsedMs = android.os.SystemClock.elapsedRealtime();
+        AuthRouteQuarantineBook.NoMediaOutcome outcome;
+        // Checked and counted under the book's lock, which onAccountChanged also holds while it
+        // bumps the generation and drops the streaks: a walk that began under the previous account
+        // cannot slip its verdict (or a probation escalation) in as the new account's evidence.
+        synchronized (mAuthRouteQuarantine) {
+            if (walkAccountGeneration != mAccountGeneration) {
+                android.util.Log.d("NetPath", "player-ring auth-route no-media client=" + client
+                        + " reloadPage=" + reloadPage + " counted=n reason=account-changed");
+                return;
+            }
+            outcome = mAuthRouteQuarantine.noteNoMedia(transport, client,
+                    noMediaVideoKey(held.videoId), !held.gated, nowElapsedMs,
+                    System.currentTimeMillis());
+        }
+        switch (outcome.kind) {
+            case DUPLICATE:
+                // Same video twice (a reload, a retry) is one piece of evidence, not two.
+                android.util.Log.d("NetPath", "player-ring auth-route no-media client=" + client
+                        + " hits=" + outcome.hits + "/" + AUTH_RELOAD_QUARANTINE_MIN_HITS
+                        + " reloadPage=" + reloadPage + " network=" + transport + " duplicate=y");
+                return;
+            case COUNTED:
+                android.util.Log.d("NetPath", "player-ring auth-route no-media client=" + client
+                        + " hits=" + outcome.hits + "/" + AUTH_RELOAD_QUARANTINE_MIN_HITS
+                        + " reloadPage=" + reloadPage + " network=" + transport
+                        + " persisted=" + (persistAuthRouteQuarantine() ? "y" : "n"));
+                return;
+            case QUARANTINED:
+            default:
+                boolean persisted = persistAuthRouteQuarantine();
+                if (outcome.probation) {
+                    android.util.Log.d("NetPath", "player-ring auth-route no-media client=" + client
+                            + " probation=y priorStrikes=" + outcome.previousStrikes
+                            + " reloadPage=" + reloadPage + " network=" + transport
+                            + " persisted=" + (persisted ? "y" : "n"));
+                } else {
+                    android.util.Log.d("NetPath", "player-ring auth-route no-media client=" + client
+                            + " hits=" + outcome.hits + "/" + AUTH_RELOAD_QUARANTINE_MIN_HITS
+                            + " reloadPage=" + reloadPage + " network=" + transport
+                            + " persisted=" + (persisted ? "y" : "n"));
+                }
+                logAuthRouteQuarantined(client,
+                        outcome.probation ? "no-media-probation" : "no-media-verdict", transport,
+                        outcome.record, outcome.wasLive, nowElapsedMs);
+        }
+    }
+
+    /**
+     * The client answered with something other than a no-media verdict, so any partial streak it
+     * had on the active transport is stale. Written through only when there was one to drop, so a
+     * healthy walk never touches the store.
+     */
+    private void clearAuthRouteNoMediaStreak(AppClient client) {
+        if (!mAuthRouteQuarantine.hasNoMediaStreak(client)) {
+            return;
+        }
+        String transport = activeTransportKey();
+        if (mAuthRouteQuarantine.clearNoMedia(transport, client)) {
+            android.util.Log.d("NetPath", "player-ring auth-route no-media-cleared client=" + client
+                    + " network=" + transport
+                    + " persisted=" + (persistAuthRouteQuarantine() ? "y" : "n"));
+        }
+    }
+
+    /**
+     * What the streak remembers of a video: a short hash, because only equality is used and the
+     * persisted value then carries no watch history. A collision can only make two different
+     * videos count once - the conservative direction.
+     */
+    static String noMediaVideoKey(String videoId) {
+        return Integer.toHexString(videoId.hashCode());
     }
 
     /** One credential-free line per parsed /player result, including HTTP-200 playback failures. */
@@ -1627,6 +1833,27 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
+     * Called on every sign-in, account switch and removal (YouTubeAccountManager). The partial
+     * no-media streaks were counted for the previous account and are persisted, so without this a
+     * hit under account A plus one under account B would quarantine B's route - across restarts,
+     * too. Quarantine records are left alone (client-level, see
+     * {@link AuthRouteQuarantineBook#clearAllNoMedia}).
+     */
+    public void onAccountChanged() {
+        restoreAuthRouteQuarantineOnce();
+        boolean cleared;
+        synchronized (mAuthRouteQuarantine) {
+            mAccountGeneration++; // walks already in flight belong to the previous account
+            cleared = mAuthRouteQuarantine.clearAllNoMedia();
+        }
+        if (cleared) {
+            android.util.Log.d("NetPath", "player-ring auth-route no-media-cleared"
+                    + " reason=account-change persisted="
+                    + (persistAuthRouteQuarantine() ? "y" : "n"));
+        }
+    }
+
+    /**
      * Demotes one account-bearing client on the ACTIVE transport. Shared by the media-403 evidence
      * path and the no-media-verdict path so both keep identical keying, strike and TTL semantics:
      * a first strike holds {@link AuthRouteQuarantineBook#BASE_TTL_MS}, each re-quarantine of the
@@ -1645,7 +1872,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
         AuthRouteQuarantineBook.Record record = mAuthRouteQuarantine.quarantine(
                 transport, failedClient, nowElapsedMs, System.currentTimeMillis());
         persistAuthRouteQuarantine();
-        android.util.Log.w("NetPath", "player-ring quarantine-auth-route client=" + failedClient
+        logAuthRouteQuarantined(failedClient, reason, transport, record, wasLive, nowElapsedMs);
+    }
+
+    /** The one quarantine line, shared by the media-403 and no-media paths. */
+    private void logAuthRouteQuarantined(AppClient client, String reason, String transport,
+            @Nullable AuthRouteQuarantineBook.Record record, boolean wasLive, long nowElapsedMs) {
+        if (record == null) {
+            return;
+        }
+        android.util.Log.w("NetPath", "player-ring quarantine-auth-route client=" + client
                 + " reason=" + reason
                 + " network=" + transport
                 + " strike=" + record.strikes
@@ -1675,18 +1911,21 @@ public class VideoInfoService extends VideoInfoServiceBase {
         return mAuthRouteQuarantine.active(activeTransportKey(), nowElapsedMs);
     }
 
-    private void persistAuthRouteQuarantine() {
+    /** @return whether a store was there to write to (phones); TV keeps it process-local. */
+    private boolean persistAuthRouteQuarantine() {
         AuthRouteQuarantineStore store = sAuthRouteQuarantineStore;
         if (store == null) {
-            return;
+            return false;
         }
 
         // Encode and save as one step: the player thread (403) and the walk (prune) both persist,
         // and an older encode landing after a newer one would silently drop a fresh strike.
         synchronized (mAuthRouteQuarantine) {
             store.save(AuthRouteQuarantineSnapshot.encode(mAuthRouteQuarantine.records(),
+                    mAuthRouteQuarantine.streaks(),
                     android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis()));
         }
+        return true;
     }
 
     private void restoreAuthRouteQuarantineOnce() {
@@ -1707,29 +1946,40 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
             String saved = store.load();
             long nowElapsedMs = android.os.SystemClock.elapsedRealtime();
-            java.util.List<AuthRouteQuarantineBook.Record> restored =
-                    AuthRouteQuarantineSnapshot.decode(saved, AUTHENTICATED_HEAD, nowElapsedMs,
-                            System.currentTimeMillis());
+            long nowWallMs = System.currentTimeMillis();
+            AuthRouteQuarantineSnapshot.Decoded restored =
+                    AuthRouteQuarantineSnapshot.decodeAll(saved, AUTHENTICATED_HEAD, nowElapsedMs,
+                            nowWallMs);
+            String format = AuthRouteQuarantineSnapshot.formatName(saved);
+            String transport = activeTransportKey();
             if (restored.isEmpty()) {
-                // Nothing survived: forgotten strikes, an unreadable value, or nothing stored.
+                // Nothing survived: forgotten strikes, stale streaks, an unreadable value, or
+                // nothing stored. Logged anyway, so a device trace proves the restore ran.
                 if (saved != null) {
                     store.save(null);
                 }
+                android.util.Log.d("NetPath", "player-ring restore-auth-route-quarantine network="
+                        + transport + " quarantined=0/" + AUTHENTICATED_HEAD.length
+                        + " format=" + format + " records=none streaks=none"
+                        + (saved != null ? " dropped=y" : ""));
                 return;
             }
 
-            mAuthRouteQuarantine.restore(restored);
+            mAuthRouteQuarantine.restore(restored.records, restored.streaks);
             if (!AuthRouteQuarantineSnapshot.isCurrentFormat(saved)) {
-                persistAuthRouteQuarantine(); // migrate a legacy (1.9.0) value in place
+                persistAuthRouteQuarantine(); // migrate a v2 / legacy (1.9.0) value in place
             }
-            String transport = activeTransportKey();
             android.util.Log.d("NetPath", "player-ring restore-auth-route-quarantine network="
                     + transport
                     + " quarantined=" + mAuthRouteQuarantine.active(transport, nowElapsedMs).size()
                     + "/" + AUTHENTICATED_HEAD.length
-                    + " format=" + (AuthRouteQuarantineSnapshot.isCurrentFormat(saved)
-                            ? "v2" : "legacy")
-                    + " records=" + mAuthRouteQuarantine.describe(nowElapsedMs));
+                    + " format=" + format
+                    + " records=" + mAuthRouteQuarantine.describe(nowElapsedMs)
+                    // Expired but remembered on this transport: one proven no-media verdict
+                    // re-quarantines them (see AuthRouteQuarantineBook.noteNoMedia).
+                    + " probation=" + mAuthRouteQuarantine.probation(transport, nowElapsedMs,
+                            nowWallMs)
+                    + " streaks=" + mAuthRouteQuarantine.describeStreaks(nowWallMs));
         }
     }
 

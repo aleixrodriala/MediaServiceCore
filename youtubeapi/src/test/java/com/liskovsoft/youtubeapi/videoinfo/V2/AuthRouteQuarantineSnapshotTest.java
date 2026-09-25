@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.youtubeapi.videoinfo.V2.AuthRouteQuarantineBook.Record;
+import com.liskovsoft.youtubeapi.videoinfo.V2.AuthRouteQuarantineBook.Streak;
 
 import org.junit.Test;
 
@@ -203,11 +204,178 @@ public class AuthRouteQuarantineSnapshotTest {
     @Test
     public void nothingWorthKeepingMeansNothingStored() {
         assertNull(AuthRouteQuarantineSnapshot.encode(Collections.emptyList(), ELAPSED, WALL));
+        assertNull(AuthRouteQuarantineSnapshot.encode(Collections.<Record>emptyList(),
+                Collections.singletonList(streak("wifi", AppClient.TV, 1, "a1",
+                        WALL - AuthRouteQuarantineBook.NO_MEDIA_STREAK_MS - 1)),
+                ELAPSED, WALL));
+    }
+
+    // --- v3: no-media streaks ------------------------------------------------------------------
+
+    /** The point of v3: a cold open's single no-media hit reaches the next process. */
+    @Test
+    public void aStreakSurvivesAProcessRestart() {
+        String snapshot = AuthRouteQuarantineSnapshot.encode(
+                Collections.singletonList(record("wifi", AppClient.TV_DOWNGRADED,
+                        ELAPSED + 400_000, 1, WALL - 100_000)),
+                Collections.singletonList(streak("wifi", AppClient.TV, 1, "5f3a9c", WALL - 60_000)),
+                ELAPSED, WALL);
+        assertTrue(snapshot, snapshot.startsWith("v3|wifi:TV_DOWNGRADED:"));
+        assertTrue(snapshot, snapshot.endsWith("|wifi:TV:1:" + (WALL - 60_000) + ":5f3a9c"));
+
+        AuthRouteQuarantineSnapshot.Decoded decoded =
+                AuthRouteQuarantineSnapshot.decodeAll(snapshot, ALLOWED, 20, WALL + 60_000);
+
+        assertEquals(1, decoded.records.size());
+        assertEquals(20 + 340_000, decoded.records.get(0).untilElapsedMs);
+        assertEquals(1, decoded.streaks.size());
+        Streak streak = decoded.streaks.get(0);
+        assertEquals("wifi", streak.transport);
+        assertEquals(AppClient.TV, streak.client);
+        assertEquals(1, streak.hits);
+        assertEquals("5f3a9c", streak.lastVideoKey);
+        assertEquals(WALL - 60_000, streak.lastHitWallMs);
+    }
+
+    @Test
+    public void aSnapshotMayHoldOnlyStreaks() {
+        String snapshot = AuthRouteQuarantineSnapshot.encode(Collections.<Record>emptyList(),
+                Collections.singletonList(streak("cell", AppClient.TV, 1, "a1", WALL)),
+                ELAPSED, WALL);
+
+        assertEquals("v3||cell:TV:1:" + WALL + ":a1", snapshot);
+        AuthRouteQuarantineSnapshot.Decoded decoded =
+                AuthRouteQuarantineSnapshot.decodeAll(snapshot, ALLOWED, ELAPSED, WALL);
+        assertTrue(decoded.records.isEmpty());
+        assertEquals(1, decoded.streaks.size());
+    }
+
+    @Test
+    public void aRecordsOnlySnapshotHasAnEmptyStreakSection() {
+        String snapshot = encode(record("cell", AppClient.TV, ELAPSED + TEN_MIN, 1, WALL));
+
+        assertEquals("v3|cell:TV:" + (WALL + TEN_MIN) + ":1:" + WALL + "|", snapshot);
+        assertTrue(AuthRouteQuarantineSnapshot.decodeAll(snapshot, ALLOWED, ELAPSED, WALL)
+                .streaks.isEmpty());
+    }
+
+    @Test
+    public void aStaleStreakIsNeitherStoredNorRestored() {
+        long stale = WALL - AuthRouteQuarantineBook.NO_MEDIA_STREAK_MS - 1;
+        String written = "v3||cell:TV:1:" + stale + ":a1";
+
+        assertTrue(AuthRouteQuarantineSnapshot.decodeAll(written, ALLOWED, ELAPSED, WALL)
+                .isEmpty());
+    }
+
+    /**
+     * No stored streak can quarantine on its own or stretch its window: hits are clamped to one
+     * short of a quarantine and a last hit from the future is read as now.
+     */
+    @Test
+    public void aHandEditedStreakCanNeverQuarantineMore() {
+        Streak streak = AuthRouteQuarantineSnapshot.decodeAll("v3||cell:TV:99:" + WALL + ":a1",
+                ALLOWED, ELAPSED, WALL).streaks.get(0);
+        assertEquals(AuthRouteQuarantineBook.NO_MEDIA_MIN_HITS - 1, streak.hits);
+
+        for (long when : new long[] {WALL + 1, WALL + 365 * 24 * HOUR, 0, Long.MIN_VALUE}) {
+            String snapshot = "v3||cell:TV:1:" + when + ":a1";
+            assertTrue("not clamped into a fresh hit: " + snapshot,
+                    AuthRouteQuarantineSnapshot.decodeAll(snapshot, ALLOWED, ELAPSED, WALL)
+                            .isEmpty());
+        }
+    }
+
+    /** The videos that armed a no-media quarantine travel with its record, as a 6th field. */
+    @Test
+    public void theArmingVideosSurviveARestartWithTheirRecord() {
+        String snapshot = encode(new Record("cell", AppClient.TV, ELAPSED - 1, 2, WALL - HOUR,
+                Arrays.asList("b2", "c3")));
+        assertTrue(snapshot, snapshot.startsWith("v3|cell:TV:"));
+        assertTrue(snapshot, snapshot.endsWith(":2:" + (WALL - HOUR) + ":b2,c3|"));
+
+        Record record = decode(snapshot, ELAPSED, WALL).get(0);
+
+        assertEquals(Arrays.asList("b2", "c3"), record.armingVideoKeys);
+        assertEquals(2, record.strikes);
+        assertEquals("the single key of the first v3 builds still reads",
+                Collections.singletonList("b2"), decode("v3|cell:TV:" + WALL + ":1:" + WALL
+                        + ":b2|", ELAPSED, WALL).get(0).armingVideoKeys);
+        assertTrue("a 5-field record (media 403, v2, first v3 builds) has none",
+                decode("v3|cell:TV:" + WALL + ":1:" + WALL + "|", ELAPSED, WALL)
+                        .get(0).armingVideoKeys.isEmpty());
+    }
+
+    @Test
+    public void streakGarbageIsDroppedRatherThanTrusted() {
+        for (String snapshot : new String[] {
+                "v3||cell:TV:0:" + WALL + ":a1",               // no hits
+                "v3|cell:TV:" + (WALL + 1) + ":1:" + WALL + ":Fo89b8zAIE4|", // raw id as key
+                "v3|cell:TV:" + (WALL + 1) + ":1:" + WALL + ":a1,,b2|",
+                "v3|cell:TV:" + (WALL + 1) + ":1:" + WALL + ":a1,b2,c3,d4|", // over the bound
+                "v3||cell:TV:one:" + WALL + ":a1",
+                "v3||cell:TV:1:soon:a1",
+                "v3||cell:TV:1:" + WALL + ":",                 // no video key
+                "v3||cell:TV:1:" + WALL + ":Fo89b8zAIE4",      // a raw videoId is not a key
+                "v3||cell:TV:1:" + WALL + ":0123456789abcdef0", // too long
+                "v3||cell:VISIONOS:1:" + WALL + ":a1",         // not an account head
+                "v3||Cell:TV:1:" + WALL + ":a1",
+                "v3||cell:TV:1:" + WALL,
+                "v3||cell:TV:1:" + WALL + ":a1:extra",
+                "v3|cell:TV:" + (WALL + 1) + ":1:" + WALL + "|cell:TV:1:" + WALL + ":a1|more",
+                "v3|", "v3||", "v3|garbage|garbage"}) {
+            assertTrue(snapshot,
+                    AuthRouteQuarantineSnapshot.decodeAll(snapshot, ALLOWED, ELAPSED, WALL)
+                            .isEmpty());
+        }
+    }
+
+    // --- backward compatibility ----------------------------------------------------------------
+
+    /**
+     * The value the previous build (2026-09-24 round) wrote - {@code v2|} records, no streak
+     * section - must restore unchanged, and be read as not-current so it is migrated in place.
+     */
+    @Test
+    public void aV2SnapshotStillRestoresAndIsMigratedToV3() {
+        String v2 = "v2|cell:TV_DOWNGRADED:" + (WALL + 400_000) + ":2:" + (WALL - 100_000)
+                + ";wifi:TV:" + (WALL - 60_000) + ":1:" + (WALL - TEN_MIN);
+
+        assertFalse(AuthRouteQuarantineSnapshot.isCurrentFormat(v2));
+        assertEquals("v2", AuthRouteQuarantineSnapshot.formatName(v2));
+        AuthRouteQuarantineSnapshot.Decoded decoded =
+                AuthRouteQuarantineSnapshot.decodeAll(v2, ALLOWED, ELAPSED, WALL);
+
+        assertEquals(2, decoded.records.size());
+        assertTrue(decoded.streaks.isEmpty());
+        Record downgraded = find(decoded.records, "cell", AppClient.TV_DOWNGRADED);
+        assertEquals(ELAPSED + 400_000, downgraded.untilElapsedMs);
+        assertEquals(2, downgraded.strikes);
+        assertFalse(find(decoded.records, "wifi", AppClient.TV).isLive(ELAPSED));
+
+        String migrated = AuthRouteQuarantineSnapshot.encode(decoded.records, decoded.streaks,
+                ELAPSED, WALL);
+        assertEquals("v3", AuthRouteQuarantineSnapshot.formatName(migrated));
+        assertEquals(2, decode(migrated, ELAPSED, WALL).size());
+    }
+
+    @Test
+    public void formatNamesCoverEveryVersion() {
+        assertEquals("none", AuthRouteQuarantineSnapshot.formatName(null));
+        assertEquals("none", AuthRouteQuarantineSnapshot.formatName(""));
+        assertEquals("v3", AuthRouteQuarantineSnapshot.formatName("v3||"));
+        assertEquals("v2", AuthRouteQuarantineSnapshot.formatName("v2|cell:TV:1:1:1"));
+        assertEquals("legacy", AuthRouteQuarantineSnapshot.formatName("cell:340|TV:1"));
     }
 
     private static Record record(String transport, AppClient client, long untilElapsedMs,
             int strikes, long armedWallMs) {
         return new Record(transport, client, untilElapsedMs, strikes, armedWallMs);
+    }
+
+    private static Streak streak(String transport, AppClient client, int hits, String videoKey,
+            long lastHitWallMs) {
+        return new Streak(transport, client, hits, videoKey, lastHitWallMs);
     }
 
     private static Record find(List<Record> records, String transport, AppClient client) {

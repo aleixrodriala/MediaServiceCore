@@ -276,6 +276,7 @@ public class YouTubeAccountManager {
         mSignInService.invalidateCache();
         AppService.instance().invalidateCache(); // regenerate visitor data
         VideoInfoService.instance().resetInfoType(); // reset to the default format
+        VideoInfoService.instance().onAccountChanged(); // no-media evidence is per account
 
         notifyListeners();
     }

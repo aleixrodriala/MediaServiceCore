@@ -80,6 +80,109 @@ public final class BotCheckDetector {
         return false;
     }
 
+    /**
+     * WHOLE verdicts, normalized (see {@link #canonicalReason}), that are terminal for the CONTENT
+     * whichever client asks: a live stream whose recording was never published, a video removed by
+     * its uploader or for a terms-of-service/community-guidelines violation, and a channel whose
+     * account was terminated. An ALLOWLIST of full sentences in the same six locales as
+     * RELOAD_PAGE_REASONS, matched against the whole reason: a qualified variant ("... on this
+     * device"), a reworded one or a generic "Video unavailable" does not match, which only means
+     * the walk goes on exactly as it always did. Only the Spanish live-recording sentence has been
+     * captured on a device (2026-09-25); a wrong guess for another locale fails the same safe way.
+     * Copyright takedowns are left out: the claimant's name makes the sentence variable.
+     */
+    private static final java.util.Set<String> TERMINAL_REASONS = new java.util.HashSet<>(
+            java.util.Arrays.asList(
+            // live stream recording not available
+            "this live stream recording is not available",
+            "la grabacion de esta emision en directo no esta disponible",
+            "l'enregistrement de cette diffusion en direct n'est pas disponible",
+            "die aufzeichnung dieses livestreams ist nicht verfugbar",
+            "la registrazione di questo live streaming non e disponibile",
+            "a gravacao desta transmissao ao vivo nao esta disponivel",
+            // removed by the uploader
+            "this video has been removed by the uploader",
+            "este video ha sido eliminado por el usuario que lo subio",
+            "cette video a ete supprimee par l'utilisateur qui l'a mise en ligne",
+            "dieses video wurde vom uploader entfernt",
+            "questo video e stato rimosso dall'utente che lo ha caricato",
+            "este video foi removido pelo usuario que o enviou",
+            // account terminated
+            "this video is no longer available because the youtube account associated with this"
+                    + " video has been terminated",
+            "este video ya no esta disponible porque se ha cancelado la cuenta de youtube asociada"
+                    + " a este video",
+            "cette video n'est plus disponible, car le compte youtube qui lui est associe a ete"
+                    + " resilie",
+            "dieses video ist nicht mehr verfugbar, weil das mit diesem video verknupfte"
+                    + " youtube-konto gekundigt wurde",
+            "questo video non e piu disponibile perche l'account youtube associato a questo video"
+                    + " e stato chiuso",
+            "este video nao esta mais disponivel porque a conta do youtube associada a ele foi"
+                    + " encerrada",
+            // removed for violating the terms of service / community guidelines
+            "this video has been removed for violating youtube's terms of service",
+            "this video has been removed for violating youtube's community guidelines",
+            "este video se ha eliminado por infringir las condiciones del servicio de youtube",
+            "este video se ha eliminado por infringir las normas de la comunidad de youtube",
+            "cette video a ete supprimee, car elle ne respectait pas les conditions d'utilisation"
+                    + " de youtube",
+            "cette video a ete supprimee, car elle ne respectait pas le reglement de la"
+                    + " communaute youtube",
+            "dieses video wurde entfernt, weil es gegen die nutzungsbedingungen von youtube"
+                    + " versto\u00dft",
+            "dieses video wurde entfernt, weil es gegen die community-richtlinien von youtube"
+                    + " versto\u00dft",
+            "questo video e stato rimosso per violazione dei termini di servizio di youtube",
+            "questo video e stato rimosso per violazione delle linee guida della community di"
+                    + " youtube",
+            "este video foi removido por violar os termos de servico do youtube",
+            "este video foi removido por violar as diretrizes da comunidade do youtube"));
+
+    /** A second guard: any hint of a region restriction vetoes an allowlisted match. */
+    private static final String[] REGION_HINTS = {
+            "country", "pais", "pays", "land", "paese", "region",
+    };
+
+    /**
+     * A comparable key for a verdict that is terminal for the content itself (see
+     * {@link #TERMINAL_REASONS}), or null. Only UNPLAYABLE or ERROR can carry one (removed and
+     * terminated videos answer ERROR); everything else - another status, an empty, generic,
+     * qualified or reworded reason, a region hint - is null. Two clients returning the same key
+     * agree on the verdict; this says nothing on its own.
+     */
+    @Nullable
+    public static String definitiveUnplayableKey(@Nullable String status, @Nullable String reason) {
+        if ((!STATUS_UNPLAYABLE.equals(status) && !"ERROR".equals(status)) || reason == null) {
+            return null;
+        }
+
+        String canonical = canonicalReason(reason);
+        for (String hint : REGION_HINTS) {
+            if (canonical.contains(hint)) {
+                return null;
+            }
+        }
+        return TERMINAL_REASONS.contains(canonical) ? canonical : null;
+    }
+
+    /**
+     * {@link #normalize}d, with curly apostrophes folded and surrounding quotes and trailing
+     * sentence punctuation stripped, so the only thing left to compare is the sentence itself.
+     */
+    private static String canonicalReason(String reason) {
+        String value = normalize(reason).replace('\u2019', '\'').replace('\u2018', '\'');
+        int start = 0;
+        int end = value.length();
+        while (end > start && ".!?\"'\u201d\u00bb\u2026 ".indexOf(value.charAt(end - 1)) >= 0) {
+            end--;
+        }
+        while (start < end && "\"'\u201c\u00ab ".indexOf(value.charAt(start)) >= 0) {
+            start++;
+        }
+        return value.substring(start, end);
+    }
+
     private static String normalize(String value) {
         return Normalizer.normalize(value, Normalizer.Form.NFD)
                 .replaceAll("\\p{M}+", "")

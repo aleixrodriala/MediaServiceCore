@@ -324,6 +324,34 @@ public class VideoInfoVisitOrderTest {
     }
 
     /**
+     * Login-required content (private, members-only, age gates) can only be served by the account,
+     * so in EVERY quarantine state both account heads must stay in the walk - quarantine reorders,
+     * it never drops - and, with at most one head quarantined, the account is asked before any
+     * anonymous web-pot client.
+     */
+    @Test
+    public void everyQuarantineStateKeepsBothAccountHeadsReachable() {
+        List<Set<AppClient>> states = Arrays.asList(noneForbidden(), forbidden(AppClient.TV),
+                forbidden(AppClient.TV_DOWNGRADED),
+                forbidden(AppClient.TV, AppClient.TV_DOWNGRADED));
+        for (Set<AppClient> quarantined : states) {
+            boolean webFirst = quarantined.size() == 2;
+            List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                    webFirst ? AppClient.WEB_EMBED : AppClient.TV_DOWNGRADED,
+                    AppClient.VISIONOS, true, false, true, quarantined, webFirst, false);
+
+            assertTrue(quarantined.toString(), order.contains(AppClient.TV_DOWNGRADED));
+            assertTrue(quarantined.toString(), order.contains(AppClient.TV));
+            if (!webFirst) {
+                int firstWebPot = order.indexOf(AppClient.WEB_EMBED);
+                assertTrue(quarantined.toString(),
+                        order.indexOf(AppClient.TV_DOWNGRADED) < firstWebPot);
+                assertTrue(quarantined.toString(), order.indexOf(AppClient.TV) < firstWebPot);
+            }
+        }
+    }
+
+    /**
      * A bot-challenged guest identity makes every web-pot probe a guaranteed-dead round trip, so
      * they move behind everything else — without losing any client from the ring.
      */
@@ -618,8 +646,132 @@ public class VideoInfoVisitOrderTest {
     @Test
     public void onlyDashCapableClientsAreWorthProbingForALiveStream() {
         assertTrue(VideoInfoService.isLiveDashCandidate(AppClient.ANDROID_VR));
-        assertTrue(VideoInfoService.isLiveDashCandidate(AppClient.TV));
-        assertTrue(VideoInfoService.isLiveDashCandidate(AppClient.TV_DOWNGRADED));
+        // 2026-09-25, nI725iVsyoQ signed in: TV dash=n sabr=y, TV_DOWNGRADED dash=n sabr=n.
+        assertFalse(VideoInfoService.isLiveDashCandidate(AppClient.TV));
+        assertFalse(VideoInfoService.isLiveDashCandidate(AppClient.TV_DOWNGRADED));
+    }
+
+    /**
+     * The measured walk: TV_DOWNGRADED quarantined and demoted behind VISIONOS, TV answers the live
+     * stream at attempt 1 without a dash manifest and is held. The next /player must be ANDROID_VR
+     * - not the quarantined TV_DOWNGRADED (+0.9 s on the Pixel) - and no account head may be spent
+     * on the dash upgrade at all.
+     */
+    @Test
+    public void aHeldLiveAnswerGoesStraightToAndroidVrAndNeverToAnAccountHead() {
+        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
+                AppClient.TV_DOWNGRADED, AppClient.VISIONOS, true, false, true,
+                forbidden(AppClient.TV_DOWNGRADED));
+        assertEquals(Arrays.asList(AppClient.TV, AppClient.VISIONOS, AppClient.TV_DOWNGRADED),
+                order.subList(0, 3));
+
+        List<AppClient> probed = new java.util.ArrayList<>();
+        for (AppClient client : order.subList(1, order.size())) { // TV's answer is held
+            if (VideoInfoService.isLiveDashCandidate(client)) {
+                probed.add(client);
+            }
+        }
+
+        assertEquals(Collections.singletonList(AppClient.ANDROID_VR), probed);
+    }
+
+    // ---- Definitive unplayable (2026-09-25, jfKfPfyJRdk walked all 11 clients) ----------------
+
+    private static final String GONE = "la grabacion de esta emision en directo no esta disponible.";
+    /** Sent with the account and confirmed by the server ({@code srvAuth=y}). */
+    private static final Boolean SIGNED_IN = Boolean.TRUE;
+    private static final Boolean NO_ACCOUNT = Boolean.FALSE;
+    /** Sent with the account; the server did not say it saw one. */
+    private static final Boolean UNCONFIRMED = null;
+
+    /** The measured order: TV (account), VISIONOS (anonymous), TV_DOWNGRADED - stop at 3. */
+    @Test
+    public void theMeasuredDeadStreamIsSettledAtTheThirdAgreeingClient() {
+        VideoInfoService.UnplayableConsensus consensus = new VideoInfoService.UnplayableConsensus();
+
+        assertFalse(consensus.note(AppClient.TV, SIGNED_IN, "UNPLAYABLE", GONE));
+        assertFalse("auth + anonymous agree; one more independent confirmation",
+                consensus.note(AppClient.VISIONOS, NO_ACCOUNT, "UNPLAYABLE", GONE));
+        assertTrue(consensus.note(AppClient.TV_DOWNGRADED, SIGNED_IN, "UNPLAYABLE", GONE));
+        assertEquals("TV,VISIONOS,TV_DOWNGRADED", consensus.clients());
+        assertEquals(Integer.toHexString(GONE.hashCode()), consensus.reasonHash());
+    }
+
+    /** Both sides are required: a signed-out walk, or only the account, never settles early. */
+    @Test
+    public void agreementNeedsAnAccountAndAnAnonymousClient() {
+        VideoInfoService.UnplayableConsensus anonymous =
+                new VideoInfoService.UnplayableConsensus();
+        for (AppClient client : Arrays.asList(AppClient.VISIONOS, AppClient.ANDROID_VR,
+                AppClient.WEB, AppClient.IOS)) {
+            assertFalse(client.name(), anonymous.note(client, NO_ACCOUNT, "UNPLAYABLE", GONE));
+        }
+
+        VideoInfoService.UnplayableConsensus account = new VideoInfoService.UnplayableConsensus();
+        assertFalse(account.note(AppClient.TV, SIGNED_IN, "UNPLAYABLE", GONE));
+        assertFalse(account.note(AppClient.TV_DOWNGRADED, SIGNED_IN, "UNPLAYABLE", GONE));
+        assertFalse("the same client twice is not a confirmation",
+                account.note(AppClient.TV, SIGNED_IN, "UNPLAYABLE", GONE));
+    }
+
+    /**
+     * Sending the credential is not the signed-in witness: only the server's logged_in answer is.
+     * An unconfirmed account request still counts as a distinct client.
+     */
+    @Test
+    public void anUnconfirmedCredentialIsNotTheSignedInWitness() {
+        VideoInfoService.UnplayableConsensus consensus = new VideoInfoService.UnplayableConsensus();
+
+        assertFalse(consensus.note(AppClient.TV, UNCONFIRMED, "UNPLAYABLE", GONE));
+        assertFalse(consensus.note(AppClient.VISIONOS, NO_ACCOUNT, "UNPLAYABLE", GONE));
+        assertFalse("three clients, but nobody the server saw signed in",
+                consensus.note(AppClient.TV_DOWNGRADED, UNCONFIRMED, "UNPLAYABLE", GONE));
+        assertFalse(consensus.note(AppClient.ANDROID_VR, NO_ACCOUNT, "UNPLAYABLE", GONE));
+        assertTrue(consensus.note(AppClient.TV_EMBED, SIGNED_IN, "UNPLAYABLE", GONE));
+    }
+
+    /** A removal answers ERROR on every client; with an allowlisted reason it is a witness. */
+    @Test
+    public void anAllowlistedErrorIsAWitness() {
+        String removed = "this video has been removed by the uploader";
+        VideoInfoService.UnplayableConsensus consensus = new VideoInfoService.UnplayableConsensus();
+
+        assertFalse(consensus.note(AppClient.TV, SIGNED_IN, "ERROR", removed));
+        assertFalse(consensus.note(AppClient.VISIONOS, NO_ACCOUNT, "ERROR", removed));
+        assertTrue(consensus.note(AppClient.TV_DOWNGRADED, SIGNED_IN, "ERROR", removed));
+    }
+
+    /** WEB_EMBED's embed ERROR and GEO's outdated-client ERROR, and timeouts, are neutral. */
+    @Test
+    public void errorAnswersAndTimeoutsNeitherConfirmNorBreak() {
+        VideoInfoService.UnplayableConsensus consensus = new VideoInfoService.UnplayableConsensus();
+
+        assertFalse(consensus.note(AppClient.VISIONOS, NO_ACCOUNT, "UNPLAYABLE", GONE));
+        assertFalse(consensus.note(AppClient.WEB_EMBED, NO_ACCOUNT, "ERROR", null));
+        assertFalse(consensus.note(AppClient.GEO, NO_ACCOUNT, null, null));
+        assertFalse(consensus.note(AppClient.WEB, NO_ACCOUNT, "UNPLAYABLE", GONE));
+        assertTrue(consensus.note(AppClient.TV_DOWNGRADED, SIGNED_IN, "UNPLAYABLE", GONE));
+    }
+
+    /**
+     * Anything else ends the consensus for the rest of the walk: a client that could play or that
+     * gates on sign-in/age, a client-specific reason (key null), or a different reason.
+     */
+    @Test
+    public void anyDisagreementEndsTheConsensusForTheWalk() {
+        String[][] breakers = {{"OK", null}, {"LOGIN_REQUIRED", null}, {"UNPLAYABLE", null},
+                {"UNPLAYABLE", "another reason"}, {"AGE_CHECK_REQUIRED", null}};
+        for (String[] breaker : breakers) {
+            VideoInfoService.UnplayableConsensus consensus =
+                    new VideoInfoService.UnplayableConsensus();
+            consensus.note(AppClient.TV, SIGNED_IN, "UNPLAYABLE", GONE);
+            consensus.note(AppClient.VISIONOS, NO_ACCOUNT, breaker[0], breaker[1]);
+
+            assertFalse(breaker[0] + "/" + breaker[1],
+                    consensus.note(AppClient.TV_DOWNGRADED, SIGNED_IN, "UNPLAYABLE", GONE));
+            assertFalse(consensus.note(AppClient.ANDROID_VR, NO_ACCOUNT, "UNPLAYABLE", GONE));
+            assertFalse(consensus.note(AppClient.WEB, NO_ACCOUNT, "UNPLAYABLE", GONE));
+        }
     }
 
     /** The measured dash=n set: probing these can only repeat the answer already held. */
