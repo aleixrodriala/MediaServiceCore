@@ -23,7 +23,7 @@ internal object SearchService2Wrapper: SearchService2() {
         val result = super.getSearchTags(searchText)
 
         if (result == null || result.isEmpty()) {
-            return getTagsIfNeeded()
+            return getTagsIfNeeded(searchText)
         }
 
         return result
@@ -37,8 +37,12 @@ internal object SearchService2Wrapper: SearchService2() {
         SearchTagStorage.removeTag(tag)
     }
 
-    private fun getTagsIfNeeded(): List<String>? {
+    private fun getTagsIfNeeded(searchText: String?): List<String>? {
         if (GlobalPreferences.sInstance != null) {
+            // NEWTUBE(search-history): phone gate - see SearchServiceGates.historyMatchesQuery
+            if (SearchServiceGates.historyMatchesQuery && !searchText.isNullOrBlank()) {
+                return SearchServiceGates.matchHistory(SearchTagStorage.tags, searchText)
+            }
             return SearchTagStorage.tags
         }
 
