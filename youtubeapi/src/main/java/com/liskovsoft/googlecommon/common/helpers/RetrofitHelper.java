@@ -150,6 +150,19 @@ public class RetrofitHelper {
                 .build();
     }
 
+    /**
+     * NEWTUBE(api-pool): establishes a pooled connection to {@code url}'s host through the
+     * InnerTube client itself (HEAD, response discarded). Same shared pool as before, but the
+     * connection is now seen by that client's stale-connection guard, which cannot track
+     * connections made by other clients.
+     */
+    public static void warmUpApiConnection(String url) throws IOException {
+        okhttp3.Request request = new okhttp3.Request.Builder().url(url).head().build();
+        try (okhttp3.Response ignored = RetrofitOkHttpHelper.getClient().newCall(request).execute()) {
+            // connection established and released back to the pool
+        }
+    }
+
     private static Retrofit.Builder createBuilder() {
         Retrofit.Builder retrofitBuilder = new Retrofit.Builder().baseUrl(DEFAULT_BASE_URL);
 

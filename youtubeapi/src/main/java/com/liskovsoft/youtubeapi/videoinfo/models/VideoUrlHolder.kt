@@ -24,15 +24,31 @@ internal class VideoUrlHolder(private var url: String? = null,
     private var extractedSParam: String? = null
     private var realSignature: String? = null
     private var urlQuery: UrlQueryString? = null
+    // NEWTUBE(open-cpu): urlQuery printed back (a URLEncoder call per parameter); valid until the
+    // next setParam. getUrl() runs ~3x per format while the format info is built.
+    private var urlQueryText: String? = null
+    // NEWTUBE(open-cpu): a lookup was answered from the raw url (CanonicalQueryUrl) where the old
+    // code built urlQuery. Only setUrl can tell the difference, see there.
+    private var queryVirtual = false
+    private var canonicalFor: String? = null
+    private var canonical = false
 
     fun getUrl(): String? {
         parseCipher()
 
         // Bypass query creation if url isn't transformed
-        return urlQuery?.toString() ?: url
+        val query = urlQuery ?: return url
+
+        return urlQueryText ?: query.toString().also { urlQueryText = it }
     }
 
     fun setUrl(url: String?) {
+        // A lookup used to build urlQuery from the previous url, and getUrl() then kept printing
+        // that query whatever setUrl said. Build it now, so that stays true.
+        if (queryVirtual && urlQuery == null) {
+            getUrlQuery()
+        }
+
         this.url = url
     }
 
@@ -85,8 +101,7 @@ internal class VideoUrlHolder(private var url: String? = null,
     }
 
     fun getLanguage(): String? {
-        val urlQuery = getUrlQuery() ?: return null
-        val xtags = urlQuery.get("xtags") ?: return null
+        val xtags = getParam("xtags") ?: return null
 
         // Example: acont=dubbed:lang=ar
         val xtagsQuery = UrlQueryStringFactory.parse(xtags.replace(":", "&"))
@@ -97,6 +112,17 @@ internal class VideoUrlHolder(private var url: String? = null,
     }
 
     fun getParam(paramName: String?): String? {
+        // NEWTUBE(open-cpu): nothing modified the url yet and its query round-trips unchanged, so
+        // answer from the raw text and leave the (costly) parser unbuilt - see CanonicalQueryUrl.
+        if (urlQuery == null && paramName != null) {
+            parseCipher()
+            val rawUrl = url ?: return null
+            if (isCanonical(rawUrl)) {
+                queryVirtual = true
+                return CanonicalQueryUrl.get(rawUrl, paramName)
+            }
+        }
+
         val queryString = getUrlQuery()
 
         if (queryString != null) {
@@ -111,7 +137,17 @@ internal class VideoUrlHolder(private var url: String? = null,
 
         if (queryString != null && paramName != null && paramValue != null) {
             queryString.set(paramName, paramValue)
+            urlQueryText = null
         }
+    }
+
+    private fun isCanonical(rawUrl: String): Boolean {
+        if (rawUrl !== canonicalFor) {
+            canonical = CanonicalQueryUrl.isCanonical(rawUrl)
+            canonicalFor = rawUrl
+        }
+
+        return canonical
     }
 
     private fun parseCipher() {

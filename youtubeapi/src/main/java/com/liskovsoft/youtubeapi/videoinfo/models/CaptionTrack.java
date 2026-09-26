@@ -58,6 +58,13 @@ public class CaptionTrack {
     @JsonPath("$.kind")
     private String mType;
     private UrlQueryString mBaseUrlQuery;
+    // NEWTUBE(open-cpu): the last getBaseUrl() result and the format it was printed for. Every
+    // TranslatedCaptionTrack (~150 per video with captions) derives its url from its origin
+    // track's, and each call re-printed the whole timedtext query (a URLEncoder call per
+    // parameter plus String.format) - ~1/3 of the format-info build on a captioned video.
+    // Re-setting the same fmt leaves the query unchanged, so the text only changes with sFormat.
+    private String mBaseUrlText;
+    private CaptionFormat mBaseUrlTextFormat;
 
     public String getBaseUrl() {
         UrlQueryString baseUrlQuery = getBaseUrlQuery();
@@ -66,9 +73,18 @@ public class CaptionTrack {
             return null;
         }
 
-        baseUrlQuery.set("fmt", sFormat.name);
+        CaptionFormat format = sFormat;
+
+        if (mBaseUrlText != null && mBaseUrlTextFormat == format) {
+            return mBaseUrlText;
+        }
+
+        baseUrlQuery.set("fmt", format.name);
         
-        return baseUrlQuery.toString();
+        mBaseUrlText = baseUrlQuery.toString();
+        mBaseUrlTextFormat = format;
+
+        return mBaseUrlText;
     }
 
     public boolean isTranslatable() {

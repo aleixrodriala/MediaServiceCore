@@ -1,5 +1,6 @@
 package com.liskovsoft.youtubeapi.videoinfo.V2;
 
+import com.liskovsoft.googlecommon.common.helpers.VisitorFingerprint;
 import com.liskovsoft.youtubeapi.app.AppService;
 import com.liskovsoft.youtubeapi.app.PoTokenGate;
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
@@ -32,7 +33,7 @@ public class VideoInfoApiHelper {
         android.util.Log.d("NetPath", "player-context video=" + safeVideoId(videoId)
                 + " client=" + client + " cver=" + client.getClientVersion()
                 + " visitorSource=" + (webVisitor ? "web-pot" : "app")
-                + " visitor=" + fingerprint(visitorData)
+                + " visitor=" + VisitorFingerprint.of(visitorData)
                 + " visitorAgeMs=" + visitorAgeMs
                 + " playerPot=" + (poToken != null && !poToken.isEmpty() ? "y" : "n"));
         String query = createCheckedQuery(client, videoId, clickTrackingParams,
@@ -50,23 +51,6 @@ public class VideoInfoApiHelper {
     static boolean usesWebVisitorData(AppClient client) {
         return client.isWebPotRequired() || client == AppClient.ANDROID_VR
                 || client == AppClient.VISIONOS;
-    }
-
-    private static String fingerprint(String value) {
-        if (value == null || value.isEmpty()) {
-            return "none";
-        }
-        try {
-            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder(10);
-            for (int i = 0; i < 5; i++) {
-                result.append(String.format(java.util.Locale.US, "%02x", hash[i] & 0xff));
-            }
-            return result.toString();
-        } catch (java.security.NoSuchAlgorithmException e) {
-            return Integer.toHexString(value.hashCode());
-        }
     }
 
     private static String safeVideoId(String videoId) {

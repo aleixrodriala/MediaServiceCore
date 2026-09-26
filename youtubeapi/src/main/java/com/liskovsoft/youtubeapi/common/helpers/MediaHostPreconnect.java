@@ -47,12 +47,34 @@ public final class MediaHostPreconnect {
 
     private static volatile boolean sEnabled;
     private static volatile boolean sEarlyEnabled = true;
+    private static volatile RouteAdvisor sRouteAdvisor;
     // Guarded by MediaHostPreconnect.class, including request callbacks and deadline delivery.
     private static final PreconnectGate sGate = new PreconnectGate();
     private static final Map<PreconnectGate.Attempt, WarmJob> sJobs = new HashMap<>();
     private static ScheduledThreadPoolExecutor sExecutor;
 
     private MediaHostPreconnect() {
+    }
+
+    /**
+     * NEWTUBE(media-path): lets the app keep the warm on the transport its media will actually use.
+     * Measured on Movistar LTE (Pixel 9, 2026-09-25): on a network where the app had already proven
+     * that Cronet stalls in TLS to googlevideo (so its media starts on OkHttp), this Cronet warm
+     * timed out after 8 s on every open - warming nothing, and holding one of the two in-flight
+     * slots the whole time.
+     */
+    public interface RouteAdvisor {
+        /**
+         * Called before a Cronet warm of {@code host}, on the caller's thread and without this
+         * class's lock. Return true to warm through Cronet as usual; false when the app warmed the
+         * host its own way (or wants no warm on this network): no Cronet request is made.
+         */
+        boolean warmThroughCronet(String host);
+    }
+
+    /** Null restores the plain Cronet warm. */
+    public static void setRouteAdvisor(RouteAdvisor advisor) {
+        sRouteAdvisor = advisor;
     }
 
     public static synchronized void setEnabled(boolean enabled) {
@@ -89,7 +111,12 @@ public final class MediaHostPreconnect {
         }
 
         try {
-            warmHost(Uri.parse(url).getHost());
+            String host = Uri.parse(url).getHost();
+            RouteAdvisor advisor = sRouteAdvisor;
+            if (host != null && advisor != null && !advisor.warmThroughCronet(host)) {
+                return;
+            }
+            warmHost(host);
         } catch (Throwable e) {
             Log.d(TAG, "media host preconnect skipped: %s", e.getClass().getSimpleName());
         }

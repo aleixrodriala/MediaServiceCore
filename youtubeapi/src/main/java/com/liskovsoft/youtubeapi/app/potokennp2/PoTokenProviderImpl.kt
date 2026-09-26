@@ -4,6 +4,8 @@ import com.liskovsoft.youtubeapi.app.potokennp2.core.PoTokenProvider
 import com.liskovsoft.youtubeapi.app.potokennp2.core.PoTokenResult
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import com.liskovsoft.googlecommon.common.helpers.VisitorFingerprint
 import com.liskovsoft.sharedutils.helpers.DeviceHelpers
 import com.liskovsoft.sharedutils.mylogger.Log
 import com.liskovsoft.youtubeapi.app.AppService
@@ -26,16 +28,19 @@ internal object PoTokenProviderImpl : PoTokenProvider {
     private var webPoTokenVisitorData: String? = null
     private var webPoTokenStreamingPot: String? = null
     private var webPoTokenGenerator: PoTokenGenerator? = null
+    // When the current session finished building (elapsedRealtime), for the web-pot-session line.
+    private var webPoTokenSessionBuiltAtMs: Long = -1
     
     var poTokenFactory: PoTokenGenerator.Factory? = null
 
-    // NEWTUBE(visitor-rotation): armed by PoTokenGate.rotateWebVisitor when the /player ring has
-    // seen the anonymous partition answer with bot challenges. The next generator recreate then
-    // mints a FRESH visitor instead of reusing the app's persistent one, because that persistent
-    // identity is precisely what YouTube is challenging (2026-07-27 Pixel-9 round: 42/42 anonymous
-    // /player calls rejected, all carrying the same visitor and a VALID BotGuard pot -- so the pot
-    // was never the problem, the identity was). Deliberately scoped to this web-pot session:
-    // AppService.visitorData keeps driving browse/Home personalization untouched.
+    // NEWTUBE(visitor-rotation): armed only by PoTokenGate.rotateWebVisitor. The next generator
+    // recreate then mints a FRESH visitor instead of reusing the app's persistent one, scoped to
+    // this web-pot session: AppService.visitorData keeps driving browse/Home personalization.
+    // Dormant since 2026-09-25 (VideoInfoService.rotateAnonymousIdentity is not enabled): the
+    // 2026-07-27 round that motivated it (42/42 anonymous calls rejected on one visitor with a
+    // valid pot) also probed all 7 anonymous clients with a BRAND-NEW visitor and got 7/7
+    // rejected, and after seven rotations on the 09-25 LTE wall none of 140 anonymous answers was
+    // OK. Rotation did not rescue those walls; what caused them is unproven.
     @Volatile
     private var forceFreshVisitor = false
     // Bumped by anything that retires the session visitor, so a peek racing a rotation can tell.
@@ -104,6 +109,19 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                    forceRecreate || webPoTokenGenerator!!.isExpired()
 
                 if (shouldRecreate) {
+                    // NEWTUBE(visitor): why this session is being (re)built, captured before the
+                    // state below changes - see logWebPotSession.
+                    val startedMs = SystemClock.elapsedRealtime()
+                    val reason = webPotSessionReason(
+                        hadGenerator = webPoTokenGenerator != null,
+                        forceRecreate = forceRecreate,
+                        rotation = forceFreshVisitor,
+                        stateCleared = webPoTokenVisitorData == null || webPoTokenStreamingPot == null
+                    )
+                    val previousAgeMs =
+                        if (webPoTokenSessionBuiltAtMs >= 0) startedMs - webPoTokenSessionBuiltAtMs else -1
+                    val visitorSource: String
+
                     // NEWTUBE(anonymous-recs): bind the whole web-pot session to the app's
                     // persistent visitor instead of minting a throwaway one per session. The
                     // watch-time pings credit whatever visitor the /player call used; with a
@@ -120,12 +138,14 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                     // identity being rotated away from.
                     if (forceFreshVisitor) {
                         Log.d(TAG, "Rotating web visitor after a bot challenge")
-                        webPoTokenVisitorData =
-                            VisitorService.getVisitorData() ?: AppService.instance().visitorData
+                        val fresh = VisitorService.getVisitorData()
+                        visitorSource = if (fresh != null) "visitor-api" else "app"
+                        webPoTokenVisitorData = fresh ?: AppService.instance().visitorData
                         forceFreshVisitor = false
                     } else {
-                        webPoTokenVisitorData =
-                            AppService.instance().visitorData ?: VisitorService.getVisitorData()
+                        val persistent = AppService.instance().visitorData
+                        visitorSource = if (persistent != null) "app" else "visitor-api"
+                        webPoTokenVisitorData = persistent ?: VisitorService.getVisitorData()
                     }
 
                     val latch = if (webPoTokenGenerator != null) CountDownLatch(1) else null
@@ -149,30 +169,39 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                     //webPoTokenGenerator = (poTokenFactory ?: PoTokenWebView)
                     //    .newPoTokenGenerator(AppService.instance().context)
 
-                    // create a new webPoTokenGenerator
-                    val context = AppService.instance().context
-                    webPoTokenGenerator = try {
-                        (poTokenFactory ?: PoTokenWebView)
-                            .newPoTokenGenerator(context)
-                    } catch (e: Exception) {
-                        when (e) {
-                            is BadWebViewException, is PoTokenException -> {
-                                // BadWebViewException: Error invoking onRunBotguardResult
-                                // PoTokenException: mintCallback is not defined
-                                // PoTokenWebView2/3 may fail due to too many requests. Switching to the default variant.
-                                if (poTokenFactory != null && poTokenFactory != PoTokenWebView)
-                                    PoTokenWebView.newPoTokenGenerator(context)
-                                else
-                                    throw e
+                    try {
+                        // create a new webPoTokenGenerator
+                        val context = AppService.instance().context
+                        webPoTokenGenerator = try {
+                            (poTokenFactory ?: PoTokenWebView)
+                                .newPoTokenGenerator(context)
+                        } catch (e: Exception) {
+                            when (e) {
+                                is BadWebViewException, is PoTokenException -> {
+                                    // BadWebViewException: Error invoking onRunBotguardResult
+                                    // PoTokenException: mintCallback is not defined
+                                    // PoTokenWebView2/3 may fail due to too many requests. Switching to the default variant.
+                                    if (poTokenFactory != null && poTokenFactory != PoTokenWebView)
+                                        PoTokenWebView.newPoTokenGenerator(context)
+                                    else
+                                        throw e
+                                }
+                                else -> throw e
                             }
-                            else -> throw e
                         }
-                    }
 
-                    // The streaming poToken needs to be generated exactly once before generating
-                    // any other (player) tokens.
-                    webPoTokenStreamingPot = webPoTokenGenerator!!
-                        .generatePoToken(webPoTokenVisitorData!!)
+                        // The streaming poToken needs to be generated exactly once before generating
+                        // any other (player) tokens.
+                        webPoTokenStreamingPot = webPoTokenGenerator!!
+                            .generatePoToken(webPoTokenVisitorData!!)
+                    } catch (e: Throwable) {
+                        logWebPotSession("failed", reason, visitorSource, previousAgeMs, startedMs,
+                            " error=" + e.javaClass.simpleName)
+                        throw e
+                    }
+                    webPoTokenSessionBuiltAtMs = SystemClock.elapsedRealtime()
+                    logWebPotSession("new", reason, visitorSource, previousAgeMs, startedMs,
+                        " generator=" + webPoTokenGenerator!!.javaClass.simpleName)
                 }
 
                 return@synchronized Quadruple(
@@ -198,6 +227,8 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                 // this might happen for example if NewPipe goes in the background and the WebView
                 // content is lost
                 Log.e(TAG, "Failed to obtain poToken, retrying", throwable)
+                android.util.Log.w("NetPath", "web-pot-session player-mint-failed error="
+                        + throwable.javaClass.simpleName + " action=recreate")
                 return getWebClientPoToken(videoId = videoId, forceRecreate = true)
             }
         }
@@ -209,6 +240,25 @@ internal object PoTokenProviderImpl : PoTokenProvider {
         )
 
         return PoTokenResult(videoId, visitorData, playerPot, streamingPot)
+    }
+
+    /**
+     * NEWTUBE(visitor): one secret-free NetPath line per web-pot session (re)build, so a future
+     * natural bot wall can be read against the token context instead of guessed at: why the
+     * session was rebuilt, where its visitor came from (the persistent app visitor, or the
+     * visitor_id API on rotation / fallback), the visitor's identity fingerprint (hash of the id,
+     * never the id), how long the previous session lived, how long the build took, and the token
+     * binding this implementation uses (streaming token bound to the visitor, player token bound to
+     * the video). No token or raw visitor ever reaches the line.
+     */
+    private fun logWebPotSession(outcome: String, reason: String, visitorSource: String,
+                                 previousAgeMs: Long, startedMs: Long, extra: String) {
+        android.util.Log.d("NetPath", "web-pot-session " + outcome + " reason=" + reason
+                + " visitorSource=" + visitorSource
+                + " visitor=" + VisitorFingerprint.of(webPoTokenVisitorData)
+                + " prevAgeMs=" + previousAgeMs
+                + " buildMs=" + (SystemClock.elapsedRealtime() - startedMs)
+                + " binding=streaming:visitor,player:video" + extra)
     }
 
     override fun getWebEmbedClientPoToken(videoId: String): PoTokenResult? = null
@@ -226,4 +276,22 @@ internal object PoTokenProviderImpl : PoTokenProvider {
         webPoTokenVisitorData = null
         webPoTokenStreamingPot = null
     }
+}
+
+/**
+ * NEWTUBE(visitor): why a web-pot session is being (re)built. Precedence: nothing built yet, a
+ * mint failed on the current generator, a rotation was armed, the state was cleared by a reset
+ * (PoTokenGate.resetCache - e.g. playback recovery), otherwise the generator expired.
+ */
+internal fun webPotSessionReason(
+    hadGenerator: Boolean,
+    forceRecreate: Boolean,
+    rotation: Boolean,
+    stateCleared: Boolean
+): String = when {
+    !hadGenerator -> "initial"
+    forceRecreate -> "mint-failed"
+    rotation -> "rotation"
+    stateCleared -> "reset"
+    else -> "expired"
 }

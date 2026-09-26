@@ -219,9 +219,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // this flag used to perform. Kept purely as an observation logged once per transition, because
     // "TV went SABR-only" is a useful marker when reading a session's NetPath trace.
     private static volatile boolean sAuthTvSabrOnly;
-    // Mobile-only: rotate the anonymous visitor identity when the guest partition is challenged
-    // (see rotateAnonymousIdentity). TV never enables it and keeps recording the cooldown against
-    // the identity it already has.
+    // Rotate the web-pot session's visitor when the guest partition is challenged (see
+    // rotateAnonymousIdentity; the app's persistent visitor never rotates). Off on TV AND on the
+    // phone since 2026-09-25 (rotation did not rescue the walls we saw and cost identity): both
+    // keep recording the cooldown against the identity they have.
     private static volatile boolean sRotateVisitorOnAnonChallenge;
     // See setSkipStoryboardEnrichment.
     private static volatile boolean sSkipStoryboardEnrichment;
@@ -237,9 +238,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
-     * Enabled once from the mobile flavor (MobileMainApplication). Lets a fresh bot challenge on
-     * the anonymous partition start a NEW guest identity instead of only starting its cooldown.
-     * See {@link #rotateAnonymousIdentity()}. Never called on TV.
+     * Lets a fresh bot challenge on the anonymous partition start a NEW web-pot session visitor
+     * instead of only starting its cooldown. Not called by either flavor since 2026-09-25 - see
+     * {@link #rotateAnonymousIdentity()} for the evidence and what would justify turning it on.
      */
     public static void setRotateVisitorOnAnonChallenge(boolean rotate) {
         sRotateVisitorOnAnonChallenge = rotate;
@@ -282,9 +283,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         try {
             AppClient client = AppClient.valueOf(clientName.trim().toUpperCase(java.util.Locale.US));
             // PREFERRED_FIRST_CLIENT is deliberately off-ring, but forcing it is the whole point
-            // of the playground when comparing fast heads.
+            // of the playground when comparing fast heads. So is the bot-wall account route:
+            // forcing it is how its media is verified with the account on a healthy network.
             if (!Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(client)
-                    && client != PREFERRED_FIRST_CLIENT) {
+                    && client != PREFERRED_FIRST_CLIENT && client != BotWallBook.ACCOUNT_ROUTE) {
                 return false;
             }
             sDebugForcedClient = client;
@@ -422,6 +424,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private volatile long mBotCheckNextProbeAtMs;
     @Nullable
     private volatile VideoInfo mBotCheckResult;
+    // NEWTUBE(botwall): the attachment the circuit was armed on (mobile). The challenge was observed
+    // for the anonymous clients in THAT network context, so moving from a walled LTE to a healthy
+    // Wi-Fi must not keep answering opens with the LTE verdict until the next permitted probe.
+    @Nullable
+    private volatile String mBotCheckNetwork;
+    // NEWTUBE(botwall): this getVideoInfo was let through as the circuit's probe; the allowance is
+    // spent by the first request the walk actually sends (only one walk runs at a time: monitor).
+    private boolean mBotCheckProbePending;
     // NEWTUBE(auth-route): the no-media streak (consecutive proven no-media verdicts per
     // account-bearing client, deduplicated by video - see AUTH_RELOAD_QUARANTINE_MIN_HITS) used to
     // be a field here, so it died with the process and a cold open never reached two hits. It is
@@ -467,6 +477,135 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private volatile long mAnonChallengeUntilMs;
     @Nullable
     private volatile String mAnonChallengeNetwork;
+    /**
+     * NEWTUBE(botwall): the stronger sibling of the anonymous-challenge memory above. That one only
+     * reorders the Web partition; this one remembers that the anonymous identity as a WHOLE is
+     * walled on a network attachment and then walks only the account route plus a rate-limited
+     * re-probe. See BotWallBook for the evidence rules and the 2026-09-25 capture behind them.
+     */
+    private final BotWallBook mBotWall = new BotWallBook();
+    /** The last real "not a bot" reason (localized), shown when a walled open asks no one. */
+    @Nullable
+    private volatile String mBotWallReason;
+    private static final String DEFAULT_BOT_CHECK_REASON = "Sign in to confirm you’re not a bot";
+    /**
+     * NEWTUBE(recovery-blame): which client served each recently resolved video. mActualInfoType is
+     * ONE process-wide slot that every resolution overwrites - including a next-video prefetch while
+     * the current video plays - so a media 403 on the current video used to blame (quarantine,
+     * defer on recovery) whatever client the PREFETCH happened to win with. The player now anchors
+     * the route to the failing video first; see {@link #anchorRouteToVideo}.
+     */
+    /**
+     * NEWTUBE(recovery-blame): the failing video's route, handed from {@link #anchorRouteToVideo}
+     * to the two calls the player makes next (the 403 quarantine and switchNextFormat). It is a
+     * separate field on purpose: a prefetch finishing in between writes mActualInfoType, never this.
+     */
+    @Nullable
+    private volatile RouteAnchor mRouteAnchor;
+    /** The client a recovery walk must step past; see switchNextFormat. */
+    @Nullable
+    private volatile AppClient mRecoverySuspect;
+
+    private static final class RouteAnchor {
+        final String videoId;
+        final AppClient client;
+
+        RouteAnchor(String videoId, AppClient client) {
+            this.videoId = videoId;
+            this.client = client;
+        }
+    }
+    private final java.util.Map<String, AppClient> mVideoWinners = java.util.Collections.synchronizedMap(
+            new java.util.LinkedHashMap<String, AppClient>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, AppClient> eldest) {
+                    return size() > VIDEO_WINNER_MEMORY;
+                }
+            });
+    private static final int VIDEO_WINNER_MEMORY = 8;
+    /**
+     * NEWTUBE(botwall): debug-build fault injection, installed by the phone app only when
+     * BuildConfig.DEBUG (DebugBotWall). Null in release, so the per-request cost there is one
+     * volatile read. See {@link #shouldInjectBotWall} for the modes.
+     */
+    public interface DebugBotWallSource {
+        /** The current {@code debug.arc.botwall} value; re-read on every /player answer. */
+        @Nullable
+        String mode();
+    }
+    @Nullable
+    private static volatile DebugBotWallSource sDebugBotWall;
+    static final String DEBUG_BOT_CHECK_REASON =
+            "Sign in to confirm you’re not a bot (debug.arc.botwall)";
+
+    /** Debug builds only (see {@link DebugBotWallSource}); TV and release never call it. */
+    public static void setDebugBotWallSource(@Nullable DebugBotWallSource source) {
+        sDebugBotWall = source;
+    }
+
+    /**
+     * NEWTUBE(botwall): persistence for the bot-wall book, supplied by the phone app (TV never
+     * calls {@link #setBotWallStore}, so its book stays process-local). Without it a cold start
+     * under a wall - a share link, a relaunch - re-walked the ring: ~7 anonymous /player calls
+     * signed out, a challenged VISIONOS every time signed in, and a fresh probe schedule.
+     */
+    public interface BotWallStore {
+        /** Last saved snapshot, or null. Called once, on a background thread. */
+        @Nullable
+        String load();
+
+        /** Stores a snapshot; null clears it. Must not block (SharedPreferences.apply). */
+        void save(@Nullable String snapshot);
+
+        /** {@code Settings.Global.BOOT_COUNT}, or -1 when unknown. */
+        long bootCount();
+    }
+
+    /**
+     * Phone flavor only, once at process start. Restores the saved book on its own thread - the
+     * first /player must not wait for preferences - and saves every change from then on. Anything
+     * this process learns before the restore finishes is newer and wins; nothing is saved before
+     * it, so a fast cold open cannot overwrite the stored wall with an empty book.
+     */
+    public static void setBotWallStore(@Nullable BotWallStore store) {
+        VideoInfoService service = instance();
+        if (store == null) {
+            service.mBotWall.setPersister(null, -1, 0);
+            return;
+        }
+        Thread restore = new Thread(() -> service.restoreBotWall(store), "BotWallRestore");
+        restore.setDaemon(true);
+        restore.start();
+    }
+
+    private void restoreBotWall(BotWallStore store) {
+        String snapshot;
+        long bootCount;
+        try {
+            snapshot = store.load();
+            bootCount = store.bootCount();
+        } catch (RuntimeException e) {
+            snapshot = null;
+            bootCount = -1;
+        }
+        long nowMs = android.os.SystemClock.elapsedRealtime();
+        long bootWallMs = System.currentTimeMillis() - nowMs;
+        mBotWall.setPersister(store::save, bootCount, bootWallMs);
+        java.util.List<String> dropped = new java.util.ArrayList<>();
+        int restored = mBotWall.restore(snapshot, bootCount, bootWallMs, nowMs, dropped);
+        if (snapshot != null || restored > 0) {
+            String network = activeNetworkKey();
+            android.util.Log.d("NetPath", "player-ring botwall restore records=" + restored
+                    + (dropped.isEmpty() ? "" : " dropped=" + dropped)
+                    // At app start the network monitor usually hasn't reported yet: the restored
+                    // records are applied when the first walk resolves its network key.
+                    + (network != null ? " network=" + network + " " + mBotWall.describe(network,
+                            android.os.SystemClock.elapsedRealtime()) : " network=pending"));
+        }
+        if (!dropped.isEmpty()) {
+            store.save(restored > 0 ? mBotWall.encode(bootCount, bootWallMs) : null);
+        }
+    }
     private List<TranslationLanguage> mCachedTranslationLanguages;
     private boolean mIsUnplayable;
 
@@ -796,6 +935,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         final long routingGeneration = mRoutingGeneration.get();
         final boolean authenticated = hasAuthentication();
+        mBotCheckProbePending = false; // see spendBotCheckProbeIfPending
         VideoInfo blockedResult = getActiveBotCheckResult(authenticated, videoId);
         if (blockedResult != null) {
             return blockedResult;
@@ -819,6 +959,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         if (sPreferAttestedWebFallback && routingGeneration == mRoutingGeneration.get()) {
             mNextInfoType = null;
             mRecoveryWalk = false;
+            mRecoverySuspect = null;
         } else if (sPreferAttestedWebFallback) {
             android.util.Log.d("NetPath", "player-ring keep-newer-recovery requestGen="
                     + routingGeneration + " currentGen=" + mRoutingGeneration.get());
@@ -850,6 +991,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
 
         persistRecentTypeIfNeeded(result);
+        rememberVideoWinner(videoId, result);
 
         mIsUnplayable = result.isUnplayable();
 
@@ -902,7 +1044,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // Mobile fast-start: when no client is remembered from a previous video, start at the
         // no-pot/no-cipher client instead of WEB_EMBED. buildVisitOrder keeps this fast head but
         // puts the Web family immediately behind it. TV (flag unset) keeps the raw ring as before.
-        final AppClient lastWinner = mActualInfoType;
+        // NEWTUBE(recovery-blame): a recovery walk steps past the client that served the FAILING
+        // video, which a prefetch may no longer have in mActualInfoType (see switchNextFormat).
+        final AppClient lastWinner = mRecoveryWalk && mRecoverySuspect != null
+                ? mRecoverySuspect : mActualInfoType;
         // NEWTUBE(net): an outage is not evidence against the client that was working.
         //
         // A recovery walk deliberately steps PAST the last winner, because the case it was written
@@ -944,10 +1089,38 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 ? authBegin
                 : (mNextInfoType != null ? mNextInfoType : defaultBegin);
 
+        // NEWTUBE(botwall): mobile only, and never while a client is forced (the playground must
+        // measure exactly the client it names). Keyed on the network attachment - see
+        // BotWallBook. The key is looked up only once the book has something to say, so a healthy
+        // open pays no extra system calls.
+        final boolean mobileWall = sPreferNoPotClient && sDebugForcedClient == null;
+        maybeResetBotWallForDebug();
+        final WallKeys wallKeys = new WallKeys();
+        final long walkStartMs = android.os.SystemClock.elapsedRealtime();
+        final BotWallBook.Plan wallPlan = mobileWall && mBotWall.hasWalls(walkStartMs)
+                ? mBotWall.plan(wallKeys.network(), authenticated, noMediaVideoKey(videoId),
+                        walkStartMs)
+                : BotWallBook.Plan.NONE;
+
         java.util.List<AppClient> visitOrder;
         if (sDebugForcedClient != null) {
             visitOrder = java.util.Collections.singletonList(sDebugForcedClient);
             android.util.Log.d("NetPath", "player-ring forced-client=" + sDebugForcedClient);
+        } else if (wallPlan.walled) {
+            // The whole ring is known to answer "not a bot" from here: ask only what can still
+            // serve (the account route) and, once per interval, re-test the anonymous identity.
+            // An empty plan is answered without a single request.
+            android.util.Log.w("NetPath", "player-ring botwall route video=" + videoId
+                    + " order=" + wallPlan.order + " probe=" + (wallPlan.probe ? "y" : "n")
+                    + (wallPlan.budgetCapped ? " budget=capped" : "")
+                    + " auth=" + (authenticated ? "y" : "n") + " network=" + wallKeys.network()
+                    + " accountRoute=" + accountRouteState(wallKeys.network(), videoId)
+                    + " " + mBotWall.describe(wallKeys.network(),
+                            android.os.SystemClock.elapsedRealtime()));
+            if (wallPlan.order.isEmpty()) {
+                return walledVerdict();
+            }
+            visitOrder = new java.util.ArrayList<>(wallPlan.order);
         } else {
             visitOrder = buildRequestVisitOrder(
                     beginType, lastWinner, sPreferAttestedWebFallback,
@@ -993,6 +1166,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         final AuthRouteWalkState authRoute = new AuthRouteWalkState(mAccountGeneration);
         // Stops the walk once the ring agrees the video cannot play. See UnplayableConsensus.
         final UnplayableConsensus unplayable = new UnplayableConsensus();
+        // NEWTUBE(botwall): this walk's anonymous bot checks, and who has been asked already (the
+        // account route is inserted at most once, and a mid-walk wall never re-asks anyone).
+        final BotWallBook.WalkEvidence wallEvidence = new BotWallBook.WalkEvidence();
+        final java.util.Set<AppClient> attempted = java.util.EnumSet.noneOf(AppClient.class);
         boolean authenticatedClientAttempted = false;
         int anonChallengeHits = 0;
         int attempt = 0;
@@ -1041,6 +1218,21 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
 
             attempt++;
+            attempted.add(nextType);
+            // NEWTUBE(botwall): probes are spent when SENT (see BotWallBook.consumeProbe), and
+            // every request of a walled open - its recovery reloads included - counts against
+            // that video's walled budget.
+            if (attempt == 1) {
+                spendBotCheckProbeIfPending();
+            }
+            if (wallPlan.probe && nextType == wallPlan.probeClient) {
+                mBotWall.consumeProbe(wallKeys.network(), nextType,
+                        android.os.SystemClock.elapsedRealtime());
+            }
+            if (mobileWall && (wallPlan.walled || wallEvidence.hasShortcut())) {
+                mBotWall.noteWalledRequest(wallKeys.network(), noMediaVideoKey(videoId),
+                        android.os.SystemClock.elapsedRealtime());
+            }
             boolean[] noResponse = new boolean[1];
             VideoInfo result = getVideoInfoWithTimeout(
                     nextType, videoId, clickTrackingParams, cancellationSignal, remainingBudgetMs,
@@ -1060,6 +1252,23 @@ public class VideoInfoService extends VideoInfoServiceBase {
             boolean playable = result != null && !result.isUnplayable();
             logPlayerOutcome(videoId, nextType, attempt, result);
 
+            // NEWTUBE(botwall): wall evidence and the account route. Runs BEFORE the bot-check
+            // block below, because that block decides whether the walk may carry on past a
+            // challenge by reading visitOrder - which this can extend with the account route.
+            if (mobileWall && result != null) {
+                visitOrder = noteBotWallEvidence(videoId, nextType, result, authenticated,
+                        wallKeys, wallEvidence, wallPlan.walled, visitOrder, visitIndex, attempted,
+                        attempt);
+            }
+            // Signed out, the account route is one more anonymous identity: on a walled
+            // attachment it gets ONE ask per wall, whatever it answers - a timeout, a reload-page
+            // or SABR-only answer included, none of which the challenge path above records.
+            if (mobileWall && !authenticated && nextType == BotWallBook.ACCOUNT_ROUTE && !playable
+                    && mBotWall.hasWalls(android.os.SystemClock.elapsedRealtime())) {
+                mBotWall.noteAnonRouteSpent(wallKeys.network(),
+                        android.os.SystemClock.elapsedRealtime());
+            }
+
             // The account-bearing route is currently broken server-side (see
             // isAuthRouteReloadVerdict). Demote it the same way a media 403 does, so the walk stops
             // spending two guaranteed-dead round trips on the head of every signed-in open.
@@ -1069,7 +1278,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
             // quarantining on it would demote the account route for the wrong reason. And the
             // quarantine set this feeds is counted against AUTHENTICATED_HEAD.length to decide
             // authenticatedWebFirst, so admitting a non-head client would corrupt that arithmetic.
-            if (sPreferNoPotClient && authenticated && nextType.isAuthSupported()) {
+            // NEWTUBE(botwall): the same arithmetic is why the bot-wall account route is excluded:
+            // it is not a head, and its failures live in BotWallBook instead.
+            if (sPreferNoPotClient && authenticated && nextType.isAuthSupported()
+                    && nextType != BotWallBook.ACCOUNT_ROUTE) {
                 noteAuthRouteVerdict(nextType, videoId, result, authRoute);
             }
 
@@ -1197,6 +1409,15 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 if (nextType.isWebPotRequired() && !result.isAuth()) {
                     clearAnonChallenge("anon-served");
                 }
+                // NEWTUBE(botwall): same for the wall, from ANY anonymous identity - except the
+                // account route asked anonymously, which serving behind a wall says nothing about
+                // the rest of the anonymous ring (keeping the wall keeps the short walk).
+                if (mobileWall && !result.isAuth() && nextType != BotWallBook.ACCOUNT_ROUTE
+                        && mBotWall.hasSuspicion(android.os.SystemClock.elapsedRealtime())
+                        && mBotWall.noteAnonServed(wallKeys.network())) {
+                    android.util.Log.w("NetPath", "player-ring botwall cleared reason=anon-served"
+                            + " client=" + nextType + " network=" + wallKeys.network());
+                }
                 // Mobile live routing (see sPreferDashManifestForLive): hold an HLS-only live
                 // result and keep walking toward a dash-manifest client.
                 if (sPreferDashManifestForLive && result.isLive() && result.getDashManifestUrl() == null) {
@@ -1278,6 +1499,317 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     static boolean isLiveDashCandidate(AppClient client) {
         return client == AppClient.ANDROID_VR;
+    }
+
+    /** Network keys for ONE walk, read only when the bot-wall book actually needs them. */
+    private static final class WallKeys {
+        @Nullable
+        private String mNetwork;
+        @Nullable
+        private String mTransport;
+        private boolean mNetworkRead;
+        private boolean mTransportRead;
+
+        @Nullable
+        String network() {
+            if (!mNetworkRead) {
+                mNetwork = activeNetworkKey();
+                mNetworkRead = true;
+            }
+            return mNetwork;
+        }
+
+        @Nullable
+        String transport() {
+            if (!mTransportRead) {
+                mTransport = activeTransportKey();
+                mTransportRead = true;
+            }
+            return mTransport;
+        }
+    }
+
+    /**
+     * NEWTUBE(botwall): what one parsed answer teaches about the wall and the account route, and
+     * the (possibly extended) visit order. Three rules, in this order:
+     * <ol>
+     *   <li>The account route's own answer, when it carried the account, is only evidence about
+     *   that route: a challenge, a reload-page verdict or a SABR-only answer marks it failed on
+     *   this transport (see {@link #accountRouteFailure}).</li>
+     *   <li>An explicit bot check answered to an ANONYMOUS request is wall evidence. If it
+     *   establishes the wall mid-walk, the rest of this walk becomes the walled plan - the first
+     *   walk on a walled network stops paying for clients that are about to say the same thing.</li>
+     *   <li>Signed in, any LOGIN_REQUIRED from an anonymous request (the bot check or an age gate:
+     *   YouTube is literally asking for the account) puts the account route next, once per walk,
+     *   unless it has proven dead on this transport. This is what serves a signed-in open on the
+     *   FIRST challenged attempt, before any wall exists; a healthy open never reaches it.</li>
+     * </ol>
+     */
+    private List<AppClient> noteBotWallEvidence(String videoId, AppClient client, VideoInfo result,
+            boolean authenticated, WallKeys keys, BotWallBook.WalkEvidence walk,
+            boolean walledAtStart, List<AppClient> order, int index,
+            java.util.Set<AppClient> attempted, int attempt) {
+        long nowMs = android.os.SystemClock.elapsedRealtime();
+        boolean anonymous = !result.isAuth();
+        boolean botCheck = result.isBotCheckRequired();
+        if (botCheck && result.getPlayabilityStatus() != null) {
+            // Kept for the no-request answer; without the bidi marks the display helper adds, so
+            // re-wrapping it there does not stack them.
+            mBotWallReason = result.getPlayabilityStatus()
+                    .replaceAll("[\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]", "").trim();
+        }
+
+        if (client == BotWallBook.ACCOUNT_ROUTE && !anonymous) {
+            String failure = accountRouteFailure(result);
+            if (failure != null) {
+                logAccountRouteFailure(client, failure, keys.network(),
+                        mBotWall.noteRouteFailed(keys.network(), noMediaVideoKey(videoId), failure,
+                                nowMs));
+            }
+            return order;
+        }
+
+        if (anonymous && botCheck) {
+            String network = keys.network();
+            BotWallBook.Challenge outcome = mBotWall.noteChallenge(network, walk, client,
+                    noMediaVideoKey(videoId), nowMs);
+            if (outcome == BotWallBook.Challenge.ESTABLISHED) {
+                android.util.Log.w("NetPath", "player-ring botwall established network=" + network
+                        + " by=" + client + " walkChallenged=" + walk.clients()
+                        + " attempts=" + attempt + " " + mBotWall.describe(network, nowMs));
+            } else if (outcome == BotWallBook.Challenge.SUSPECT) {
+                android.util.Log.d("NetPath", "player-ring botwall suspect client=" + client
+                        + " network=" + network + " windowMs=" + BotWallBook.SUSPECT_WINDOW_MS);
+            } else if (outcome == BotWallBook.Challenge.CONFIRMED) {
+                android.util.Log.d("NetPath", "player-ring botwall confirmed client=" + client
+                        + " network=" + network);
+            }
+            // The rest of THIS walk becomes the walled plan only on this walk's own strong
+            // evidence (see WalkEvidence.isStrong); a wall from the two-video or probation rule
+            // lets the remaining client families keep their turn in the walk that raised it.
+            if (!walledAtStart && walk.isStrong() && mBotWall.isWalled(network, nowMs)
+                    && walk.takeShortcut()) {
+                BotWallBook.Plan plan = mBotWall.plan(network, authenticated,
+                        noMediaVideoKey(videoId), nowMs);
+                List<AppClient> updated = replaceRemaining(order, index, plan.order, attempted);
+                android.util.Log.w("NetPath", "player-ring botwall shortcut network=" + network
+                        + " attempts=" + attempt + " dropped=" + (order.size() - index - 1)
+                        + " next=" + updated.subList(index + 1, updated.size()));
+                order = updated;
+            }
+        }
+
+        // "Next" literally: once TV_TIZEN has won an open it is the ring's remembered last winner
+        // and already sits in the order - behind the whole Web partition (buildVisitOrder puts
+        // non-Web clients last). Checking only for its absence skipped the move, and the Pixel
+        // paid VISIONOS + five challenged Web clients before it (2026-09-25, botwall run B, open 2).
+        if (authenticated && anonymous && result.isLoginRequired()
+                && !attempted.contains(BotWallBook.ACCOUNT_ROUTE)
+                && (index + 1 >= order.size() || order.get(index + 1) != BotWallBook.ACCOUNT_ROUTE)
+                && !mBotWall.isRouteFailed(keys.network(), noMediaVideoKey(videoId), nowMs)) {
+            order = insertAfter(order, index, BotWallBook.ACCOUNT_ROUTE);
+            android.util.Log.d("NetPath", "player-ring account-route next reason="
+                    + (botCheck ? "bot-check" : "login-required") + " after=" + client
+                    + " attempt=" + attempt);
+        }
+        return order;
+    }
+
+    /**
+     * Why an account-bearing answer from {@link BotWallBook#ACCOUNT_ROUTE} proves the ROUTE cannot
+     * serve, or null. Deliberately narrow: a video this account may not watch (private, removed,
+     * members-only) is a verdict about the video and must not bench the route for everyone.
+     */
+    @Nullable
+    static String accountRouteFailure(VideoInfo result) {
+        if (result.isBotCheckRequired()) {
+            return "challenged";
+        }
+        if (BotCheckDetector.isReloadPageVerdict(result.getRawPlayabilityStatus(),
+                result.getPlayabilityStatus())) {
+            return "reload-page";
+        }
+        if (result.getServerAbrStreamingUrl() != null && result.isAdaptiveFormatsBroken()
+                && result.getDashManifestUrl() == null && result.getHlsManifestUrl() == null) {
+            return "sabr-only";
+        }
+        return null;
+    }
+
+    /** The walk up to and including {@code index}, then whatever of {@code next} is still unasked. */
+    static List<AppClient> replaceRemaining(List<AppClient> order, int index, List<AppClient> next,
+            java.util.Set<AppClient> attempted) {
+        List<AppClient> result = new java.util.ArrayList<>(order.subList(0, index + 1));
+        for (AppClient client : next) {
+            if (!attempted.contains(client) && !result.contains(client)) {
+                result.add(client);
+            }
+        }
+        return result;
+    }
+
+    /** {@code client} as the very next attempt (moved there if it was queued later). */
+    static List<AppClient> insertAfter(List<AppClient> order, int index, AppClient client) {
+        List<AppClient> result = new java.util.ArrayList<>(order.size() + 1);
+        for (int i = 0; i < order.size(); i++) {
+            if (order.get(i) != client || i <= index) {
+                result.add(order.get(i));
+            }
+            if (i == index) {
+                result.add(client);
+            }
+        }
+        return result;
+    }
+
+    /** The answer for a walled open that asks no one: YouTube's own reason, no media, no details. */
+    private VideoInfo walledVerdict() {
+        String reason = mBotWallReason;
+        VideoInfo verdict = VideoInfo.botCheckVerdict(
+                reason != null && !reason.isEmpty() ? reason : DEFAULT_BOT_CHECK_REASON, false);
+        verdict.setClient(BotWallBook.PROBE_CLIENT);
+        return verdict;
+    }
+
+    private String accountRouteState(@Nullable String network, String videoId) {
+        long nowMs = android.os.SystemClock.elapsedRealtime();
+        String failure = mBotWall.routeFailureReason(network, nowMs);
+        if (failure != null) {
+            return "failed:" + failure;
+        }
+        return mBotWall.isRouteFailed(network, noMediaVideoKey(videoId), nowMs)
+                ? "benched-for-video" : "ok";
+    }
+
+    private static void logAccountRouteFailure(AppClient client, String reason,
+            @Nullable String network, BotWallBook.RouteFailure outcome) {
+        android.util.Log.w("NetPath", "player-ring account-route failed client=" + client
+                + " reason=" + reason + " network=" + network
+                + " scope=" + (outcome == BotWallBook.RouteFailure.ROUTE ? "attachment"
+                        : outcome == BotWallBook.RouteFailure.VIDEO ? "video" : "none")
+                + " ttlMs=" + BotWallBook.ROUTE_FAILURE_TTL_MS);
+    }
+
+    /** See mBotCheckProbePending: the walk is sending its first request now. */
+    private void spendBotCheckProbeIfPending() {
+        if (mBotCheckProbePending) {
+            mBotCheckProbePending = false;
+            mBotCheckNextProbeAtMs = android.os.SystemClock.elapsedRealtime()
+                    + BOT_CHECK_PROBE_INTERVAL_MS;
+        }
+    }
+
+    /**
+     * NEWTUBE(botwall): the debug-only wall. {@code mode} is the {@code debug.arc.botwall} value:
+     * {@code anon} walls every answer to a request that carried no account, {@code all} walls
+     * every answer, and a comma-separated list of client names walls exactly those clients.
+     * Empty, {@code none} and {@code 0} are off; unknown names are ignored.
+     */
+    static boolean shouldInjectBotWall(@Nullable String mode, AppClient client, boolean auth) {
+        if (mode == null) {
+            return false;
+        }
+        String value = mode.trim();
+        if (value.isEmpty() || "none".equalsIgnoreCase(value) || "0".equals(value)) {
+            return false;
+        }
+        if ("all".equalsIgnoreCase(value)) {
+            return true;
+        }
+        if ("anon".equalsIgnoreCase(value)) {
+            return !auth;
+        }
+        for (String name : value.split(",")) {
+            if (client.name().equalsIgnoreCase(name.trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Debug builds only: {@code debug.arc.botwall reset} forgets the wall book (and its stored
+     * copy) and the bot-check circuit at the start of every walk while it is set, so a device
+     * test can leave the phone exactly as it found it. Release builds have no source: no-op.
+     */
+    private void maybeResetBotWallForDebug() {
+        DebugBotWallSource source = sDebugBotWall;
+        if (source == null) {
+            return;
+        }
+        String mode;
+        try {
+            mode = source.mode();
+        } catch (RuntimeException e) {
+            return;
+        }
+        if (mode != null && "reset".equalsIgnoreCase(mode.trim())) {
+            boolean had = mBotWall.clearAll();
+            clearBotCheckCircuit();
+            android.util.Log.w("NetPath", "debug-botwall reset had=" + (had ? "y" : "n"));
+        }
+    }
+
+    /** Debug builds only: replace a real answer with the wall's, keeping what WE sent. */
+    @Nullable
+    private static VideoInfo maybeInjectBotWall(AppClient client, @Nullable VideoInfo result) {
+        DebugBotWallSource source = sDebugBotWall;
+        if (source == null || result == null) {
+            return result;
+        }
+        String mode;
+        try {
+            mode = source.mode();
+        } catch (RuntimeException e) {
+            return result;
+        }
+        if (!shouldInjectBotWall(mode, client, result.isAuth())) {
+            return result;
+        }
+        android.util.Log.w("NetPath", "debug-botwall client=" + client + " mode=" + mode
+                + " auth=" + (result.isAuth() ? "y" : "n") + " realStatus="
+                + result.getRawPlayabilityStatus() + " -> LOGIN_REQUIRED");
+        return VideoInfo.botCheckVerdict(DEBUG_BOT_CHECK_REASON, result.isAuth());
+    }
+
+    /** See {@link #mVideoWinners}. Only a playable answer names a route worth blaming later. */
+    private void rememberVideoWinner(String videoId, @Nullable VideoInfo result) {
+        if (videoId != null && result != null && !result.isUnplayable() && result.getClient() != null) {
+            mVideoWinners.put(videoId, result.getClient());
+        }
+    }
+
+    /**
+     * NEWTUBE(recovery-blame): pin the recovery that is about to run - the 403 quarantine / bot-wall
+     * route memory ({@link #markCurrentPlaybackRouteForbidden}) and the recovery cursor
+     * ({@link #switchNextFormat}) - to the client that actually served {@code videoId}. Both used to
+     * read mActualInfoType, which a next-video prefetch overwrites; and anchoring by writing that
+     * same field was still racy, because a prefetch could land between the anchor and the read.
+     * The anchor is its own field, consumed by switchNextFormat. An unknown video (a cached answer
+     * from an older process) leaves no anchor, i.e. the historical behaviour.
+     */
+    public void anchorRouteToVideo(@Nullable String videoId) {
+        AppClient winner = videoId != null ? mVideoWinners.get(videoId) : null;
+        if (winner == null) {
+            mRouteAnchor = null;
+            return;
+        }
+        AppClient current = mActualInfoType;
+        if (winner != current) {
+            android.util.Log.w("NetPath", "player-ring route-anchor video=" + videoId
+                    + " client=" + winner + " was=" + current);
+        }
+        mRouteAnchor = new RouteAnchor(videoId, winner);
+    }
+
+    /**
+     * The current network ATTACHMENT key ({@code transport:netIdHash}), or null offline. Public for
+     * caches whose entries are only valid on the attachment they were minted on (googlevideo URLs
+     * carry the public IP they were issued to).
+     */
+    @Nullable
+    public static String currentNetworkKey() {
+        return activeNetworkKey();
     }
 
 
@@ -1821,7 +2353,21 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * name, an expiry, a strike count and when that strike was armed - no network identifiers.
      */
     public void markCurrentPlaybackRouteForbidden() {
-        AppClient failedClient = mActualInfoType;
+        // NEWTUBE(recovery-blame): the anchored video's client when the player pinned one.
+        RouteAnchor anchor = mRouteAnchor;
+        AppClient failedClient = anchor != null ? anchor.client : mActualInfoType;
+        // NEWTUBE(botwall): the account route is not an AUTHENTICATED_HEAD member (see the
+        // isAuthSupported note below), so its media 403 is remembered by BotWallBook instead of
+        // the head quarantine: benched for that video (so the recovery reload does not re-buy it),
+        // and for the attachment once a second video fails too.
+        if (failedClient == BotWallBook.ACCOUNT_ROUTE) {
+            String network = activeNetworkKey();
+            logAccountRouteFailure(failedClient, "media-403", network,
+                    mBotWall.noteRouteFailed(network,
+                            anchor != null ? noMediaVideoKey(anchor.videoId) : null, "media-403",
+                            android.os.SystemClock.elapsedRealtime()));
+            return;
+        }
         // isAuthSupported, not isAuthCapable: the set this writes is counted against
         // AUTHENTICATED_HEAD.length to decide authenticatedWebFirst, so it must only ever contain
         // head clients. A 403 on an account-bearing WEB_EMBED is still handled - by the ordinary
@@ -1850,6 +2396,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
             android.util.Log.d("NetPath", "player-ring auth-route no-media-cleared"
                     + " reason=account-change persisted="
                     + (persistAuthRouteQuarantine() ? "y" : "n"));
+        }
+        // NEWTUBE(botwall): same for the bot-wall account route's failures (the wall itself is
+        // about the anonymous clients on this network and stays).
+        if (mBotWall.clearRouteFailures()) {
+            android.util.Log.d("NetPath", "player-ring account-route cleared reason=account-change");
         }
     }
 
@@ -2011,28 +2562,46 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
-     * Starts a NEW anonymous identity after the guest partition is challenged.
+     * Starts a NEW anonymous identity for the /player web-pot session after the guest partition is
+     * challenged. NOT enabled on the phone (see {@link #setRotateVisitorOnAnonChallenge}): kept as
+     * the least destructive variant should device evidence ever show an identity-bound challenge.
      * <p>
-     * Measured 2026-09-07 off-device, same client and same IP: an anonymous {@code /player} with no
-     * visitorData answers {@code LOGIN_REQUIRED "Sign in to confirm you're not a bot"}, and the
-     * same request with a freshly minted visitorData answers OK. Rotating is therefore worth a
-     * round trip when the identity we are carrying has just been challenged.
+     * NEWTUBE(visitor), evaluated 2026-09-25: rotation did not rescue either observed wall, and
+     * what causes these walls (IP, client, attestation, session, or their interaction) is unproven.
+     * <ul>
+     * <li>2026-07-27 Pixel/LTE: 42/42 anonymous calls challenged on one visitor with a valid pot; a
+     * probe of all 7 anonymous clients with a BRAND-NEW visitor was challenged 7/7 as well.</li>
+     * <li>2026-07-28 Mac: VISIONOS OK while ANDROID_VR and TV_DOWNGRADED were challenged in the same
+     * second on the same IP - a client effect (which does not exclude a visitor effect).</li>
+     * <li>2026-09-07 off-device: challenged with NO visitorData, OK with a freshly minted one. Like
+     * NewPipe's missing / locally generated visitor data, that shows visitor VALIDITY matters
+     * (present and server-issued, which the persistent one is) - not that replacing a valid
+     * visitor helps.</li>
+     * <li>2026-09-25 Pixel/LTE wall: this used to call {@code AppService.rotateVisitorData()} (the
+     * 09-07 owner decision, HANDOFF section 26: visitor cookie + app info + web-pot session). It
+     * rotated seven times in about two minutes (this cooldown is per process, so every cold start
+     * rotated again), and none of the 140 anonymous /player answers that followed was OK (133 bot
+     * checks, 7 WEB_EMBED/GEO errors). Correlated retries in one episode, with no wait-only
+     * control - but each rotation did move Home, /next, search and signed-out history onto a new
+     * identity, and the next cold start paid an extra youtube.com/tv fetch because the persisted
+     * app info was never re-saved.</li>
+     * </ul>
+     * So the cost is certain and the benefit unshown; the phone keeps its identity and relies on the
+     * anonymous cooldown (which reorders the ring) and BotWallBook (which limits walled requests).
+     * Settling it needs natural walls with a matched wait-only control (the web-pot-session NetPath
+     * line records the token context for that).
      * <p>
-     * It is NOT a proven cure, and the log line says which happened rather than assuming. The
-     * counter-evidence is in {@code firstPlayable}: a WEB_EMBED challenge once arrived on the very
-     * same visitorData that ANDROID_VR then played from, so a challenge can be bound to the client
-     * context instead of the identity, and ANDROID_VR is challenged in this round even with a
-     * brand-new visitor. Rotation is bounded to once per {@link #ANON_CHALLENGE_COOLDOWN_MS} per
-     * network by its {@code fresh} caller, and the account keeps its own credential: feeds and
-     * history ride {@code auth=y}, so what is discarded here is signed-out personalization only.
+     * Re-enabling is one line in MobileMainApplication: {@code setRotateVisitorOnAnonChallenge(true)}.
+     * This variant then rotates ONLY the web-pot session's visitor (what VISIONOS, ANDROID_VR and
+     * the Web family present), never the persistent AppService visitor; persist its cooldown per
+     * network first, or every cold start under a wall rotates again.
      */
     private boolean rotateAnonymousIdentity() {
         try {
-            AppService.instance().rotateVisitorData();
-            // The Web partition caches its own visitor alongside the PO token; leaving it would
-            // keep handing the challenged identity to exactly the clients that were challenged.
-            PoTokenGate.resetCache(AppClient.WEB);
-            return true;
+            // Arms a fresh visitor for the next web-pot session and retires the current token
+            // session, so the challenged identity is not handed straight back to the clients that
+            // were just challenged. Returns false when rate-limited or without a WebView.
+            return PoTokenGate.rotateWebVisitor();
         } catch (Exception e) {
             android.util.Log.w("NetPath", "player-ring visitor-rotate-failed " + e);
             return false;
@@ -2130,6 +2699,17 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return null;
         }
 
+        // NEWTUBE(botwall): the challenge was observed on another network attachment; what it says
+        // about this one is nothing. Armed on a walled LTE, it used to keep answering opens on a
+        // healthy Wi-Fi until the next permitted probe. Mobile only; an unknown network (offline)
+        // keeps the circuit as it was.
+        if (sPreferNoPotClient && isBotCheckCircuitStale(mBotCheckNetwork, activeNetworkKey())) {
+            android.util.Log.d("NetPath", "bot-check cleared reason=network-change video=" + videoId
+                    + " armedOn=" + mBotCheckNetwork);
+            clearBotCheckCircuit();
+            return null;
+        }
+
         // Allow exactly one authenticated recovery after a circuit was opened anonymously. If the
         // account-bearing attempt itself received the challenge, further opens stay inside the
         // cooldown too; repeatedly exempting a present-but-rejected account recreates the storm.
@@ -2156,7 +2736,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
             long nowMs = android.os.SystemClock.elapsedRealtime();
             if (nowMs - mBotCheckNextProbeAtMs >= 0) {
-                mBotCheckNextProbeAtMs = nowMs + BOT_CHECK_PROBE_INTERVAL_MS;
+                // NEWTUBE(botwall): spent when the walk SENDS its first request, not here - a
+                // canceled tap-time prefetch must not use up the interval's only probe.
+                mBotCheckProbePending = true;
                 android.util.Log.d("NetPath", "bot-check probe video=" + videoId
                         + " remainingMs=" + remainingMs);
                 return null;
@@ -2175,10 +2757,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
         mBotCheckCooldownUntilMs = android.os.SystemClock.elapsedRealtime() + BOT_CHECK_COOLDOWN_MS;
         mBotCheckAuthenticatedAttempted = authenticatedAttempted;
         mBotCheckRingExhausted = ringExhausted;
+        mBotCheckNetwork = sPreferNoPotClient ? activeNetworkKey() : null;
         mBotCheckNextProbeAtMs =
                 android.os.SystemClock.elapsedRealtime() + BOT_CHECK_PROBE_INTERVAL_MS;
         mNextInfoType = null;
         mRecoveryWalk = false;
+        mRecoverySuspect = null;
         android.util.Log.w("NetPath", "bot-check trip client=" + client
                 + " signal=" + signal + " authAttempted=" + (authenticatedAttempted ? "y" : "n")
                 + " ringExhausted=" + (ringExhausted ? "y" : "n")
@@ -2191,6 +2775,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
         mBotCheckAuthenticatedAttempted = false;
         mBotCheckRingExhausted = false;
         mBotCheckNextProbeAtMs = 0;
+        mBotCheckNetwork = null;
+    }
+
+    /** Armed on a known attachment and the device is now on a DIFFERENT known one. */
+    static boolean isBotCheckCircuitStale(@Nullable String armedOn, @Nullable String current) {
+        return armedOn != null && current != null && !armedOn.equals(current);
     }
     /**
      * Pure visit-order builder, split out so the 403 recovery semantics can be unit-tested without
@@ -2294,6 +2884,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * {@link #WEB_POT_ATTEMPT_TIMEOUT_MS}.
      */
     static long attemptTimeoutMsFor(AppClient client) {
+        // NEWTUBE(botwall): when the account route is asked it is the one route left (a walled
+        // network, or the anonymous identity just asked for a sign-in), so it gets the head's
+        // cold-start budget rather than a speculative client's.
+        if (client == BotWallBook.ACCOUNT_ROUTE) {
+            return AUTH_HEAD_ATTEMPT_TIMEOUT_MS;
+        }
         for (AppClient head : AUTHENTICATED_HEAD) {
             if (head == client) {
                 return AUTH_HEAD_ATTEMPT_TIMEOUT_MS;
@@ -2436,17 +3032,24 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // a distinct /player/GVS platform. Clear that visitor session and continue into the Web
         // recovery partition; treating the cache clear as the whole fix just remints the failed VR
         // route. A Web-family winner can retry itself after a genuine Web token refresh as before.
-        if (!mIsUnplayable && (mActualInfoType == AppClient.ANDROID_VR
-                || mActualInfoType == PREFERRED_FIRST_CLIENT)) {
+        // NEWTUBE(recovery-blame): the anchored video's client, consumed here (see
+        // anchorRouteToVideo). An anchor only exists for a video that PLAYED, so it also answers
+        // "was it playable" for that video instead of the global flag a prefetch may have set.
+        RouteAnchor anchor = mRouteAnchor;
+        mRouteAnchor = null;
+        final AppClient suspect = anchor != null ? anchor.client : mActualInfoType;
+        final boolean unplayable = anchor == null && mIsUnplayable;
+        if (!unplayable && (suspect == AppClient.ANDROID_VR
+                || suspect == PREFERRED_FIRST_CLIENT)) {
             PoTokenGate.resetCache();
-            nextVideoInfoType();
-            android.util.Log.d("NetPath", "player-ring circuit-break suspect=" + mActualInfoType
+            nextVideoInfoType(suspect);
+            android.util.Log.d("NetPath", "player-ring circuit-break suspect=" + suspect
                     + " next=" + mNextInfoType);
             return;
         }
 
         // Try to reset pot cache for the last video
-        if (!mIsUnplayable && mActualInfoType != null && PoTokenGate.resetCache(mActualInfoType)) {
+        if (!unplayable && suspect != null && PoTokenGate.resetCache(suspect)) {
             return;
         }
         // The Premium is likely broken
@@ -2456,7 +3059,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         //    return;
         //}
         // And last, try to switch the client
-        nextVideoInfoType();
+        nextVideoInfoType(suspect);
         //persistVideoInfoType();
     }
 
@@ -2465,13 +3068,15 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     public void resetInfoType() {
+        mRouteAnchor = null;
         resetInfoTypeToDefault();
         PoTokenGate.resetCache();
         clearBotCheckCircuit();
     }
 
-    private void nextVideoInfoType() {
-        mNextInfoType = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, mActualInfoType);
+    private void nextVideoInfoType(@Nullable AppClient suspect) {
+        mNextInfoType = Helpers.getNextValue(VIDEO_INFO_TYPE_LIST, suspect);
+        mRecoverySuspect = suspect;
         mRecoveryWalk = true;
         mRoutingGeneration.incrementAndGet();
     }
@@ -2497,6 +3102,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     VideoInfoApiHelper.getVideoInfoRequest(client, videoId, clickTrackingParams);
             result = getVideoInfo(client, request);
         }
+
+        // NEWTUBE(botwall): debug builds only. The real request was made (timing, server load and
+        // the player-http log line stay honest); only its answer is replaced.
+        result = maybeInjectBotWall(client, result);
 
         if (result != null) {
             result.setClient(client);
@@ -2723,6 +3332,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private void resetInfoTypeToDefault() {
         mNextInfoType = null;
         mRecoveryWalk = false;
+        mRecoverySuspect = null;
         mActualInfoType = VIDEO_INFO_TYPE_LIST[0];
         mRoutingGeneration.incrementAndGet();
         persistVideoInfoType();

@@ -89,8 +89,67 @@ internal object RetrofitOkHttpHelper {
         val builder = OkHttpManager.instance().client.newBuilder()
         addCommonHeaders(builder)
         addOpenPathTimeout(builder)
+        builder.eventListenerFactory { apiConnectionListener }
         //addCronetInterceptor(builder)
-        return builder.build()
+        val built = builder.build()
+        // One line per process: which protocols the InnerTube client offers, and whether its H2
+        // liveness PING is on. protocols=[http/1.1] on a phone means the H2 switch lost the race.
+        android.util.Log.d(
+            "NetPath",
+            "api-client built protocols=${built.protocols} pingMs=${built.pingIntervalMillis}" +
+                " thread=${Thread.currentThread().name}",
+        )
+        return built
+    }
+
+    // NEWTUBE(api-pool): see StaleApiConnectionGuard.
+    internal val staleGuard = StaleApiConnectionGuard { android.os.SystemClock.elapsedRealtime() }
+
+    /** Hosts whose idle connections the guard tracks: where /player and /next go. Tests widen it. */
+    @Volatile
+    internal var guardedHosts: Set<String> = setOf("www.youtube.com")
+
+    private val apiConnectionListener = object : okhttp3.EventListener() {
+        override fun connectionAcquired(call: okhttp3.Call, connection: okhttp3.Connection) {
+            staleGuard.acquired(connection)
+        }
+
+        override fun connectionReleased(call: okhttp3.Call, connection: okhttp3.Connection) {
+            // /player and /next go to www.youtube.com; other hosts' idle sockets are never picked
+            // for them, so they must not trigger an eviction either.
+            if (call.request().url.host in guardedHosts) {
+                staleGuard.released(connection, connection.protocol() == okhttp3.Protocol.HTTP_1_1)
+            }
+        }
+    }
+
+    /**
+     * Before an interactive /player or /next on cellular: if a pooled HTTP/1.1 connection has
+     * been idle long enough for a carrier NAT to have dropped it, evict the idle connections so
+     * this call dials a fresh one. Never fires on HTTP/2 (its PING keeps the mapping alive).
+     */
+    private fun evictStaleApiConnectionsIfNeeded(request: Request) {
+        val network = activeNetworkId()
+        evictStaleApiConnectionsIfNeeded(network.startsWith("cell:"), request.url.encodedPath, network)
+    }
+
+    /** Returns the idle time that triggered an eviction, or -1. Split out for tests. */
+    internal fun evictStaleApiConnectionsIfNeeded(cellular: Boolean, endpoint: String, network: String): Long {
+        val pool = client.connectionPool
+        var idle = 0
+        val idleMs = staleGuard.evictIfStale(cellular, { (it as okhttp3.Connection).socket().isClosed }) {
+            idle = pool.idleConnectionCount()
+            pool.evictAll()
+        }
+        if (idleMs < 0) {
+            return idleMs
+        }
+        android.util.Log.w(
+            "NetPath",
+            "api-pool evict-idle reason=http1-stale idleMs=$idleMs idleConnections=$idle" +
+                " endpoint=$endpoint net=$network",
+        )
+        return idleMs
     }
 
     /**
@@ -104,6 +163,7 @@ internal object RetrofitOkHttpHelper {
             val request = chain.request()
             val path = request.url.encodedPath
             if (path.contains("/youtubei/v1/player") || path.contains("/youtubei/v1/next")) {
+                evictStaleApiConnectionsIfNeeded(request)
                 chain.withConnectTimeout(OPEN_PATH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                     .withReadTimeout(OPEN_PATH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                     .proceed(request)
@@ -245,7 +305,7 @@ internal object RetrofitOkHttpHelper {
             "NetPath",
             "api-http[S] aid=$id method=${request.method} endpoint=$endpoint" +
                 " auth=${yn(request.header("Authorization") != null)}" +
-                " visitor=${fingerprint(request.header("X-Goog-Visitor-Id"))}" +
+                " visitor=${VisitorFingerprint.of(request.header("X-Goog-Visitor-Id"))}" +
                 " bodyBytes=$bodyBytes net=${activeNetworkId()}",
         )
 
@@ -287,7 +347,7 @@ internal object RetrofitOkHttpHelper {
             "NetPath",
             "player-http[S] rid=$id video=${body.videoId} client=${request.header("X-Youtube-Client-Name")}" +
                 " cver=${request.header("X-Youtube-Client-Version")}" +
-                " visitor=${fingerprint(visitor)} pot=${yn(body.hasPoToken)}" +
+                " visitor=${VisitorFingerprint.of(visitor)} pot=${yn(body.hasPoToken)}" +
                 " auth=${yn(request.header("Authorization") != null)}" +
                 " cookie=${yn(request.header("Cookie") != null)}" +
                 " authUser=${yn(request.header("X-Goog-AuthUser") != null)}" +
@@ -340,7 +400,7 @@ internal object RetrofitOkHttpHelper {
             "next-http[S] nid=$id video=${body.videoId}" +
                 " client=${request.header("X-Youtube-Client-Name")}" +
                 " cver=${request.header("X-Youtube-Client-Version")}" +
-                " visitor=${fingerprint(request.header("X-Goog-Visitor-Id"))}" +
+                " visitor=${VisitorFingerprint.of(request.header("X-Goog-Visitor-Id"))}" +
                 " auth=${yn(request.header("Authorization") != null)}" +
                 " cookie=${yn(request.header("Cookie") != null)} net=${activeNetworkId()}",
         )

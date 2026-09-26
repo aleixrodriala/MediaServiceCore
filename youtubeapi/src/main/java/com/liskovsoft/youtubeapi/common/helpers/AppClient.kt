@@ -23,6 +23,11 @@ private const val POST_DATA_ANDROID_OS = "\"osName\":\"Android\",\"osVersion\":\
 private const val POST_DATA_ANDROID_SDK = "\"androidSdkVersion\":\"%s\","
 private const val POST_DATA_ANDROID_MODEL = "\"deviceModel\":\"%s\",\"deviceMake\":\"%s\","
 private const val POST_DATA_BROWSER = "\"browserName\":\"%s\",\"browserVersion\":\"%s\","
+// NEWTUBE(botwall): the Samsung Tizen device context of yt-dlp PR #17723 (2026-09-24). See TV_TIZEN.
+private const val POST_DATA_TIZEN_DEVICE =
+    "\"deviceMake\":\"Samsung\",\"deviceModel\":\"SmartTV\",\"osName\":\"Tizen\",\"osVersion\":\"2.4.0\","
+private const val USER_AGENT_TIZEN = "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 " +
+        "(KHTML, like Gecko) Version/2.4.0 TV Safari/538.1"
 private const val CLIENT_SCREEN_WATCH = "WATCH" // won't play 18+ restricted videos
 private const val CLIENT_SCREEN_EMBED = "EMBED" // no 18+ restriction but not all video embeddable, and no descriptions
 
@@ -80,7 +85,39 @@ internal enum class AppClient(
     VISIONOS(CLIENTS.VISIONOS.NAME, CLIENTS.VISIONOS.VERSION, CLIENT_NAME_IDS[CLIENTS.VISIONOS.NAME],
         userAgent = CLIENTS.VISIONOS.USER_AGENT!!, referer = null,
         postData = String.format(POST_DATA_VISIONOS_DEVICE, CLIENTS.VISIONOS.DEVICE_MAKE,
-            CLIENTS.VISIONOS.DEVICE_MODEL, CLIENTS.VISIONOS.OS_NAME, CLIENTS.VISIONOS.OS_VERSION));
+            CLIENTS.VISIONOS.DEVICE_MODEL, CLIENTS.VISIONOS.OS_NAME, CLIENTS.VISIONOS.OS_VERSION)),
+    /**
+     * NEWTUBE(botwall): TVHTML5 5.x presenting itself as a Samsung Tizen TV - the one
+     * account-bearing request shape whose media URLs actually serve. Appended at the END of the
+     * enum for the same ordinal reason as VISIONOS, and deliberately NOT in VIDEO_INFO_TYPE_LIST:
+     * VideoInfoService reaches for it only when YouTube asks the anonymous identity to sign in
+     * (the bot wall, an age gate), so a healthy open never pays its ~0.2-0.6 s signature solve.
+     *
+     * Why it exists. [TV_DOWNGRADED] (same client, Cobalt UA, no device fields) answers the REAL
+     * five-digit signatureTimestamp with UNPLAYABLE "The page needs to be reloaded", and the
+     * `+001` suffix that gets it an OK answer is exactly what kills its URLs (HANDOFF section 26:
+     * suffixed sts -> 403 on the first byte). yt-dlp PR #17723 found the reload verdict is not about
+     * the timestamp at all: the TV client now forces the `tcl` player JS variant, and a Tizen
+     * device context bypasses that requirement. Reproduced off-device on 2026-09-25 (home IP,
+     * anonymous, Fo89b8zAIE4, player 7460dd14, real sts 20717):
+     *
+     *   tv_downgraded, Cobalt UA            -> UNPLAYABLE "The page needs to be reloaded."
+     *   + Tizen device fields and UA        -> OK, 23 https formats; itag 160 and 140 answer
+     *                                          HTTP 206 at byte 0 AND at byte 5,000,000
+     *   TVHTML5 7.x + the same Tizen fields -> SABR-only again (only itag 18, which 403s)
+     *   this enum's exact body (QueryBuilder output, with and without browserName) -> OK,
+     *                                          22 ciphered adaptive formats
+     *
+     * It matters under a bot wall because the account was the one identity that got past it: on
+     * 2026-09-25 (Pixel 9, Movistar LTE) every anonymous client, Web family included and with a
+     * fresh visitor and a content PO token, answered LOGIN_REQUIRED "confirm you're not a bot",
+     * while both signed-in TVHTML5 heads answered OK (srvAuth=y) - with no playable media. Why the
+     * anonymous clients were challenged on that network (address, guest identity, client
+     * fingerprint, or their interaction) was not established.
+     * Verified with our OAuth bearer on the Pixel 9 on 2026-09-25 (Wi-Fi, owner's account):
+     * status=OK srvAuth=y, dash-mpd, first frame, a seek to 60 %, 150 s with no 403.
+     */
+    TV_TIZEN(TV, clientVersion = "5.20260707", userAgent = USER_AGENT_TIZEN, postData = POST_DATA_TIZEN_DEVICE);
 
     constructor(baseClient: AppClient, clientVersion: String? = null, userAgent: String? = null, postData: String? = null, postDataBrowse: String? = null):
             this(baseClient.clientName, clientVersion ?: baseClient.clientVersion, baseClient.innerTubeName,
@@ -113,7 +150,7 @@ internal enum class AppClient(
     val baseTemplate by lazy { String.format(JSON_POST_DATA_BASE, clientName, clientVersion, clientScreen, userAgent,
         (postDataBrowser ?: "") + (postData ?: "")) }
 
-    val isAuthSupported by lazy { Helpers.equalsAny(this, TV, TV_LEGACY, TV_EMBED, TV_KIDS, TV_DOWNGRADED) } // NOTE: TV_SIMPLY doesn't support auth
+    val isAuthSupported by lazy { Helpers.equalsAny(this, TV, TV_LEGACY, TV_EMBED, TV_KIDS, TV_DOWNGRADED, TV_TIZEN) } // NOTE: TV_SIMPLY doesn't support auth
 
     /**
      * Clients allowed to CARRY the account on a /player request. Identical to [isAuthSupported]
@@ -186,8 +223,11 @@ internal enum class AppClient(
      *    client silently poisons the URLs it hands back.
      *  - TVHTML5_SIMPLY_EMBEDDED_PLAYER and TVHTML5_KIDS answer identically either way (they fail
      *    for unrelated reasons), so they follow the true player value.
+     *  - NEWTUBE(botwall): [TV_TIZEN] is TVHTML5 too, but its Tizen device context is what gets
+     *    the TRUE five-digit value accepted (OK, URLs that serve 206 deep into the file), so it
+     *    must never be suffixed - the suffix is the thing that poisons TVHTML5 URLs.
      */
-    val usesTvSignatureTimestamp by lazy { clientName == CLIENTS.TV.NAME }
+    val usesTvSignatureTimestamp by lazy { clientName == CLIENTS.TV.NAME && this != TV_TIZEN }
     val isWebClient by lazy { Helpers.startsWithAny(name, "WEB", "MWEB", "INITIAL", "GEO") }
     val isEmbedded by lazy { Helpers.equalsAny(this, WEB_EMBED, TV_EMBED) }
 

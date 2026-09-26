@@ -44,6 +44,11 @@ public class YouTubeMPDBuilder implements MPDBuilder {
     private String mLimitAudioCodec;
 
     private YouTubeMPDBuilder(MediaItemFormatInfo info) {
+        this(info, null);
+    }
+
+    /** {@code serializer} null: the text document of {@link #build()}. */
+    private YouTubeMPDBuilder(MediaItemFormatInfo info, XmlSerializer serializer) {
         mInfo = info;
         MediaFormatComparator comp = new MediaFormatComparator();
         mMP4Videos = new TreeSet<>(comp);
@@ -53,12 +58,33 @@ public class YouTubeMPDBuilder implements MPDBuilder {
         mSubs = new ArrayList<>();
         mSegmentParser = new YouTubeOtfSegmentParser(true);
 
-        initXmlSerializer();
+        initXmlSerializer(serializer);
     }
 
     public static MPDBuilder from(MediaItemFormatInfo formatInfo) {
         MPDBuilder builder = new YouTubeMPDBuilder(formatInfo);
 
+        appendAll(builder, formatInfo);
+
+        return builder;
+    }
+
+    /**
+     * NEWTUBE(open-cpu): writes exactly the document {@link #build()} would, as calls on
+     * {@code serializer} instead of text. The phone player records them and replays them into
+     * media3's own DASH parser, which skips printing 50-160 KB of XML here (a captioned video
+     * carries one AdaptationSet per caption translation) and lexing it back there. Returns false
+     * wherever {@link #build()} returns null.
+     */
+    public static boolean writeTo(MediaItemFormatInfo formatInfo, XmlSerializer serializer) {
+        YouTubeMPDBuilder builder = new YouTubeMPDBuilder(formatInfo, serializer);
+
+        appendAll(builder, formatInfo);
+
+        return builder.write();
+    }
+
+    private static void appendAll(MPDBuilder builder, MediaItemFormatInfo formatInfo) {
         if (formatInfo.containsDashFormats()) {
             for (MediaFormat format : formatInfo.getAdaptiveFormats()) {
                 builder.append(format);
@@ -68,15 +94,17 @@ public class YouTubeMPDBuilder implements MPDBuilder {
                 builder.append(formatInfo.getSubtitles());
             }
         }
-
-        return builder;
     }
 
-    private void initXmlSerializer() {
-        mXmlSerializer = Xml.newSerializer();
-        mWriter = new StringWriter();
+    private void initXmlSerializer(XmlSerializer serializer) {
+        if (serializer != null) {
+            mXmlSerializer = serializer;
+        } else {
+            mXmlSerializer = Xml.newSerializer();
+            mWriter = new StringWriter();
 
-        setOutput(mXmlSerializer, mWriter);
+            setOutput(mXmlSerializer, mWriter);
+        }
 
         startDocument(mXmlSerializer);
         mXmlSerializer.setFeature("http://xmlpull.org/v1/doc/features.html#indent-output", true);
@@ -647,8 +675,12 @@ public class YouTubeMPDBuilder implements MPDBuilder {
 
     @Override
     public InputStream build() {
+        return write() ? FileHelpers.toStream(mWriter.toString()) : null;
+    }
+
+    private boolean write() {
         if (!mInfo.containsDashFormats()) {
-            return null;
+            return false;
         }
 
         if (ensureRequiredFieldsAreSet()) {
@@ -658,10 +690,10 @@ public class YouTubeMPDBuilder implements MPDBuilder {
 
             writeEpilogue();
 
-            return FileHelpers.toStream(mWriter.toString());
+            return true;
         }
 
-        return null;
+        return false;
     }
 
     @Override

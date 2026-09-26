@@ -483,6 +483,17 @@ class YouTubeContentService implements ContentService {
                 return;
             }
 
+            // NEWTUBE(lazy-home): the app may pace the walk (Home fetches the next page when the
+            // user scrolls toward it, not all of them at launch). See BrowseServiceGates.
+            com.liskovsoft.youtubeapi.browse.v2.BrowseServiceGates.SectionListPacer pacer =
+                    com.liskovsoft.youtubeapi.browse.v2.BrowseServiceGates.getSectionListPacer();
+            if (pacer != null && nextKey != null
+                    && !pacer.awaitNextPage(groups.get(0).getType(), page + 2, emitter::isDisposed)) {
+                android.util.Log.d("NetPath", "browse-stop paced before continuation page=" + (page + 1)
+                        + " type=" + groups.get(0).getType());
+                return;
+            }
+
             groupsAndKey = getBrowseService2().continueSectionList(nextKey, groups.get(0).getType());
             groups = groupsAndKey != null ? groupsAndKey.getFirst() : null;
             nextKey = groupsAndKey != null ? groupsAndKey.getSecond() : null;

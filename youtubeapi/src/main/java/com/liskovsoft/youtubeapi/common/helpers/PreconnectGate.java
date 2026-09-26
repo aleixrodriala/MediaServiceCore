@@ -11,7 +11,10 @@ import java.util.Objects;
 final class PreconnectGate {
     private static final int MAX_HOSTS = 4;
     private static final int MAX_IN_FLIGHT = 2;
-    private static final long SUCCESS_FRESH_MS = 60_000;
+    // NEWTUBE(preconnect): Cronet drops an idle QUIC session after ~30 s, so a warm older than that
+    // is usually a dead one. Re-warming a repeat host (edge nodes recur across videos) is one tiny
+    // request; trusting a closed session costs the next open a full handshake.
+    private static final long SUCCESS_FRESH_MS = 25_000;
     private static final long FAILURE_COOLDOWN_MS = 5_000;
 
     static final class Attempt {

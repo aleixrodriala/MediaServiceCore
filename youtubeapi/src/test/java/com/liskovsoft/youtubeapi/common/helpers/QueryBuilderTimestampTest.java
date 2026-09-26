@@ -97,6 +97,42 @@ public class QueryBuilderTimestampTest {
         assertEquals(3, ShadowAppService.timestampReads);
     }
 
+    /**
+     * NEWTUBE(botwall): the account route is TVHTML5 5.x as a Samsung Tizen TV. Its device context
+     * is what gets the TRUE five-digit timestamp accepted (yt-dlp PR #17723; reproduced off-device
+     * 2026-09-25: OK and URLs that serve 206 at byte 5,000,000), so the Cobalt suffix - the thing
+     * that poisons TVHTML5 URLs - must never reach it, while TV_DOWNGRADED keeps it.
+     */
+    @Test
+    public void tizenTvSendsTheRealTimestampAndItsDeviceContext() {
+        String actual = request(AppClient.TV_TIZEN).build();
+        com.google.gson.JsonObject client = JsonParser.parseString(actual).getAsJsonObject()
+                .getAsJsonObject("context").getAsJsonObject("client");
+
+        assertTimestamp(actual, 20_697);
+        assertEquals("TVHTML5", client.get("clientName").getAsString());
+        assertEquals("5.20260707", client.get("clientVersion").getAsString());
+        assertEquals("Samsung", client.get("deviceMake").getAsString());
+        assertEquals("SmartTV", client.get("deviceModel").getAsString());
+        assertEquals("Tizen", client.get("osName").getAsString());
+        assertEquals("2.4.0", client.get("osVersion").getAsString());
+        assertTrue(client.get("userAgent").getAsString().contains("Tizen 2.4.0"));
+        assertEquals(false, JsonParser.parseString(actual).getAsJsonObject()
+                .getAsJsonObject("playbackContext").getAsJsonObject("devicePlaybackCapabilities")
+                .get("supportXhr").getAsBoolean());
+        assertSessionFields(actual);
+        assertTrue("it carries the account", AppClient.TV_TIZEN.isAuthSupported());
+        assertTrue(AppClient.TV_TIZEN.isAuthCapable());
+        assertEquals("TV_DOWNGRADED is unchanged",
+                20_697_001, timestampOf(request(AppClient.TV_DOWNGRADED).build()));
+    }
+
+    private static int timestampOf(String query) {
+        return JsonParser.parseString(query).getAsJsonObject()
+                .getAsJsonObject("playbackContext").getAsJsonObject("contentPlaybackContext")
+                .get("signatureTimestamp").getAsInt();
+    }
+
     @Test
     public void nonTvClientsKeepOriginalTimestamp() {
         for (AppClient client : new AppClient[] {

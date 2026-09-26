@@ -32,8 +32,8 @@ public class PreconnectGateTest {
         mGate.changeNetwork("wifi");
         PreconnectGate.Attempt attempt = mGate.tryStart("media.invalid", 100);
         mGate.complete(attempt, true, 4_500);
-        assertNull(mGate.tryStart("media.invalid", 64_499));
-        assertNotNull(mGate.tryStart("media.invalid", 64_500));
+        assertNull(mGate.tryStart("media.invalid", 29_499));
+        assertNotNull(mGate.tryStart("media.invalid", 29_500));
     }
 
     @Test

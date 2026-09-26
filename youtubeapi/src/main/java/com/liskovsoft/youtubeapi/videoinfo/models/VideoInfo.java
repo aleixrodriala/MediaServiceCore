@@ -354,6 +354,21 @@ public class VideoInfo {
         mIsBotCheckRequired = required;
     }
 
+    /**
+     * NEWTUBE(botwall): a stand-alone "confirm you're not a bot" verdict with no media and no
+     * videoDetails, so it can answer ANY video without carrying another video's metadata into it
+     * (VideoLoaderController syncs whatever details it is handed onto the open video). Used where a
+     * walled network is answered without asking anyone, and by the debug-only wall injection.
+     */
+    public static VideoInfo botCheckVerdict(String reason, boolean auth) {
+        VideoInfo info = new VideoInfo();
+        info.mPlayabilityStatus = STATUS_LOGIN_REQUIRED;
+        info.mPlayabilityReason = reason;
+        info.mIsAuth = auth;
+        info.mIsBotCheckRequired = true;
+        return info;
+    }
+
     public String getStoryboardSpec() {
         return mStoryboardSpec;
     }

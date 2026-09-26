@@ -49,7 +49,7 @@ public class JsonPathTreeReuseTest {
         CountingParser current = new CountingParser(false);
         CountingParser legacy = new CountingParser(true);
         VideoInfo actual = read(VideoInfo.class, response, current);
-        VideoInfo previous = read(VideoInfo.class, response, legacy);
+        VideoInfo previous = readLegacy(VideoInfo.class, response, legacy);
 
         assertNotNull(actual);
         // Compare every mapped field, including inherited format fields, before lazy getters run.
@@ -69,7 +69,9 @@ public class JsonPathTreeReuseTest {
 
         assertEquals(1, current.textParses);
         assertEquals(0, current.streamParses);
-        assertTrue("formats and ranges must query existing subtrees", current.objectParses >= 75);
+        // NEWTUBE(open-cpu): formats and ranges are walked directly in the one parsed tree; no
+        // nested DocumentContext is created at all any more (was one per mapped object).
+        assertEquals("formats and ranges must query existing subtrees", 0, current.objectParses);
         assertEquals(1 + legacy.objectParses, legacy.textParses);
         assertTrue("legacy path serializes every nested object again", legacy.serializedCharacters > 0);
         current.assertTreeUnchangedAndReused();
@@ -99,7 +101,7 @@ public class JsonPathTreeReuseTest {
         CountingParser current = new CountingParser(false);
         CountingParser legacy = new CountingParser(true);
         VideoInfo actual = read(VideoInfo.class, response, current);
-        VideoInfo previous = read(VideoInfo.class, response, legacy);
+        VideoInfo previous = readLegacy(VideoInfo.class, response, legacy);
 
         assertNotNull(actual);
         assertEquals(new Gson().toJson(previous), new Gson().toJson(actual));
@@ -124,7 +126,7 @@ public class JsonPathTreeReuseTest {
         assertEquals("de", tracks.get(3).getLanguageCode());
 
         assertEquals(1, current.textParses);
-        assertEquals(8, current.objectParses);
+        assertEquals(0, current.objectParses);
         assertEquals(1 + legacy.objectParses, legacy.textParses);
         current.assertTreeUnchangedAndReused();
     }
@@ -150,7 +152,7 @@ public class JsonPathTreeReuseTest {
         assertEquals("first", result.items.get(0).name);
         assertEquals("second", result.items.get(1).name);
         assertEquals(1, parser.textParses);
-        assertEquals(3, parser.objectParses);
+        assertEquals(0, parser.objectParses);
         parser.assertTreeUnchangedAndReused();
     }
 
@@ -165,8 +167,7 @@ public class JsonPathTreeReuseTest {
         assertEquals("left", result.pair.left);
         assertEquals("right", result.pair.right);
         assertEquals(1, parser.textParses);
-        assertEquals(1, parser.objectParses);
-        assertTrue(parser.objectRoots.get(0).isJsonArray());
+        assertEquals(0, parser.objectParses); // $[0].name is walked directly on the array
         parser.assertTreeUnchangedAndReused();
     }
 
@@ -200,7 +201,7 @@ public class JsonPathTreeReuseTest {
         assertNotNull(result);
         assertEquals("after prefix", result.child.name);
         assertEquals(1, parser.textParses);
-        assertEquals(1, parser.objectParses);
+        assertEquals(0, parser.objectParses);
         parser.assertTreeUnchangedAndReused();
     }
 
@@ -224,6 +225,11 @@ public class JsonPathTreeReuseTest {
 
     private static <T> T read(Class<T> type, String response, CountingParser parser) {
         return new JsonPathTypeAdapter<T>(parser.context, type).read(stream(response));
+    }
+
+    /** The adapter as it was before the direct walk: parses every nested object through jayway. */
+    private static <T> T readLegacy(Class<T> type, String response, CountingParser parser) {
+        return new LegacyJsonPathTypeAdapter<T>(parser.context, type).read(stream(response));
     }
 
     private static InputStream stream(String response) {

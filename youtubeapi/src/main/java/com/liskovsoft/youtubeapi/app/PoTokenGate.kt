@@ -231,9 +231,12 @@ internal object PoTokenGate {
 
     /**
      * Abandons the current anonymous Web identity and forces the next web-pot session to mint a
-     * fresh visitor. Called when the /player ring has seen the anonymous partition answer with bot
-     * challenges: a plain [resetCache] only re-mints a token for the SAME persistent visitor, which
-     * is the identity being challenged, so it can never clear the challenge on its own.
+     * fresh visitor. A plain [resetCache] only re-mints a token for the SAME persistent visitor.
+     *
+     * NEWTUBE(visitor): reachable only through VideoInfoService.rotateAnonymousIdentity, which no
+     * flavor enables since 2026-09-25 - rotation did not rescue either observed wall and the cause
+     * of those walls is unproven (the evidence is on rotateAnonymousIdentity). Kept as the scoped
+     * variant: unlike AppService.rotateVisitorData it leaves the persistent identity alone.
      *
      * Rate-limited to [VISITOR_ROTATION_MIN_INTERVAL_MS] and deliberately independent of
      * [resetWebCache]'s own 60s throttle. Returns true if a rotation was armed.

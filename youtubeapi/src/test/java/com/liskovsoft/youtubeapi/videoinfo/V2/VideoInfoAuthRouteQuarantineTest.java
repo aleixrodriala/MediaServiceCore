@@ -560,6 +560,10 @@ public class VideoInfoAuthRouteQuarantineTest {
             ReflectionHelpers.setField(service, "mAuthRouteQuarantine",
                     new AuthRouteQuarantineBook());
         }
+        // onAccountChanged also resets the bot-wall account route's failures.
+        if (ReflectionHelpers.getField(service, "mBotWall") == null) {
+            ReflectionHelpers.setField(service, "mBotWall", new BotWallBook());
+        }
         return service;
     }
 

@@ -110,6 +110,8 @@ public class YouTubeMediaItemService implements MediaItemService {
     private static final class CachedFormatEntry {
         final MediaItemFormatInfo formatInfo;
         final long timeMs = android.os.SystemClock.elapsedRealtime();
+        // NEWTUBE(botwall): the attachment the URLs were minted on (null off-device / unknown).
+        final String networkKey = VideoInfoService.currentNetworkKey();
 
         CachedFormatEntry(MediaItemFormatInfo formatInfo) {
             this.formatInfo = formatInfo;
@@ -117,8 +119,18 @@ public class YouTubeMediaItemService implements MediaItemService {
 
         boolean isActual() {
             return android.os.SystemClock.elapsedRealtime() - timeMs <= MOBILE_FORMAT_CACHE_TTL_MS
-                    && formatInfo.isCacheActual();
+                    && formatInfo.isCacheActual()
+                    && isSameAttachment(networkKey, VideoInfoService.currentNetworkKey());
         }
+    }
+
+    /**
+     * NEWTUBE(botwall): googlevideo URLs carry the public IP they were issued to, so an entry minted
+     * on Wi-Fi is not a working answer on LTE even inside its 5 minutes - replaying it bought a
+     * media 403, a reload and the /player it tried to save. Unknown on either side = no opinion.
+     */
+    static boolean isSameAttachment(String mintedOn, String current) {
+        return mintedOn == null || current == null || mintedOn.equals(current);
     }
 
     // Mobile dedupe for UNPLAYABLE results (age-gated/removed videos). An unplayable result contains
@@ -144,6 +156,9 @@ public class YouTubeMediaItemService implements MediaItemService {
         final String videoId;
         final long timeMs = android.os.SystemClock.elapsedRealtime();
         final MediaItemFormatInfo formatInfo;
+        // NEWTUBE(botwall): a bot-check verdict was observed on that network attachment; it says
+        // nothing about the video, nor about another network.
+        final String networkKey = VideoInfoService.currentNetworkKey();
 
         UnplayableEntry(String videoId, MediaItemFormatInfo formatInfo) {
             this.videoId = videoId;
@@ -152,7 +167,9 @@ public class YouTubeMediaItemService implements MediaItemService {
 
         boolean isActual(String videoId) {
             return videoId.equals(this.videoId)
-                    && android.os.SystemClock.elapsedRealtime() - timeMs <= UNPLAYABLE_REUSE_MS;
+                    && android.os.SystemClock.elapsedRealtime() - timeMs <= UNPLAYABLE_REUSE_MS
+                    && (!formatInfo.isBotCheckRequired()
+                            || isSameAttachment(networkKey, VideoInfoService.currentNetworkKey()));
         }
     }
 
@@ -235,6 +252,12 @@ public class YouTubeMediaItemService implements MediaItemService {
         if (cachedFormatInfo != null) {
             if (suppliedFlight != null) {
                 mFormatInfoFlights.remove(videoId, suppliedFlight);
+            }
+            // NEWTUBE(preconnect): a revisit served from this cache skips fetchFormatInfo, so the
+            // googlevideo host was never warmed and the first chunk paid a fresh handshake (QUIC
+            // idles out after ~30 s). The gate dedupes this against the warm the fetch just did.
+            if (sSingleFlightEnabled) {
+                preconnectMediaHost(cachedFormatInfo);
             }
             return cachedFormatInfo;
         }
@@ -878,6 +901,12 @@ public class YouTubeMediaItemService implements MediaItemService {
                 mMobileFormatInfoCache.remove(videoId);
                 android.util.Log.d("NetPath", "format-cache evict=stale video=" + videoId);
             }
+
+            // NEWTUBE(recovery): the legacy one-slot cache below only checks isCacheActual(), which
+            // has no notion of age or attachment, so falling through to it handed back exactly the
+            // entry the 5-minute TTL (or a network change) just rejected. On mobile it never holds
+            // anything the working set above would not, so a miss there is a miss.
+            return null;
         }
 
         MediaItemFormatInfo cached = mCachedFormatInfo;
