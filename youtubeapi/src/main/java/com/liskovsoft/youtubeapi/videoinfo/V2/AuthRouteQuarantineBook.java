@@ -71,8 +71,9 @@ import java.util.concurrent.TimeUnit;
  * that is unavailable to everyone still says nothing about the route. Probation also acts only on
  * route-shaped evidence - SABR-only, or the empty UNPLAYABLE of the reload-page outage - never on
  * an empty answer that carries a sign-in/age/visibility gate: an age-gated video this account may
- * not watch can still be served by anonymous WEB_EMBED, and that alone must not demote a route
- * that is otherwise healthy. Such evidence joins the ordinary two-video streak, as it always did.
+ * not watch can still be served by anonymous WEB_EMBED (on TV; the phone skips WEB_EMBED and sends
+ * age gates to the account route, TV_TIZEN), and that alone must not demote a route that is
+ * otherwise healthy. Such evidence joins the ordinary two-video streak, as it always did.
  *
  * <p>Thread-safe: the player thread (media 403) and the /player walk both write it.
  */

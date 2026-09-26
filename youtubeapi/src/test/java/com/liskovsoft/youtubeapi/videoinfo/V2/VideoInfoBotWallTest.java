@@ -63,6 +63,7 @@ public class VideoInfoBotWallTest {
         VideoInfoService.setPreferAttestedWebFallback(true);
         VideoInfoService.setSkipTvFallbackClients(true);
         VideoInfoService.setPreferDashManifestForLive(true);
+        VideoInfoService.setSkipWebEmbed(true); // as MobileMainApplication does
         service = ReflectionHelpers.callConstructor(VideoInfoService.class);
         // The shadowed constructor skips field initializers; give the instance what the walk uses.
         initIfNull("mAuthRouteQuarantine", new AuthRouteQuarantineBook());
@@ -84,6 +85,7 @@ public class VideoInfoBotWallTest {
         VideoInfoService.setPreferAttestedWebFallback(false);
         VideoInfoService.setSkipTvFallbackClients(false);
         VideoInfoService.setPreferDashManifestForLive(false);
+        VideoInfoService.setSkipWebEmbed(false);
         VideoInfoService.setDebugBotWallSource(null);
         VideoInfoService.setDebugForcedClient(null);
     }
@@ -183,7 +185,8 @@ public class VideoInfoBotWallTest {
 
     /**
      * Signed out, the same wall: the first walk stops at the second challenged platform client
-     * (8 requests instead of 11), and later opens ask nobody until the next probe.
+     * (7 requests instead of 11 - WEB_EMBED is skipped too), and later opens ask nobody until the
+     * next probe.
      */
     @Test
     public void signedOutUnderTheWallTheSecondOpenCostsNothing() {
@@ -191,7 +194,7 @@ public class VideoInfoBotWallTest {
 
         VideoInfo first = open("a");
         assertTrue(first.isBotCheckRequired());
-        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED", "WEB", "WEB_SAFARI", "GEO", "MWEB",
+        assertEquals(Arrays.asList("VISIONOS", "WEB", "WEB_SAFARI", "GEO", "MWEB",
                 "ANDROID_VR", "TV_TIZEN"), drain());
 
         VideoInfo second = open("b");
@@ -621,7 +624,7 @@ public class VideoInfoBotWallTest {
 
         VideoInfo second = open("b");
         assertFalse(second.isUnplayable());
-        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth", "WEB_EMBED"), drain());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth", "WEB"), drain());
         assertFalse("the serve cleared the wall the same walk raised", isWalled());
     }
 

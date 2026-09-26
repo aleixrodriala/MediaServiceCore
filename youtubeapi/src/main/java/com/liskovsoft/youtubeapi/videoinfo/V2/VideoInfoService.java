@@ -203,6 +203,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private static final AppClient[] TV_FALLBACK_CLIENTS = {
             AppClient.TV_LEGACY, AppClient.TV_DOWNGRADED, AppClient.TV_EMBED, AppClient.TV_SIMPLY
     };
+    // NEWTUBE(no-web-embed): WEB_EMBED answers "This video is unavailable - Error code: 152 - 18"
+    // to every request, on every network: every WEB_EMBED answer in every Pixel and emulator
+    // capture since 2026-09 (again on 2026-09-26 10:45, right after a VISIONOS timeout), and
+    // yt-dlp master's own web_embedded client from the home IP on 2026-09-25/26 - including its
+    // test video for exactly the case WEB_EMBED is kept for, an embeddable age-gated video
+    // (HtVdAasjOgU, "works with web_embedded"). So on the phone it is one guaranteed-dead /player
+    // (plus a BotGuard mint and the embed-page fetch for encryptedHostFlags) in every walk that
+    // reaches it. Skipped through isSkippedClient, like the TV fallback trim; age-restricted
+    // videos go to the signed-in account route (TV_TIZEN) instead, and signed out they cannot
+    // play - the same end state as before, one request cheaper. Phone-only static gate;
+    // VIDEO_INFO_TYPE_LIST and TV are untouched. A forced client (debug.arc.player_client) and
+    // the web-auth playground pointed at WEB_EMBED (debug.arc.web_auth) still reach it.
+    private static volatile boolean sSkipWebEmbed;
     // Web-family-first fallback (NewTube touch flavor): GVS acceptance is client/session-specific,
     // not a transport or carrier-CGNAT property. On-device isolation found that iOS and the old
     // Android VR request could return signed URLs whose init ranges worked but deep ranges got 403;
@@ -252,6 +265,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setSkipTvFallbackClients(boolean skip) {
         sSkipTvFallbackClients = skip;
+    }
+
+    /**
+     * Enabled once from the mobile flavor (MobileMainApplication). Makes the failover walk skip
+     * WEB_EMBED ({@link #sSkipWebEmbed}). Never called on TV.
+     */
+    public static void setSkipWebEmbed(boolean skip) {
+        sSkipWebEmbed = skip;
     }
 
     /**
@@ -391,7 +412,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     private static boolean isSkippedClient(AppClient client) {
-        return sSkipTvFallbackClients && Helpers.equalsAny(client, (Object[]) TV_FALLBACK_CLIENTS);
+        return (sSkipTvFallbackClients && Helpers.equalsAny(client, (Object[]) TV_FALLBACK_CLIENTS))
+                || (sSkipWebEmbed && client == AppClient.WEB_EMBED
+                        && AppClient.webAuthClient() != AppClient.WEB_EMBED);
     }
 
     @Nullable
@@ -759,7 +782,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
              * AGE_CHECK_REQUIRED, CONTENT_CHECK_REQUIRED, ERROR) rather than the UNPLAYABLE of the
              * reload-page outage. Still counts toward the two-video streak as it always did, but
              * is too ambiguous to re-quarantine a client on probation by itself: an age-gated video
-             * this account may not watch can still be served by anonymous WEB_EMBED.
+             * this account may not watch can still be served by anonymous WEB_EMBED (on TV; the
+             * phone skips WEB_EMBED and sends age gates to the account route, TV_TIZEN).
              */
             final boolean gated;
 
@@ -1201,8 +1225,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 break;
             }
 
-            // Phone ring trim: TV-only fallback clients are skipped (a stale mNextInfoType from
-            // nextVideoInfoType may land on a TV_* entry; it's simply not probed).
+            // Phone ring trim: TV-only fallback clients and WEB_EMBED are skipped (a stale
+            // mNextInfoType from nextVideoInfoType may land on one - WEB_EMBED is element 0, the
+            // recovery begin after any off-ring winner; it's simply not probed).
             if (isSkippedClient(nextType)
                     && sDebugForcedClient != nextType
                     && !(authenticated && nextType == AppClient.TV_DOWNGRADED)) {
