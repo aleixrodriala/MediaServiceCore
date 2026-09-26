@@ -16,6 +16,15 @@ public interface MediaItemMetadata {
     String getDislikeCount();
     String getSubscriberCount();
     String getPublishedDate();
+
+    /**
+     * NEWTUBE(watch-meta): the published date as YouTube words it relative to now ("4 days ago"),
+     * or null when not known. {@link #getPublishedDate()} is the absolute date ("Sep 20, 2026").
+     */
+    default String getRelativePublishedDate() {
+        return null;
+    }
+
     String getVideoId();
     MediaItem getNextVideo();
     MediaItem getShuffleVideo();

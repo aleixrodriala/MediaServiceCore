@@ -20,6 +20,11 @@ internal object SearchService2Wrapper: SearchService2() {
     }
 
     override fun getSearchTags(searchText: String?): List<String>? {
+        // NEWTUBE(search-history): phone gate - see SearchServiceGates.historyMatchesQuery
+        if (SearchServiceGates.historyMatchesQuery && !searchText.isNullOrBlank()) {
+            return getSearchTagsWithHistory(searchText)
+        }
+
         val result = super.getSearchTags(searchText)
 
         if (result == null || result.isEmpty()) {
@@ -35,6 +40,21 @@ internal object SearchService2Wrapper: SearchService2() {
 
     override fun removeTag(tag: String?) {
         SearchTagStorage.removeTag(tag)
+    }
+
+    /**
+     * Phone: the past searches matching [searchText] lead, then the server's suggestions. With no
+     * answer at all (offline: the suggest request throws) the matching history is still offered.
+     */
+    private fun getSearchTagsWithHistory(searchText: String): List<String> {
+        val server = try {
+            super.getSearchTags(searchText)
+        } catch (e: Exception) {
+            null
+        }
+        val history = if (GlobalPreferences.sInstance != null) SearchTagStorage.tags else emptyList()
+
+        return SearchServiceGates.mergeWithHistory(server, history, searchText)
     }
 
     private fun getTagsIfNeeded(): List<String>? {
