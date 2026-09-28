@@ -331,22 +331,18 @@ public class VideoInfoService extends VideoInfoServiceBase {
         sSkipStoryboardEnrichment = skip;
     }
 
-    /** Debug-playground hook. The mobile app calls this only from a debuggable build. */
+    /**
+     * Debug-playground hook. The mobile app calls this only from a debug or benchmark build.
+     * NEWTUBE(bench): any AppClient can be forced, not only ring members - the in-app source
+     * benchmark measures clients the ring does not use yet (TV_SIMPLY, WEB_MUSIC, ANDROID, ...).
+     */
     public static boolean setDebugForcedClient(@Nullable String clientName) {
         if (clientName == null || clientName.trim().isEmpty()) {
             sDebugForcedClient = null;
             return true;
         }
         try {
-            AppClient client = AppClient.valueOf(clientName.trim().toUpperCase(java.util.Locale.US));
-            // PREFERRED_FIRST_CLIENT is deliberately off-ring, but forcing it is the whole point
-            // of the playground when comparing fast heads. So is the bot-wall account route:
-            // forcing it is how its media is verified with the account on a healthy network.
-            if (!Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(client)
-                    && client != PREFERRED_FIRST_CLIENT && client != BotWallBook.ACCOUNT_ROUTE) {
-                return false;
-            }
-            sDebugForcedClient = client;
+            sDebugForcedClient = AppClient.valueOf(clientName.trim().toUpperCase(java.util.Locale.US));
             return true;
         } catch (IllegalArgumentException e) {
             return false;

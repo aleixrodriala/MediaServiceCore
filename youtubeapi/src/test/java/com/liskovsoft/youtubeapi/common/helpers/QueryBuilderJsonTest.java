@@ -109,6 +109,37 @@ public class QueryBuilderJsonTest {
         assertThrows(MalformedJsonException.class, () -> strictObject(normalize(json)));
     }
 
+    @Test
+    public void supportXhrOverrideChangesOnlyThatFlagOrDropsTheBlock() throws IOException {
+        try {
+            DebugRequestOverrides.setSupportXhr(null);
+            assertEquals(true, capabilities(AppClient.MWEB).get("supportXhr").getAsBoolean());
+            assertEquals(false, capabilities(AppClient.TV_TIZEN).get("supportXhr").getAsBoolean());
+            assertEquals(false, capabilities(AppClient.WEB_EMBED).get("supportXhr").getAsBoolean());
+
+            DebugRequestOverrides.setSupportXhr("false");
+            assertEquals(false, capabilities(AppClient.MWEB).get("supportXhr").getAsBoolean());
+            assertEquals(true, capabilities(AppClient.MWEB).get("supportsVp9Encoding").getAsBoolean());
+
+            DebugRequestOverrides.setSupportXhr("true");
+            assertEquals(true, capabilities(AppClient.TV_TIZEN).get("supportXhr").getAsBoolean());
+
+            DebugRequestOverrides.setSupportXhr("absent");
+            for (AppClient client : AppClient.values()) {
+                JsonObject playback = strictObject(request(client).build()).getAsJsonObject("playbackContext");
+                assertEquals(client.name(), false,
+                        playback != null && playback.has("devicePlaybackCapabilities"));
+            }
+        } finally {
+            DebugRequestOverrides.setSupportXhr(null);
+        }
+    }
+
+    private JsonObject capabilities(AppClient client) throws IOException {
+        return strictObject(request(client).build()).getAsJsonObject("playbackContext")
+                .getAsJsonObject("devicePlaybackCapabilities");
+    }
+
     private QueryBuilder request(AppClient client) {
         return new QueryBuilder(client).setLanguage("en").setCountry("US")
                 .setUtcOffsetMinutes(0).setVideoId("offline-video")

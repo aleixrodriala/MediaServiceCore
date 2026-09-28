@@ -10,6 +10,17 @@ internal enum class PostDataType { Player, Browse }
 // Use protobuf to bypass geo blocking
 private const val GEO_PARAMS: String = "CgIQBg%3D%3D"
 
+/**
+ * NEWTUBE(bench): request-shape overrides for the in-app source benchmark (debug and benchmark
+ * builds only; the app sets them from `debug.arc.*` properties at start). Null = the normal shape.
+ */
+object DebugRequestOverrides {
+    /** devicePlaybackCapabilities.supportXhr: "true" / "false", or "absent" to omit the whole block. */
+    @Volatile
+    @JvmStatic
+    var supportXhr: String? = null
+}
+
 internal class QueryBuilder(private val client: AppClient) {
     private val localeManager by lazy { LocaleManager.instance() }
     private val appService by lazy { AppService.instance() }
@@ -315,14 +326,24 @@ internal class QueryBuilder(private val client: AppClient) {
                         "isInlinePlaybackNoAd": true,
                         "signatureTimestamp": $it,
                         ${createEncryptedHostFlags()}
-                    },
-                    "devicePlaybackCapabilities": {
-                        "supportsVp9Encoding": true,
-                        "supportXhr": ${!client.isTVClient && !client.isEmbedded}
-                    }
+                    }${createDevicePlaybackCapabilities()}
                 },
             """
         } ?: ""
+    }
+
+    private fun createDevicePlaybackCapabilities(): String {
+        val supportXhr = when (DebugRequestOverrides.supportXhr) {
+            "absent" -> return ""
+            "true" -> true
+            "false" -> false
+            else -> !client.isTVClient && !client.isEmbedded
+        }
+        return """,
+                    "devicePlaybackCapabilities": {
+                        "supportsVp9Encoding": true,
+                        "supportXhr": $supportXhr
+                    }"""
     }
 
     /**

@@ -173,14 +173,20 @@ public class VideoInfoVisitOrderTest {
         assertEquals("101", AppClient.VISIONOS.getInnerTubeName());
     }
 
-    /** The debug playground has to be able to force the off-ring head to A/B it against VR. */
+    /**
+     * The debug playground has to be able to force the off-ring head to A/B it against VR, and
+     * (source benchmark) any client the ring does not use yet. Only unknown names are refused.
+     */
     @Test
     public void debugPlaygroundCanForceTheOffRingHead() {
         try {
             assertTrue(VideoInfoService.setDebugForcedClient("VISIONOS"));
             assertTrue(VideoInfoService.setDebugForcedClient("ANDROID_VR"));
-            assertFalse("clients outside both the ring and the head stay rejected",
+            assertTrue("off-ring clients can be benchmarked",
                     VideoInfoService.setDebugForcedClient("WEB_MUSIC"));
+            assertTrue(VideoInfoService.setDebugForcedClient("tv_simply"));
+            assertFalse("unknown names stay rejected",
+                    VideoInfoService.setDebugForcedClient("NOT_A_CLIENT"));
         } finally {
             VideoInfoService.setDebugForcedClient(null);
         }
