@@ -68,6 +68,7 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
     private String mServerAbrStreamingUrl;
     private boolean mSabrVodEligible;
     private long mPrerollWaitMs;
+    private boolean mHlsVodSelected;
     private long mMediaReadyAtMs;
     private String mPoToken;
     private String mVisitorCookie;
@@ -137,6 +138,10 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
         // END Tracking params
         formatInfo.mStoryboardSpec = videoInfo.getStoryboardSpec();
         formatInfo.mIsUnplayable = videoInfo.isUnplayable() && !formatInfo.containsUrlFormats();
+        // NEWTUBE(delivery): only when nothing adaptive can be opened (see VodDelivery).
+        formatInfo.mHlsVodSelected = !formatInfo.isLive() && !formatInfo.containsDashFormats()
+                && !formatInfo.containsSabrFormats()
+                && com.liskovsoft.youtubeapi.videoinfo.models.VodDelivery.acceptsHls(videoInfo);
         formatInfo.mIsAuth = videoInfo.isAuth();
         formatInfo.mIsUnknownError = videoInfo.isUnknownRestricted();
         formatInfo.mIsBotCheckRequired = videoInfo.isBotCheckRequired();
@@ -258,6 +263,9 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
 
     @Override
     public long getPrerollWaitMs() { return mPrerollWaitMs; }
+
+    @Override
+    public boolean isHlsVodSelected() { return mHlsVodSelected; }
 
     @Override
     public boolean containsDashFormats() {

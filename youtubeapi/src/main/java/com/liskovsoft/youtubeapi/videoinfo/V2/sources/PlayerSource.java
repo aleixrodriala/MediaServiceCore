@@ -4,6 +4,8 @@ import androidx.annotation.NonNull;
 
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 
+import java.util.Set;
+
 /**
  * NEWTUBE(source-catalog): one way of asking /player - an {@link AppClient} (upstream's identity:
  * client name, version, user agent, device fields) plus the decisions NewTube makes about how that
@@ -70,6 +72,18 @@ public final class PlayerSource {
         WEB_POT
     }
 
+    /**
+     * A way to play an answer whose adaptive formats carry no URLs (SABR-only), without SABR. Which
+     * of these a source's answers were measured to play is an observation; whether the app uses it
+     * is a switch (VodDelivery).
+     */
+    public enum Delivery {
+        /** The answer's hlsManifestUrl, for a video that is not live. */
+        HLS,
+        /** The answer's formats (muxed, 360p at most): the "legacy codecs" url list. */
+        PROGRESSIVE
+    }
+
     @NonNull public final String id;
     @NonNull public final AppClient client;
     @NonNull public final Identity identity;
@@ -77,12 +91,14 @@ public final class PlayerSource {
     @NonNull public final Xhr xhr;
     @NonNull public final Endpoint endpoint;
     @NonNull public final Budget budget;
+    /** Deliveries this source's SABR-only answers were measured to play (unmodifiable). */
+    @NonNull public final Set<Delivery> fallbacks;
     /** Why this profile is what it is: runs, captures, commits. Not read by code. */
     @NonNull public final String evidence;
 
     PlayerSource(@NonNull String id, @NonNull AppClient client, @NonNull Identity identity,
             @NonNull TokenPolicy token, @NonNull Xhr xhr, @NonNull Endpoint endpoint,
-            @NonNull Budget budget, @NonNull String evidence) {
+            @NonNull Budget budget, @NonNull Set<Delivery> fallbacks, @NonNull String evidence) {
         this.id = id;
         this.client = client;
         this.identity = identity;
@@ -90,6 +106,7 @@ public final class PlayerSource {
         this.xhr = xhr;
         this.endpoint = endpoint;
         this.budget = budget;
+        this.fallbacks = fallbacks;
         this.evidence = evidence;
     }
 

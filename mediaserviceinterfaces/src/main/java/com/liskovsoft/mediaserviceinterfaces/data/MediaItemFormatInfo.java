@@ -35,6 +35,12 @@ public interface MediaItemFormatInfo extends FormatInfoProvision {
 
     /** NEWTUBE(readiness): the pre-roll wait this answer announced, ms (0 = none). */
     default long getPrerollWaitMs() { return 0; }
+
+    /**
+     * NEWTUBE(delivery): this answer, not live and with no usable adaptive formats, is to be played
+     * over its HLS manifest (the engine accepted it for that; see VodDelivery).
+     */
+    default boolean isHlsVodSelected() { return false; }
     boolean containsDashFormats();
     boolean containsHlsUrl();
     boolean containsDashUrl();

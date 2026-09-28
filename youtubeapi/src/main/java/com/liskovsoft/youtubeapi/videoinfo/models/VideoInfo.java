@@ -249,8 +249,10 @@ public class VideoInfo {
     }
 
     public boolean isUnplayable() {
+        // NEWTUBE(delivery): VodDelivery - a SABR-only answer may still play over its HLS manifest.
         return isUnknownRestricted() || isVisibilityRestricted() || isAgeRestricted()
-                || (isAdaptiveFormatsBroken() && !SabrVodCapability.accepts(this));
+                || (isAdaptiveFormatsBroken() && !SabrVodCapability.accepts(this)
+                        && !VodDelivery.acceptsHls(this));
     }
 
     /**

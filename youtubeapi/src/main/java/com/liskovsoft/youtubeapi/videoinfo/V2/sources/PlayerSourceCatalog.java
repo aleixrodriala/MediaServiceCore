@@ -19,6 +19,7 @@ import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -72,8 +73,10 @@ public final class PlayerSourceCatalog {
                 WEB_POT, "the watch page's ytInitialPlayerResponse; not a /player request");
         // WEB_EMBED rides the embed page's own visitor and needs no token (web-embed-identity).
         add(AppClient.WEB_EMBED, EMBED_PAGE, NONE, PlayerSource.Xhr.FALSE, PLAYER, WEB_POT,
+                EnumSet.of(PlayerSource.Delivery.HLS),
                 "serves made-for-kids and embeddable age-gated videos; media held back for the "
-                        + "pre-roll wait (ReadinessGate); Pixel LTE 2026-09-28 PLAY-OK");
+                        + "pre-roll wait (ReadinessGate); Pixel LTE 2026-09-28 PLAY-OK; its answers "
+                        + "carry HLS (netbench sustain1-wifi-hls: played to EOF on 2 of 2 kids videos)");
 
         // Web clients that ride the app visitor without a token.
         add(AppClient.WEB_CREATOR, APP_VISITOR, NONE, PlayerSource.Xhr.TRUE, PLAYER, SPECULATIVE,
@@ -87,7 +90,10 @@ public final class PlayerSourceCatalog {
         add(AppClient.ANDROID_SDK_LESS, APP_VISITOR, NONE, PlayerSource.Xhr.TRUE, PLAYER, SPECULATIVE,
                 "not in the ring (\"hangs on cronet\")");
         add(AppClient.ANDROID_REEL, APP_VISITOR, NONE, PlayerSource.Xhr.TRUE, REEL_ITEM_WATCH, SPECULATIVE,
-                "the Shorts endpoint on youtubei.googleapis.com");
+                EnumSet.of(PlayerSource.Delivery.PROGRESSIVE),
+                "the Shorts endpoint on youtubei.googleapis.com; made-for-kids answers are SABR-only "
+                        + "adaptive plus 360p progressive (netbench sustain1-wifi: played to EOF on 1 of "
+                        + "2; the other stream had no content length)");
         add(AppClient.IOS, APP_VISITOR, NONE, PlayerSource.Xhr.TRUE, PLAYER, SPECULATIVE,
                 "mostly SABR-only answers (netbench)");
         // Token-free, but on the web session's visitor (PoTokenGate.getWebVisitorDataForPlayer).
@@ -102,8 +108,15 @@ public final class PlayerSourceCatalog {
 
     private static void add(AppClient client, PlayerSource.Identity identity, PlayerSource.TokenPolicy token,
             PlayerSource.Xhr xhr, PlayerSource.Endpoint endpoint, PlayerSource.Budget budget, String evidence) {
+        add(client, identity, token, xhr, endpoint, budget, EnumSet.noneOf(PlayerSource.Delivery.class),
+                evidence);
+    }
+
+    private static void add(AppClient client, PlayerSource.Identity identity, PlayerSource.TokenPolicy token,
+            PlayerSource.Xhr xhr, PlayerSource.Endpoint endpoint, PlayerSource.Budget budget,
+            EnumSet<PlayerSource.Delivery> fallbacks, String evidence) {
         PlayerSource source = new PlayerSource(client.name() + "@1", client, identity, token, xhr,
-                endpoint, budget, evidence);
+                endpoint, budget, Collections.unmodifiableSet(fallbacks), evidence);
         if (DEFAULTS.put(client, source) != null || BY_ID.put(source.id, source) != null) {
             throw new IllegalStateException("duplicate source " + source.id);
         }
@@ -124,7 +137,8 @@ public final class PlayerSourceCatalog {
         android.util.Log.w(TAG, "no catalog entry for " + client + "; using the conservative profile");
         return new PlayerSource(client.name() + "@0", client, APP_VISITOR, NONE,
                 client.isTVClient() || client.isEmbedded() ? PlayerSource.Xhr.FALSE : PlayerSource.Xhr.TRUE,
-                client.isReelClient() ? REEL_ITEM_WATCH : PLAYER, SPECULATIVE, "unreviewed");
+                client.isReelClient() ? REEL_ITEM_WATCH : PLAYER, SPECULATIVE,
+                Collections.<PlayerSource.Delivery>emptySet(), "unreviewed");
     }
 
     /** A source by its durable id ("VISIONOS@1"), or null for an id this build does not know. */
