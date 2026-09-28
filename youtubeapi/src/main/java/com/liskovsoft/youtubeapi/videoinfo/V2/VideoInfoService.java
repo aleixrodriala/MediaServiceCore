@@ -724,6 +724,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         private String mSignal;
         private boolean mAuthAttempted;
         private boolean mCutShort;
+        // NEWTUBE(classification): which clients challenged this walk, and how many non-web clients
+        // refused the video itself. See isLoneChallengeAmidRefusals.
+        private final java.util.Set<AppClient> mChallenged = java.util.EnumSet.noneOf(AppClient.class);
+        private int mContentRefusals;
 
         /** The verdict and the circuit arguments a finished walk should act on. */
         static final class Outcome {
@@ -769,7 +773,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
          */
         boolean recordChallenge(VideoInfo result, AppClient client, String signal,
                 boolean authenticated, List<AppClient> order, int index, boolean mobile) {
-            if (!mobile || !hasUnchallengedClientAfter(order, index, authenticated)) {
+            if (mobile) {
+                mChallenged.add(client);
+            }
+            if (!mobile || !hasUnchallengedClientAfter(order, index, authenticated)
+                    && !isLoneChallengeAmidRefusals()) {
                 return false;
             }
 
@@ -780,6 +788,25 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 mAuthAttempted = authenticated;
             }
             return true;
+        }
+
+        /** A non-web client refused the video itself (UNPLAYABLE) without the account. */
+        void noteContentRefusal() {
+            mContentRefusals++;
+        }
+
+        /**
+         * NEWTUBE(classification): one client challenged while non-web clients refused the video on
+         * its content. On a Pixel 9 over LTE (2026-09-28) every signed-out made-for-kids walk ended
+         * like this: VISIONOS and ANDROID_VR "This video is not available", TV (TVHTML5 7.x) "Sign
+         * in to confirm you're not a bot". Published as the walk's verdict it told the user the
+         * wrong reason, cancelled autoplay and armed the fifteen-minute circuit that answers the
+         * next opens with no request at all. That is one client's identity problem, not a verdict
+         * on the video or the network: in a real wall VISIONOS is challenged too (BotWallBook asks
+         * three clients, two of them non-web). The video's own refusal is the verdict instead.
+         */
+        boolean isLoneChallengeAmidRefusals() {
+            return mChallenged.size() == 1 && mContentRefusals > 0;
         }
 
         /**
@@ -800,7 +827,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
          */
         @Nullable
         Outcome finish(boolean transportDown) {
-            if (mResult == null || transportDown) {
+            if (mResult == null || transportDown || isLoneChallengeAmidRefusals()) {
                 return null;
             }
             return new Outcome(mResult, mClient, mSignal, mAuthAttempted, ringExhausted());
@@ -1342,6 +1369,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
             boolean playable = result != null && !result.isUnplayable();
             logPlayerOutcome(videoId, nextType, attempt, result);
+            if (result != null && !result.isAuth() && result.isUnknownRestricted()
+                    && !nextType.isWebPotRequired()) {
+                botCheck.noteContentRefusal();
+            }
 
             // NEWTUBE(web-embed-identity): an embed identity that is refused ("Error code: 152")
             // may have gone stale; the next WEB_EMBED request fetches a fresh embed page.
@@ -1585,6 +1616,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // reason without silencing the next fifteen minutes of opens. A dead link is excluded
         // outright: when nothing answered, nothing was established about anything.
         BotCheckWalkState.Outcome challenge = botCheck.finish(transportDown);
+        if (challenge == null && botCheck.hasHeldChallenge() && botCheck.isLoneChallengeAmidRefusals()) {
+            android.util.Log.d("NetPath", "bot-check discounted video=" + videoId
+                    + " reason=lone-challenge-amid-refusals");
+        }
         if (challenge != null) {
             tripBotCheckCircuit(challenge.result, challenge.client, challenge.signal,
                     challenge.authAttempted, challenge.ringExhausted);

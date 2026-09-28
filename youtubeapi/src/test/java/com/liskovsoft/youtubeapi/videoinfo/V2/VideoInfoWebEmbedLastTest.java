@@ -168,6 +168,25 @@ public class VideoInfoWebEmbedLastTest {
                 ReflectionHelpers.getField(service, "mBotCheckResult") != null);
     }
 
+    /**
+     * A kids video nothing serves (WEB_EMBED's answer has no usable format either): the walk shows
+     * the video's refusal, not TV's lone "not a bot", and arms no circuit - the next video walks.
+     */
+    @Test
+    public void aKidsWalkNothingServesShowsTheRefusalNotABotCheck() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.TV
+                ? loginRequired("Inicia sesion para confirmar que no eres un bot").apply(auth)
+                : unplayable(NOT_AVAILABLE).apply(auth);
+        VideoInfo result = open("kids");
+        assertTrue(result.isUnplayable());
+        assertFalse(result.isBotCheckRequired());
+        assertEquals(null, ReflectionHelpers.getField(service, "mBotCheckResult"));
+
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> playable(auth);
+        assertFalse(open("next").isUnplayable());
+        assertEquals(Collections.singletonList("VISIONOS"), calls());
+    }
+
     /** 6. The pure reorder: WEB_EMBED to the end, everything else in its order, no-ops kept. */
     @Test
     public void moveWebEmbedLastKeepsTheRestInOrder() {

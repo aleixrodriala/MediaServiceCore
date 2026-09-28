@@ -203,6 +203,51 @@ public class BotCheckWalkStateTest {
     }
 
     /** A walk with no challenge at all publishes nothing through this path. */
+    /** The signed-out kids walk on a Pixel 9 (2026-09-28), trimmed to the clients that matter. */
+    private static final List<AppClient> KIDS_ORDER = Arrays.asList(
+            AppClient.VISIONOS,      // 0 - UNPLAYABLE "This video is not available"
+            AppClient.ANDROID_VR,    // 1 - UNPLAYABLE, the same
+            AppClient.TV,            // 2 - LOGIN_REQUIRED "...not a bot"
+            AppClient.IOS);          // 3 - OK, SABR-only
+
+    /**
+     * NEWTUBE(classification): one client challenged while non-web clients refused the video on
+     * its content is that client's identity problem: nothing is published, nothing is armed.
+     */
+    @Test
+    public void aLoneChallengeAmidContentRefusalsIsNotTheWalksVerdict() {
+        BotCheckWalkState state = new BotCheckWalkState();
+        state.noteContentRefusal();
+        state.noteContentRefusal();
+
+        assertTrue(state.recordChallenge(new VideoInfo(), AppClient.TV, "explicit", !AUTHED,
+                KIDS_ORDER, 2, MOBILE));
+        assertTrue(state.isLoneChallengeAmidRefusals());
+        assertNull("the refusal is the verdict, not the challenge", state.finish(NO_TRANSPORT_FAILURE));
+    }
+
+    @Test
+    public void aLoneChallengeOnTheFinalClientAmidRefusalsDoesNotTripAtOnce() {
+        BotCheckWalkState state = new BotCheckWalkState();
+        state.noteContentRefusal();
+
+        assertTrue("not the trip-and-return instruction", state.recordChallenge(new VideoInfo(),
+                AppClient.IOS, "explicit", !AUTHED, KIDS_ORDER, 3, MOBILE));
+        assertNull(state.finish(NO_TRANSPORT_FAILURE));
+    }
+
+    @Test
+    public void aSecondChallengedClientMakesItTheVerdictAgain() {
+        BotCheckWalkState state = new BotCheckWalkState();
+        state.noteContentRefusal();
+        VideoInfo first = new VideoInfo();
+        state.recordChallenge(first, AppClient.ANDROID_VR, "explicit", !AUTHED, KIDS_ORDER, 1, MOBILE);
+        state.recordChallenge(new VideoInfo(), AppClient.TV, "explicit", !AUTHED, KIDS_ORDER, 2, MOBILE);
+
+        assertFalse(state.isLoneChallengeAmidRefusals());
+        assertSame(first, state.finish(NO_TRANSPORT_FAILURE).result);
+    }
+
     @Test
     public void anUnchallengedWalkPublishesNothing() {
         assertNull(new BotCheckWalkState().finish(NO_TRANSPORT_FAILURE));
