@@ -67,6 +67,8 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
     private String mVideoPlaybackUstreamerConfig;
     private String mServerAbrStreamingUrl;
     private boolean mSabrVodEligible;
+    private long mPrerollWaitMs;
+    private long mMediaReadyAtMs;
     private String mPoToken;
     private String mVisitorCookie;
     private AppClient mClient;
@@ -151,6 +153,10 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
         formatInfo.mVideoPlaybackUstreamerConfig = videoInfo.getVideoPlaybackUstreamerConfig();
         formatInfo.mServerAbrStreamingUrl = videoInfo.getServerAbrStreamingUrl();
         formatInfo.mSabrVodEligible = com.liskovsoft.youtubeapi.videoinfo.models.SabrVodCapability.isEligible(videoInfo);
+        // NEWTUBE(readiness): see MediaItemFormatInfo.getMediaReadyAtMs / PrerollAds.
+        formatInfo.mPrerollWaitMs = videoInfo.getPrerollWaitMs();
+        formatInfo.mMediaReadyAtMs = formatInfo.mPrerollWaitMs > 0 && videoInfo.getReceivedAtMs() > 0
+                ? videoInfo.getReceivedAtMs() + formatInfo.mPrerollWaitMs : 0;
         formatInfo.mPoToken = videoInfo.getPoToken();
         formatInfo.mVisitorCookie = videoInfo.getVisitorCookie();
         formatInfo.mClient = videoInfo.getClient();
@@ -246,6 +252,12 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
 
     @Override
     public boolean isSabrVodEligible() { return mSabrVodEligible; }
+
+    @Override
+    public long getMediaReadyAtMs() { return mMediaReadyAtMs; }
+
+    @Override
+    public long getPrerollWaitMs() { return mPrerollWaitMs; }
 
     @Override
     public boolean containsDashFormats() {

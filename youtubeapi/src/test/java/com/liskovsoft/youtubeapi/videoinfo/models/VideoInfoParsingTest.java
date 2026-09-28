@@ -45,6 +45,62 @@ public class VideoInfoParsingTest {
             """;
 
     @Test
+    public void prerollWaitFollowsYtDlpsRule() throws IOException {
+        // The shape of a real WEB_EMBED answer (_WB5hh7WOb4, 2026-09-28): one skippable pre-roll
+        // (5 s skip, 26 s long) plus a slot that is not a pre-roll.
+        VideoInfo skippable = parse("""
+                {"playabilityStatus": {"status": "OK"}, "adSlots": [
+                  {"adSlotRenderer": {"adSlotMetadata": {"triggerEvent": "SLOT_TRIGGER_EVENT_BEFORE_CONTENT"},
+                    "fulfillmentContent": {"fulfilledLayout": {"playerBytesAdLayoutRenderer": {
+                      "renderingContent": {"instreamVideoAdRenderer": {"skipOffsetMilliseconds": 5000,
+                        "playerVars": "length_seconds=26&video_id=ad"}}}}}}},
+                  {"adSlotRenderer": {"adSlotMetadata": {"triggerEvent": "SLOT_TRIGGER_EVENT_LAYOUT_ID_ENTERED"},
+                    "fulfillmentContent": {"fulfilledLayout": {"playerBytesAdLayoutRenderer": {
+                      "renderingContent": {"instreamVideoAdRenderer": {"skipOffsetMilliseconds": 9000}}}}}}}]}
+                """);
+        assertEquals(5_000, skippable.getPrerollWaitMs());
+
+        // An unskippable ad counts its length; a sequential pair counts both; the older
+        // adPlacements START shape counts too.
+        VideoInfo mixed = parse("""
+                {"playabilityStatus": {"status": "OK"}, "adSlots": [
+                  {"adSlotRenderer": {"adSlotMetadata": {"triggerEvent": "SLOT_TRIGGER_EVENT_BEFORE_CONTENT"},
+                    "fulfillmentContent": {"fulfilledLayout": {"playerBytesAdLayoutRenderer": {
+                      "renderingContent": {"playerBytesSequentialLayoutRenderer": {"sequentialLayouts": [
+                        {"playerBytesAdLayoutRenderer": {"renderingContent": {"instreamVideoAdRenderer":
+                          {"playerVars": "length_seconds=15"}}}},
+                        {"playerBytesAdLayoutRenderer": {"renderingContent": {"instreamVideoAdRenderer":
+                          {"skipOffsetMilliseconds": 5000, "playerVars": "length_seconds=30"}}}}]}}}}}}}],
+                  "adPlacements": [{"adPlacementRenderer": {"config": {"adPlacementConfig":
+                    {"kind": "AD_PLACEMENT_KIND_START"}}, "renderer": {"instreamVideoAdRenderer":
+                    {"skipOffsetMilliseconds": 5000}}}},
+                    {"adPlacementRenderer": {"config": {"adPlacementConfig":
+                    {"kind": "AD_PLACEMENT_KIND_MILLISECONDS"}}, "renderer": {"instreamVideoAdRenderer":
+                    {"skipOffsetMilliseconds": 5000}}}}]}
+                """);
+        assertEquals(15_000 + 5_000 + 5_000, mixed.getPrerollWaitMs());
+
+        // An ad whose wait cannot be read is not free.
+        VideoInfo unknown = parse("""
+                {"playabilityStatus": {"status": "OK"}, "adSlots": [
+                  {"adSlotRenderer": {"adSlotMetadata": {"triggerEvent": "SLOT_TRIGGER_EVENT_BEFORE_CONTENT"},
+                    "fulfillmentContent": {"fulfilledLayout": {"playerBytesAdLayoutRenderer": {
+                      "renderingContent": {"instreamVideoAdRenderer": {"layoutId": "x"}}}}}}}]}
+                """);
+        assertEquals(PrerollAds.UNKNOWN_AD_WAIT_MS, unknown.getPrerollWaitMs());
+
+        // Nor is a pre-content slot in a shape the parser does not map.
+        VideoInfo unmapped = parse("""
+                {"playabilityStatus": {"status": "OK"}, "adSlots": [
+                  {"adSlotRenderer": {"adSlotMetadata": {"triggerEvent": "SLOT_TRIGGER_EVENT_BEFORE_CONTENT"},
+                    "fulfillmentContent": {"fulfilledLayout": {"someNewAdLayoutRenderer": {"layoutId": "x"}}}}}]}
+                """);
+        assertEquals(PrerollAds.UNKNOWN_AD_WAIT_MS, unmapped.getPrerollWaitMs());
+
+        assertEquals(0, parse("{\"playabilityStatus\": {\"status\": \"OK\"}}").getPrerollWaitMs());
+    }
+
+    @Test
     public void ageGateIsToldApartFromABotCheck() throws IOException {
         VideoInfo age = parse("""
                 {"playabilityStatus": {"status": "LOGIN_REQUIRED",

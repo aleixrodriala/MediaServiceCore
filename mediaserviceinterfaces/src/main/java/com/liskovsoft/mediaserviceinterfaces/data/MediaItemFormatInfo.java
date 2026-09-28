@@ -25,6 +25,16 @@ public interface MediaItemFormatInfo extends FormatInfoProvision {
     boolean containsSabrFormats();
     /** Accepted ordinary VOD metadata a SABR decoder can consume. False for unknown implementations. */
     default boolean isSabrVodEligible() { return false; }
+
+    /**
+     * NEWTUBE(readiness): elapsedRealtime (ms) from which this answer's media may be requested - its
+     * arrival plus the pre-roll wait it announces - or 0 for at once. googlevideo refuses the media
+     * of an answer with pre-roll ads until then.
+     */
+    default long getMediaReadyAtMs() { return 0; }
+
+    /** NEWTUBE(readiness): the pre-roll wait this answer announced, ms (0 = none). */
+    default long getPrerollWaitMs() { return 0; }
     boolean containsDashFormats();
     boolean containsHlsUrl();
     boolean containsDashUrl();

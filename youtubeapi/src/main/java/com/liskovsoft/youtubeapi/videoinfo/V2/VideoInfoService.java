@@ -3173,6 +3173,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         if (client == AppClient.INITIAL) {
             result = InitialResponseService.getVideoInfo(videoId, mAuthBlock);
+            if (result != null) {
+                // NEWTUBE(readiness): the pre-roll wait counts from here (see PrerollAds).
+                result.setReceivedAtMs(android.os.SystemClock.elapsedRealtime());
+            }
         } else {
             VideoInfoApiHelper.PlayerRequest request =
                     VideoInfoApiHelper.getVideoInfoRequest(client, videoId, clickTrackingParams);
@@ -3212,6 +3216,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
 
         videoInfo.setAuth(auth);
+        // NEWTUBE(readiness): the pre-roll wait counts from here (see PrerollAds).
+        videoInfo.setReceivedAtMs(android.os.SystemClock.elapsedRealtime());
 
         return videoInfo;
     }
@@ -3224,6 +3230,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
 
         videoInfo.getVideoInfo().setAuth(auth);
+        videoInfo.getVideoInfo().setReceivedAtMs(android.os.SystemClock.elapsedRealtime());
 
         return videoInfo.getVideoInfo();
     }

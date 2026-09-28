@@ -76,6 +76,16 @@ public class VideoInfo {
     @JsonPath("$.playabilityStatus.desktopLegacyAgeGateReason")
     private int mDesktopLegacyAgeGateReason;
 
+    // NEWTUBE(readiness): the answer's pre-roll ads (see PrerollAds) and when it arrived
+    // (elapsedRealtime, stamped by VideoInfoService), which together say when its media may start.
+    @JsonPath("$.adSlots[*]")
+    private List<PrerollAds.Slot> mAdSlots;
+
+    @JsonPath("$.adPlacements[*]")
+    private List<PrerollAds.Placement> mAdPlacements;
+
+    private long mReceivedAtMs;
+
     @JsonPath("$.playabilityStatus.errorScreen.playerErrorMessageRenderer.subreason")
     private TextItem mPlayabilityDescription;
 
@@ -262,6 +272,20 @@ public class VideoInfo {
      */
     public boolean isVisibilityRestricted() {
         return ServiceHelper.atLeastOneEquals(mPlayabilityStatus, STATUS_ERROR);
+    }
+
+    /** NEWTUBE(readiness): total pre-roll wait this answer announces, ms (0 = none). */
+    public long getPrerollWaitMs() {
+        return PrerollAds.waitMs(mAdSlots, mAdPlacements);
+    }
+
+    /** NEWTUBE(readiness): elapsedRealtime at which this answer arrived; 0 if never stamped. */
+    public long getReceivedAtMs() {
+        return mReceivedAtMs;
+    }
+
+    public void setReceivedAtMs(long receivedAtMs) {
+        mReceivedAtMs = receivedAtMs;
     }
 
     /**
