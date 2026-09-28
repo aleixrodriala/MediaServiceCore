@@ -33,16 +33,18 @@ import okhttp3.ResponseBody;
 import retrofit2.Converter;
 
 /**
- * NEWTUBE(no-web-embed): with the phone's gates on, no walk ever sends WEB_EMBED (it answers
- * "152 - 18" everywhere), and every path it used to serve still ends where it should. The real
- * firstPlayable against scripted answers, as in VideoInfoBotWallTest (whose shadows it reuses).
+ * NEWTUBE(web-embed-last): the phone asks WEB_EMBED LAST instead of never. A video another client
+ * serves never reaches it; one that every other client refuses (made-for-kids answered "not
+ * available" or SABR-only, issue #5) gets it as the final attempt. The real firstPlayable against
+ * scripted answers, as in VideoInfoSkipWebEmbedTest (whose harness this copies).
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest = Config.NONE, sdk = 28, application = Application.class,
         shadows = {VideoInfoBotWallTest.ShadowWalk.class, VideoInfoBotWallTest.ShadowTokenGate.class})
 @ConscryptMode(ConscryptMode.Mode.OFF)
-public class VideoInfoSkipWebEmbedTest {
+public class VideoInfoWebEmbedLastTest {
     private static final String AGE = "Sign in to confirm your age";
+    private static final String NOT_AVAILABLE = "This video is not available";
     private VideoInfoService service;
 
     @Before
@@ -52,12 +54,12 @@ public class VideoInfoSkipWebEmbedTest {
         VideoInfoBotWallTest.ShadowWalk.signedIn = false;
         VideoInfoBotWallTest.ShadowWalk.calls.clear();
         VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> playable(auth);
-        // What MobileMainApplication set until web-embed-last (VideoInfoWebEmbedLastTest).
+        // Exactly what MobileMainApplication sets.
         VideoInfoService.setPreferNoPotClient(true);
         VideoInfoService.setPreferAttestedWebFallback(true);
         VideoInfoService.setSkipTvFallbackClients(true);
         VideoInfoService.setPreferDashManifestForLive(true);
-        VideoInfoService.setSkipWebEmbed(true);
+        VideoInfoService.setWebEmbedLast(true);
         service = ReflectionHelpers.callConstructor(VideoInfoService.class);
         initIfNull("mAuthRouteQuarantine", new AuthRouteQuarantineBook());
         initIfNull("mBotWall", new BotWallBook());
@@ -72,7 +74,7 @@ public class VideoInfoSkipWebEmbedTest {
         VideoInfoService.setPreferAttestedWebFallback(false);
         VideoInfoService.setSkipTvFallbackClients(false);
         VideoInfoService.setPreferDashManifestForLive(false);
-        VideoInfoService.setSkipWebEmbed(false);
+        VideoInfoService.setWebEmbedLast(false);
         VideoInfoService.setDebugForcedClient(null);
         VideoInfoService.setWebAuthClient(null);
     }
@@ -84,72 +86,32 @@ public class VideoInfoSkipWebEmbedTest {
         assertEquals(Collections.singletonList("VISIONOS"), calls());
     }
 
-    /** 2. VISIONOS cannot serve (made for kids): the Web partition now starts at WEB. */
+    /** 2. VISIONOS cannot serve (made for kids) but WEB can: WEB_EMBED is never reached. */
     @Test
-    public void signedOutFallbackStartsAtWeb() {
+    public void aVideoAnotherClientServesNeverReachesWebEmbed() {
         script(AppClient.VISIONOS, unplayable("This video is made for kids"));
         VideoInfo result = open("v");
         assertEquals(AppClient.WEB, result.getClient());
         assertEquals(Arrays.asList("VISIONOS", "WEB"), calls());
     }
 
-    /** 3. Signed in, age-gated: the account route serves it, on attempt 2. */
+    /** 3. Issue #5: everything else refuses it; WEB_EMBED is asked once, last, and serves it. */
     @Test
-    public void signedInAgeGateGoesToTheAccountRoute() {
-        signedInWithQuarantinedHeads();
-        script(AppClient.VISIONOS, loginRequired(AGE));
-        VideoInfo result = open("v");
-        assertEquals(AppClient.TV_TIZEN, result.getClient());
+    public void whenNothingElseServesWebEmbedIsTheLastAttempt() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
+                ? playable(auth) : unplayable(NOT_AVAILABLE + " " + client).apply(auth);
+        VideoInfo result = open("kids");
         assertFalse(result.isUnplayable());
-        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth"), calls());
-    }
-
-    /** 4. Signed in, the account may not watch it either: YouTube's own reason, still no WEB_EMBED. */
-    @Test
-    public void signedInAgeGateTheAccountCannotPassEndsWithTheReason() {
-        signedInWithQuarantinedHeads();
-        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> loginRequired(AGE).apply(auth);
-        VideoInfo result = open("v");
-        assertTrue(result.isUnplayable());
-        assertTrue(result.getPlayabilityStatus().contains(AGE));
+        assertEquals(AppClient.WEB_EMBED, result.getClient());
         List<String> calls = calls();
-        assertEquals("VISIONOS", calls.get(0));
-        assertEquals("TV_TIZEN+auth", calls.get(1));
-        assertNoWebEmbed(calls);
+        assertEquals(calls.toString(), "WEB_EMBED", calls.get(calls.size() - 1));
+        assertEquals(calls.toString(), 1, Collections.frequency(calls, "WEB_EMBED"));
+        assertTrue(calls.toString(), calls.size() > 2);
     }
 
-    /** 5. Signed out, age-gated: nothing can serve it; it ends with the reason, no WEB_EMBED. */
+    /** 4. A recovery after VISIONOS begins at ring element 0 - WEB_EMBED - which goes last. */
     @Test
-    public void signedOutAgeGateEndsWithTheReason() {
-        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> loginRequired(AGE).apply(auth);
-        VideoInfo result = open("v");
-        assertTrue(result.isUnplayable());
-        assertTrue(result.getPlayabilityStatus().contains(AGE));
-        List<String> calls = calls();
-        assertEquals("VISIONOS", calls.get(0));
-        assertTrue("the rest of the ring still had its turn", calls.contains("WEB"));
-        assertNoWebEmbed(calls);
-    }
-
-    /** 6. Live: VISIONOS's HLS-only answer is held, ANDROID_VR brings the DASH manifest. */
-    @Test
-    public void liveStillWalksToTheDashClient() {
-        script(AppClient.VISIONOS, live(false));
-        script(AppClient.ANDROID_VR, live(true));
-        VideoInfo result = open("live");
-        assertEquals(AppClient.ANDROID_VR, result.getClient());
-        assertNotNull(result.getDashManifestUrl());
-        assertEquals(Arrays.asList("VISIONOS", "ANDROID_VR"), calls());
-
-        script(AppClient.ANDROID_VR, unplayable("Something went wrong"));
-        VideoInfo held = open("live2");
-        assertEquals("the held HLS answer", AppClient.VISIONOS, held.getClient());
-        assertEquals(Arrays.asList("VISIONOS", "ANDROID_VR"), calls());
-    }
-
-    /** 7. A recovery after VISIONOS begins at ring element 0 - WEB_EMBED - and skips it. */
-    @Test
-    public void aRecoveryWalkSkipsItsWebEmbedBegin() {
+    public void aRecoveryWalkStillStartsAtWeb() {
         remember("v", AppClient.VISIONOS);
         service.anchorRouteToVideo("v");
         service.switchNextFormat();
@@ -160,28 +122,26 @@ public class VideoInfoSkipWebEmbedTest {
         assertEquals(Collections.singletonList("WEB"), calls());
     }
 
-    /** 8. Gate off (TV, and the phone before this change): WEB_EMBED is asked as it always was. */
+    /** 5. Signed in, age-gated: the account route still serves it first. */
     @Test
-    public void withTheGateOffWebEmbedIsStillAsked() {
-        VideoInfoService.setSkipWebEmbed(false);
-        script(AppClient.VISIONOS, unplayable("This video is made for kids"));
-        script(AppClient.WEB_EMBED, unplayable("This video is unavailable - Error code: 152 - 18"));
-        open("v");
-        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED", "WEB"), calls());
+    public void signedInAgeGateGoesToTheAccountRoute() {
+        signedInWithQuarantinedHeads();
+        script(AppClient.VISIONOS, loginRequired(AGE));
+        VideoInfo result = open("v");
+        assertEquals(AppClient.TV_TIZEN, result.getClient());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth"), calls());
     }
 
-    /** 9. The two debug playgrounds that name WEB_EMBED still reach it. */
+    /** 6. The pure reorder: WEB_EMBED to the end, everything else in its order, no-ops kept. */
     @Test
-    public void theDebugPlaygroundsStillReachWebEmbed() {
-        assertTrue(VideoInfoService.setDebugForcedClient("WEB_EMBED"));
-        open("v");
-        assertEquals(Collections.singletonList("WEB_EMBED"), calls());
-        VideoInfoService.setDebugForcedClient(null);
-
-        signedInWithQuarantinedHeads();
-        assertTrue(VideoInfoService.setWebAuthClient("WEB_EMBED"));
-        open("w");
-        assertEquals(Collections.singletonList("WEB_EMBED+auth"), calls());
+    public void moveWebEmbedLastKeepsTheRestInOrder() {
+        assertEquals(Arrays.asList(AppClient.VISIONOS, AppClient.WEB, AppClient.WEB_EMBED),
+                VideoInfoService.moveWebEmbedLast(
+                        Arrays.asList(AppClient.WEB_EMBED, AppClient.VISIONOS, AppClient.WEB)));
+        List<AppClient> without = Arrays.asList(AppClient.VISIONOS, AppClient.WEB);
+        assertTrue(without == VideoInfoService.moveWebEmbedLast(without));
+        List<AppClient> already = Arrays.asList(AppClient.WEB, AppClient.WEB_EMBED);
+        assertTrue(already == VideoInfoService.moveWebEmbedLast(already));
     }
 
     // ------------------------------------------------------------------------------------------

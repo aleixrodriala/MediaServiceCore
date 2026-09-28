@@ -488,8 +488,11 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
         // Check app cipher first. It's not robust check (cipher may be updated not by us).
         // So, also check internal cache state.
         // Future translations (no media) should be polled constantly.
+        // NEWTUBE(web-embed-identity): WEB_EMBED's URLs carry no Web token, so its expiry doesn't
+        // age them.
         return containsMedia() && AppService.instance().isPlayerCacheActual()
-                && (!mClient.isWebPotRequired() || !PoTokenGate.isWebPotExpired());
+                && (!mClient.isWebPotRequired() || mClient == AppClient.WEB_EMBED
+                        || !PoTokenGate.isWebPotExpired());
     }
 
     /**

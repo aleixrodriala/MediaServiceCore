@@ -105,8 +105,9 @@ final class BotWallBook {
     static final AppClient PROBE_CLIENT = AppClient.VISIONOS;
     /**
      * Signed-out probe rotation, one client per family: the token-free Apple head, the Android
-     * platform identity, the attested Web family (WEB, not WEB_EMBED: that one answers
-     * "152 - 18" everywhere since 2026, so it proves nothing).
+     * platform identity, the attested Web family (WEB). WEB_EMBED is not a probe: it is the ring's
+     * last resort (VideoInfoService.setWebEmbedLast) and has never been measured against a wall,
+     * so a video only it serves (made-for-kids, issue #5) waits for the wall to lift.
      */
     static final AppClient[] PROBE_FAMILIES = {
             AppClient.VISIONOS, AppClient.ANDROID_VR, AppClient.WEB

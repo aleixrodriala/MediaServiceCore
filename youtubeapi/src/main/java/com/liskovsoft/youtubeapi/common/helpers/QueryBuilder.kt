@@ -27,6 +27,7 @@ internal class QueryBuilder(private val client: AppClient) {
     private var clickTrackingParams: String? = null
     private var params: String? = null
     private var poToken: String? = null
+    private var encryptedHostFlags: String? = null
     private var signatureTimestamp: Int? = null
     private var isGeoFixEnabled: Boolean = false
 
@@ -45,6 +46,7 @@ internal class QueryBuilder(private val client: AppClient) {
     fun setClickTrackingParams(params: String?) = apply { clickTrackingParams = params }
     fun setParams(params: String?) = apply { this.params = params }
     fun setVisitorData(visitorData: String?) = apply { this.visitorData = visitorData }
+    fun setEncryptedHostFlags(flags: String?) = apply { this.encryptedHostFlags = flags }
     fun enableGeoFix(enableGeoFix: Boolean) = apply { isGeoFixEnabled = enableGeoFix }
 
     fun build(): String {
@@ -296,6 +298,10 @@ internal class QueryBuilder(private val client: AppClient) {
     private fun createTimestampChunk(): String {
         // isInlinePlaybackNoAd https://iter.ca/post/yt-adblock/
         // According to someone in the YouTube.js Discord server, setting supportXhr to false brings the URLs back for TV (matrix chat)
+        // NEWTUBE(web-embed-identity): the same holds for WEB_EMBED - with supportXhr=true it is answered
+        // SABR-only (26 formats, none with a URL), with false it gets direct URLs and HLS (made-for-kids
+        // _WB5hh7WOb4, 2026-09-28; supportsVp9Encoding makes no difference). MWEB behaves the same way,
+        // but it is left as upstream has it until measured in the ring.
         // use_ad_playback_context`: Skip preroll ads to eliminate the mandatory wait period before download.
         // Do NOT use this when passing premium account cookies to yt-dlp, as it will result in a loss of premium formats.
         // Only effective with the `web`, `web_safari`, `web_music` and `mweb` player clients. Either `true` or `false`
@@ -312,7 +318,7 @@ internal class QueryBuilder(private val client: AppClient) {
                     },
                     "devicePlaybackCapabilities": {
                         "supportsVp9Encoding": true,
-                        "supportXhr": ${!client.isTVClient}
+                        "supportXhr": ${!client.isTVClient && !client.isEmbedded}
                     }
                 },
             """
@@ -332,13 +338,21 @@ internal class QueryBuilder(private val client: AppClient) {
      * ```
      */
     private fun createEncryptedHostFlags(): String {
-        return if (client.isEmbedded)
-            YtCfgService.getCachedEncryptedHostFlags(videoId)?.let {
-                """
-                   "encryptedHostFlags":"$it",
-                """
-            } ?: ""
-        else ""
+        if (!client.isEmbedded)
+            return ""
+
+        // NEWTUBE(web-embed-identity): WEB_EMBED sends only the flags its caller passes together
+        // with the visitor they are bound to (YtCfgService.EmbedIdentity). Looking them up here
+        // when the caller had none could pair a freshly fetched page's flags with another visitor:
+        // the 152-18 refusal. TV_EMBED (not on the phone ring) keeps upstream's lookup.
+        val flags = if (client == AppClient.WEB_EMBED) encryptedHostFlags
+            else encryptedHostFlags ?: YtCfgService.getEmbedIdentity(videoId)?.encryptedHostFlags
+
+        return flags?.let {
+            """
+               "encryptedHostFlags":"$it",
+            """
+        } ?: ""
     }
 
     private fun playerDataCheck() = videoId != null && type == PostDataType.Player

@@ -54,8 +54,11 @@ internal enum class AppClient(
     WEB(CLIENTS.WEB.NAME, CLIENTS.WEB.VERSION, CLIENT_NAME_IDS[CLIENTS.WEB.NAME],
         userAgent = DefaultHeaders.USER_AGENT_WEB, referer = "https://www.youtube.com"),
     // Use WEB_EMBEDDED_PLAYER instead of WEB. Some videos have 403 error on WEB.
+    // NEWTUBE(web-embed-identity): Safari UA, as upstream 9df453a0 and yt-dlp's web_embedded. With the
+    // Chrome UA the same request is answered SABR-only (formats without URLs); with Safari's, direct
+    // URLs and HLS (made-for-kids _WB5hh7WOb4, 2026-09-28).
     WEB_EMBED(CLIENTS.WEB_EMBEDDED.NAME, CLIENTS.WEB_EMBEDDED.VERSION, CLIENT_NAME_IDS[CLIENTS.WEB_EMBEDDED.NAME],
-        userAgent = DefaultHeaders.USER_AGENT_WEB, referer = "https://www.youtube.com"),
+        userAgent = DefaultHeaders.USER_AGENT_SAFARI, referer = "https://www.youtube.com"),
     // Request contains an invalid argument.
     WEB_CREATOR(CLIENTS.WEB_CREATOR.NAME, CLIENTS.WEB_CREATOR.VERSION, CLIENT_NAME_IDS[CLIENTS.WEB_CREATOR.NAME],
         userAgent = DefaultHeaders.USER_AGENT_WEB, referer = "https://studio.youtube.com"),

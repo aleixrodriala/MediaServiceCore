@@ -7,6 +7,7 @@ import com.liskovsoft.youtubeapi.app.potokennp2.PoTokenProviderImpl
 import com.liskovsoft.youtubeapi.app.potokennp2.core.PoTokenResult
 import com.liskovsoft.youtubeapi.app.potokennp2.misc.selectFactory
 import com.liskovsoft.youtubeapi.common.helpers.AppClient
+import com.liskovsoft.youtubeapi.innertube.ytcfg.YtCfgService
 import android.os.SystemClock
 
 /**
@@ -219,6 +220,13 @@ internal object PoTokenGate {
     @JvmStatic
     fun resetCache(client: AppClient): Boolean {
         return when {
+            // NEWTUBE(web-embed-identity): WEB_EMBED carries no Web token (PoTokenSelection), so a
+            // fresh Web session would not change its next answer and returning true would spend a
+            // reload on the same route. Drop the embed page's identity and let the ring move on.
+            client == AppClient.WEB_EMBED -> {
+                YtCfgService.invalidateEmbedIdentity()
+                false
+            }
             client.isWebPotRequired -> resetWebCache()
             else -> false
         }

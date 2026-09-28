@@ -5,6 +5,7 @@ import com.liskovsoft.youtubeapi.app.AppService;
 import com.liskovsoft.youtubeapi.app.PoTokenGate;
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.youtubeapi.common.helpers.QueryBuilder;
+import com.liskovsoft.youtubeapi.innertube.ytcfg.YtCfgService;
 
 public class VideoInfoApiHelper {
     public static final class PlayerRequest {
@@ -27,17 +28,25 @@ public class VideoInfoApiHelper {
         // other three PoTokenGate.getPoToken call sites decorate googlevideo URLs and must keep
         // using the media-URL entry point, which refuses to hand a Web token to any non-Web client.
         String poToken = PoTokenGate.getPlayerRequestPoToken(client, videoId);
-        String visitorData = getPlayerVisitorData(client);
-        boolean webVisitor = usesWebVisitorData(client);
+        // NEWTUBE(web-embed-identity): WEB_EMBED presents the embed page's visitor with the
+        // encryptedHostFlags bound to it (see YtCfgService.EmbedIdentity). If the page couldn't be
+        // fetched it goes out on the shared Web visitor with no flags and gets the old 152-18
+        // refusal; QueryBuilder never fetches flags of its own for it (they'd belong to another
+        // visitor).
+        YtCfgService.EmbedIdentity embed = client == AppClient.WEB_EMBED
+                ? YtCfgService.getEmbedIdentity(videoId) : null;
+        String visitorData = embed != null ? embed.visitorData : getPlayerVisitorData(client);
+        boolean webVisitor = embed == null && usesWebVisitorData(client);
         long visitorAgeMs = webVisitor ? PoTokenGate.getWebVisitorAgeMs() : -1;
         android.util.Log.d("NetPath", "player-context video=" + safeVideoId(videoId)
                 + " client=" + client + " cver=" + client.getClientVersion()
-                + " visitorSource=" + (webVisitor ? "web-pot" : "app")
+                + " visitorSource=" + (embed != null ? "embed-page" : webVisitor ? "web-pot" : "app")
                 + " visitor=" + VisitorFingerprint.of(visitorData)
                 + " visitorAgeMs=" + visitorAgeMs
                 + " playerPot=" + (poToken != null && !poToken.isEmpty() ? "y" : "n"));
         String query = createCheckedQuery(client, videoId, clickTrackingParams,
-                client == AppClient.GEO, poToken, visitorData);
+                client == AppClient.GEO, poToken, visitorData,
+                embed != null ? embed.encryptedHostFlags : null);
         return new PlayerRequest(query, visitorData);
     }
 
@@ -61,7 +70,8 @@ public class VideoInfoApiHelper {
      * NOTE: enableGeoFix - Should use protobuf to bypass geo blocking.
      */
     private static String createCheckedQuery(AppClient client, String videoId, String clickTrackingParams,
-                                             boolean enableGeoFix, String poToken, String visitorData) {
+                                             boolean enableGeoFix, String poToken, String visitorData,
+                                             String encryptedHostFlags) {
         // Important: use only for the clients that don't support auth.
         // Otherwise, google suggestions and history won't work (visitor data bug)
         return new QueryBuilder(client)
@@ -69,6 +79,7 @@ public class VideoInfoApiHelper {
                 .setClickTrackingParams(clickTrackingParams)
                 .setPoToken(poToken)
                 .setVisitorData(visitorData)
+                .setEncryptedHostFlags(encryptedHostFlags)
                 .enableGeoFix(enableGeoFix) // may broke other functionality
                 .build();
     }

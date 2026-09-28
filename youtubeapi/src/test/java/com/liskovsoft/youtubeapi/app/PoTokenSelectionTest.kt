@@ -11,7 +11,7 @@ import org.junit.Test
  */
 class PoTokenSelectionTest {
     private val webFamily = listOf(
-        AppClient.WEB, AppClient.WEB_EMBED, AppClient.WEB_SAFARI,
+        AppClient.WEB, AppClient.WEB_SAFARI,
         AppClient.MWEB, AppClient.INITIAL, AppClient.GEO
     )
 
@@ -27,6 +27,15 @@ class PoTokenSelectionTest {
         hasVideoId: Boolean = true,
         enabled: Boolean = true
     ) = selectPoTokenSource(client, hasVideoId, use, enabled)
+
+    /** WEB_EMBED rides the embed page's own visitor (YtCfgService.EmbedIdentity): no token at all. */
+    @Test
+    fun webEmbedIsTokenFree() {
+        for (use in PoTokenUse.values()) {
+            assertEquals(PoTokenSource.NONE, select(AppClient.WEB_EMBED, use))
+            assertEquals(PoTokenSource.NONE, select(AppClient.WEB_EMBED, use, hasVideoId = false))
+        }
+    }
 
     @Test
     fun androidVrAttestsItsPlayerRequestByDefault() {

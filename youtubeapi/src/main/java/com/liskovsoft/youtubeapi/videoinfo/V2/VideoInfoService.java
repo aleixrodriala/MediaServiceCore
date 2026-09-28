@@ -203,7 +203,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private static final AppClient[] TV_FALLBACK_CLIENTS = {
             AppClient.TV_LEGACY, AppClient.TV_DOWNGRADED, AppClient.TV_EMBED, AppClient.TV_SIMPLY
     };
-    // NEWTUBE(no-web-embed): WEB_EMBED answers "This video is unavailable - Error code: 152 - 18"
+    // NEWTUBE(no-web-embed): [2026-09-28: the cause below was our own request, not WEB_EMBED - see
+    // web-embed-last. The phone keeps this gate on until WEB_EMBED is measured in the app.]
+    // WEB_EMBED answers "This video is unavailable - Error code: 152 - 18"
     // to every request, on every network: every WEB_EMBED answer in every Pixel and emulator
     // capture since 2026-09 (again on 2026-09-26 10:45, right after a VISIONOS timeout), and
     // yt-dlp master's own web_embedded client from the home IP on 2026-09-25/26 - including its
@@ -216,6 +218,15 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // VIDEO_INFO_TYPE_LIST and TV are untouched. A forced client (debug.arc.player_client) and
     // the web-auth playground pointed at WEB_EMBED (debug.arc.web_auth) still reach it.
     private static volatile boolean sSkipWebEmbed;
+    // NEWTUBE(web-embed-last): the 152-18 above was never WEB_EMBED being dead - the app sent the
+    // embed page's encryptedHostFlags with a different visitor than the one they are bound to (see
+    // YtCfgService.EmbedIdentity). With the right pair it serves, among others, made-for-kids
+    // videos that every other client refuses or answers SABR-only (issue #5, 2026-09-28). This
+    // switch puts it LAST instead of skipping it: a video another client serves never reaches it,
+    // and one that nothing else can play gets one more round trip instead of an error. The phone
+    // doesn't set it yet: its fresh URLs were refused for the first seconds on a Pixel (pre-roll
+    // wait, not honoured yet), so it waits for the player-sources rework.
+    private static volatile boolean sWebEmbedLast;
     // Web-family-first fallback (NewTube touch flavor): GVS acceptance is client/session-specific,
     // not a transport or carrier-CGNAT property. On-device isolation found that iOS and the old
     // Android VR request could return signed URLs whose init ranges worked but deep ranges got 403;
@@ -273,6 +284,31 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setSkipWebEmbed(boolean skip) {
         sSkipWebEmbed = skip;
+    }
+
+    /**
+     * Enabled once from the mobile flavor (MobileMainApplication), instead of
+     * {@link #setSkipWebEmbed}: WEB_EMBED moves to the end of every normal walk
+     * ({@link #sWebEmbedLast}). Never called on TV.
+     */
+    public static void setWebEmbedLast(boolean last) {
+        sWebEmbedLast = last;
+    }
+
+    static List<AppClient> moveWebEmbedLast(List<AppClient> order) {
+        if (order.isEmpty() || !order.contains(AppClient.WEB_EMBED)
+                || order.get(order.size() - 1) == AppClient.WEB_EMBED) {
+            return order;
+        }
+
+        List<AppClient> result = new java.util.ArrayList<>(order.size());
+        for (AppClient type : order) {
+            if (type != AppClient.WEB_EMBED) {
+                result.add(type);
+            }
+        }
+        result.add(AppClient.WEB_EMBED);
+        return result;
     }
 
     /**
@@ -1150,6 +1186,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     beginType, lastWinner, sPreferAttestedWebFallback,
                     recoveryWalk, authenticated, forbiddenAuthClients, authenticatedWebFirst,
                     anonChallenged);
+            if (sWebEmbedLast && !AppClient.isWebEmbedAuthEnabled()) {
+                visitOrder = moveWebEmbedLast(visitOrder);
+            }
             if (anonChallenged) {
                 android.util.Log.d("NetPath", "player-ring anon-deprioritized network="
                         + mAnonChallengeNetwork + " first=" + visitOrder.get(0));
@@ -1225,9 +1264,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 break;
             }
 
-            // Phone ring trim: TV-only fallback clients and WEB_EMBED are skipped (a stale
-            // mNextInfoType from nextVideoInfoType may land on one - WEB_EMBED is element 0, the
-            // recovery begin after any off-ring winner; it's simply not probed).
+            // Phone ring trim: TV-only fallback clients (and WEB_EMBED, where setSkipWebEmbed is
+            // on) are skipped (a stale mNextInfoType from nextVideoInfoType may land on one -
+            // WEB_EMBED is element 0, the recovery begin after any off-ring winner; it's simply
+            // not probed).
             if (isSkippedClient(nextType)
                     && sDebugForcedClient != nextType
                     && !(authenticated && nextType == AppClient.TV_DOWNGRADED)) {
@@ -1276,6 +1316,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
             boolean playable = result != null && !result.isUnplayable();
             logPlayerOutcome(videoId, nextType, attempt, result);
+
+            // NEWTUBE(web-embed-identity): an embed identity that is refused ("Error code: 152")
+            // may have gone stale; the next WEB_EMBED request fetches a fresh embed page.
+            if (nextType == AppClient.WEB_EMBED && result != null
+                    && result.getPlayabilityStatus() != null
+                    && result.getPlayabilityStatus().contains("152")) {
+                com.liskovsoft.youtubeapi.innertube.ytcfg.YtCfgService.invalidateEmbedIdentity();
+            }
 
             // NEWTUBE(botwall): wall evidence and the account route. Runs BEFORE the bot-check
             // block below, because that block decides whether the walk may carry on past a

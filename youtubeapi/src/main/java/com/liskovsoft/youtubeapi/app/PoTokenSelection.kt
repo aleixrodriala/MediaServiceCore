@@ -50,6 +50,11 @@ internal fun selectPoTokenSource(
     use: PoTokenUse,
     playerPotEnabled: Boolean
 ): PoTokenSource = when {
+    // NEWTUBE(web-embed-identity): WEB_EMBED rides the embed page's own visitor
+    // (YtCfgService.EmbedIdentity), not the session a Web token is minted for, and neither its
+    // /player request nor its media need one: yt-dlp's web_embedded downloads the full stream with
+    // no PO token (2026-09-28). A token bound to another visitor could only get it refused.
+    client == AppClient.WEB_EMBED -> PoTokenSource.NONE
     client.isWebPotRequired ->
         if (hasVideoId) PoTokenSource.WEB_CONTENT else PoTokenSource.WEB_SESSION
     use == PoTokenUse.PLAYER_REQUEST && client.isPlayerPotSupported && playerPotEnabled && hasVideoId ->
