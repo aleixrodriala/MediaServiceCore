@@ -316,8 +316,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
-     * NEWTUBE(planner): the phone's order comes from PhoneSourcePlanner (netbench PLANNER.md)
-     * instead of upstream's ring and the gates above. Mobile only (needs setPreferNoPotClient).
+     * NEWTUBE(planner): a signed-out phone walk takes its order from PhoneSourcePlanner (netbench
+     * PLANNER.md) instead of upstream's ring and the gates above, and asks TV_TIZEN without the
+     * account after a refusal (the setAnonTizenAfterRefusal rule). Signed in, nothing changes.
+     * Mobile only (needs setPreferNoPotClient).
      */
     public static void setPlannerEnabled(boolean enabled) {
         sPlanner = enabled;
@@ -983,6 +985,24 @@ public class VideoInfoService extends VideoInfoServiceBase {
         private boolean mAuth;
         private boolean mAnonymous;
         private final java.util.Set<AppClient> mClients = new java.util.LinkedHashSet<>();
+        /**
+         * NEWTUBE(planner): a signed-out walk has no signed-in witness, so it never reached the
+         * verdict and asked the whole ring about a removed video. Planned, its first sources ride
+         * three different visitors (the web session, the app, the embed page - PlayerSource
+         * identity); the same allowlisted reason from all three is the same independence, reached
+         * without an account.
+         */
+        private final boolean mByIdentity;
+        private final java.util.Set<PlayerSource.Identity> mIdentities =
+                java.util.EnumSet.noneOf(PlayerSource.Identity.class);
+
+        UnplayableConsensus() {
+            this(false);
+        }
+
+        UnplayableConsensus(boolean byIdentity) {
+            mByIdentity = byIdentity;
+        }
 
         /**
          * @param signedIn TRUE: sent with the account and the server confirmed it; FALSE: sent
@@ -1004,6 +1024,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
             mClients.add(client);
             mAuth |= Boolean.TRUE.equals(signedIn);
             mAnonymous |= Boolean.FALSE.equals(signedIn);
+            if (Boolean.FALSE.equals(signedIn)) {
+                mIdentities.add(PlayerSourceCatalog.defaultFor(client).identity);
+            }
             return isDefinitive();
         }
 
@@ -1017,7 +1040,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
 
         private boolean isDefinitive() {
-            return mAuth && mAnonymous && mClients.size() >= MIN_CLIENTS;
+            return mAuth && mAnonymous && mClients.size() >= MIN_CLIENTS
+                    || mByIdentity && mIdentities.size() >= PlayerSource.Identity.values().length;
         }
 
         String clients() {
@@ -1261,8 +1285,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // BotWallBook. The key is looked up only once the book has something to say, so a healthy
         // open pays no extra system calls.
         final boolean mobileWall = sPreferNoPotClient && sDebugForcedClient == null;
-        // NEWTUBE(planner): see setPlannerEnabled.
-        final boolean planned = sPlanner && mobileWall;
+        // NEWTUBE(planner): see setPlannerEnabled. Signed out only: there is no signed-in evidence.
+        final boolean planned = sPlanner && mobileWall && !authenticated;
         maybeResetBotWallForDebug();
         final WallKeys wallKeys = new WallKeys();
         final long walkStartMs = android.os.SystemClock.elapsedRealtime();
@@ -1291,13 +1315,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
             visitOrder = new java.util.ArrayList<>(wallPlan.order);
         } else if (planned) {
-            visitOrder = PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(authenticated,
-                    recoveryWalk ? lastWinner : null, forbiddenAuthClients, anonChallenged,
-                    AppClient.isWebEmbedAuthEnabled()));
+            visitOrder = PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(
+                    recoveryWalk ? lastWinner : null, anonChallenged));
             android.util.Log.d("NetPath", "player-ring plan video=" + videoId
-                    + " auth=" + (authenticated ? "y" : "n")
                     + (recoveryWalk ? " suspect=" + lastWinner : "")
-                    + (forbiddenAuthClients.isEmpty() ? "" : " quarantined=" + forbiddenAuthClients)
                     + (anonChallenged ? " anon-challenged" : "")
                     + " order=" + visitOrder);
         } else {
@@ -1347,7 +1368,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // all. See AuthRouteWalkState.
         final AuthRouteWalkState authRoute = new AuthRouteWalkState(mAccountGeneration);
         // Stops the walk once the ring agrees the video cannot play. See UnplayableConsensus.
-        final UnplayableConsensus unplayable = new UnplayableConsensus();
+        final UnplayableConsensus unplayable = new UnplayableConsensus(planned);
         // NEWTUBE(botwall): this walk's anonymous bot checks, and who has been asked already (the
         // account route is inserted at most once, and a mid-walk wall never re-asks anyone).
         final BotWallBook.WalkEvidence wallEvidence = new BotWallBook.WalkEvidence();
@@ -1422,14 +1443,20 @@ public class VideoInfoService extends VideoInfoServiceBase {
             boolean[] noResponse = new boolean[1];
             // The anonymous-refusal rule's TV_TIZEN is a speculative ask: the short budget, not the
             // account route's cold-start one (it may hang with the rest of the ring still to go).
-            // The planner's TV_TIZEN asked without the account is the same speculative ask.
-            boolean speculativeTizen = nextType == BotWallBook.ACCOUNT_ROUTE && (anonTizenSpeculative
-                    || planned && !authenticated && !wallPlan.walled);
-            long attemptBudgetMs = speculativeTizen
+            long attemptBudgetMs = anonTizenSpeculative && nextType == BotWallBook.ACCOUNT_ROUTE
                     ? Math.min(remainingBudgetMs, CLIENT_ATTEMPT_TIMEOUT_MS) : remainingBudgetMs;
             VideoInfo result = getVideoInfoWithTimeout(
                     nextType, videoId, clickTrackingParams, cancellationSignal, attemptBudgetMs,
                     noResponse);
+            // NEWTUBE(planner): signed out, no request carried an account, yet an auth-capable
+            // client's answer (TV_TIZEN) was marked authenticated because it MAY carry one - so its
+            // challenge read as the account route failing and its refusal as a signed-in witness.
+            // Corrected for planned walks, where TV 7.x (whose made-for-kids answer is a lone "not a
+            // bot") is never asked; the ring keeps the old flag until that answer is discounted as
+            // wall evidence too (PLANNER.md, follow-ups).
+            if (planned && result != null && result.isAuth()) {
+                result.setAuth(false);
+            }
             if (abortCanceledRequest(videoId, "post-attempt", cancellationSignal)) {
                 botCheck.markCutShort();
                 break;
@@ -1468,7 +1495,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             // The wall is read NOW: this walk's own answers may have just established one, and then
             // its plan owns TV_TIZEN's single anonymous ask. Live signals (an ended stream whose
             // recording is gone answers UNPLAYABLE) are not a refusal TV_TIZEN can help with.
-            if (sAnonTizenAfterRefusal && !planned && mobileWall && !authenticated && result != null
+            if ((sAnonTizenAfterRefusal || planned) && mobileWall && !authenticated && result != null
                     && liveWithoutDash == null && !wallPlan.walled
                     && !mBotWall.isWalled(wallKeys.network(), android.os.SystemClock.elapsedRealtime())
                     && result.isUnknownRestricted() && !hasLiveSignal(result)
@@ -1483,18 +1510,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 anonTizenSpeculative = true;
                 android.util.Log.d("NetPath", "player-ring anon-tizen next after=" + nextType
                         + " attempt=" + attempt + " reason=unplayable");
-            }
-            // NEWTUBE(planner): signed out, TV_TIZEN answers an age gate like VISIONOS does (netbench
-            // recap 2026-09-28: it served every category but the age-gated one), so after an age
-            // gate the walk goes on to the age-capable WEB_EMBED without asking it.
-            if (planned && !authenticated && result != null && result.isAgeGate()) {
-                int tizenAt = visitOrder.indexOf(BotWallBook.ACCOUNT_ROUTE);
-                if (tizenAt > visitIndex) {
-                    visitOrder = new java.util.ArrayList<>(visitOrder);
-                    visitOrder.remove(tizenAt);
-                    android.util.Log.d("NetPath", "player-ring age-gate skip=" + BotWallBook.ACCOUNT_ROUTE
-                            + " after=" + nextType);
-                }
             }
             // Signed out, the account route is one more anonymous identity: on a walled
             // attachment it gets ONE ask per wall, whatever it answers - a timeout, a reload-page

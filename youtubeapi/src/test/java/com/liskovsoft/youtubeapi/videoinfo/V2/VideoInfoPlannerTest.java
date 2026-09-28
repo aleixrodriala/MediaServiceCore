@@ -80,7 +80,7 @@ public class VideoInfoPlannerTest {
         assertEquals(Collections.singletonList("VISIONOS"), calls());
     }
 
-    /** Issue #5: VISIONOS refuses a kids video, TV_TIZEN (no account) serves it second. */
+    /** Issue #5: VISIONOS refuses a kids video, TV_TIZEN (no account) is asked next and serves it. */
     @Test
     public void aKidsVideoIsServedSecond() {
         VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.TV_TIZEN
@@ -88,6 +88,17 @@ public class VideoInfoPlannerTest {
         VideoInfo result = open("kids");
         assertEquals(AppClient.TV_TIZEN, result.getClient());
         assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN"), calls());
+    }
+
+    /**
+     * The app marks an auth-capable client's answer authenticated whether or not an account went
+     * with it; signed out, nothing did, so the planned walk reads it as the anonymous answer it is.
+     */
+    @Test
+    public void aSignedOutTizenAnswerIsAnonymous() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.TV_TIZEN
+                ? playable(true) : unplayable(NOT_AVAILABLE, auth);
+        assertFalse(open("kids").isAuth());
     }
 
     @Test
@@ -108,7 +119,7 @@ public class VideoInfoPlannerTest {
                 "MWEB", "WEB", "WEB_SAFARI"), calls());
     }
 
-    /** An age gate: TV_TIZEN anonymous answers it the same, so WEB_EMBED is next. */
+    /** An age gate is no refusal TV_TIZEN can help with (it answers the same gate): WEB_EMBED is next. */
     @Test
     public void anAgeGateGoesStraightToWebEmbed() {
         VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
@@ -116,6 +127,27 @@ public class VideoInfoPlannerTest {
                         + " \"reason\": \"Sign in to confirm your age\", \"desktopLegacyAgeGateReason\": 1}}", auth);
         assertEquals(AppClient.WEB_EMBED, open("adult").getClient());
         assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED"), calls());
+    }
+
+    /**
+     * A removed video (ERROR, so no TV_TIZEN): the same allowlisted reason from the three visitors
+     * (web session, embed page, app) is the verdict - the fourth request, not the eighth.
+     */
+    @Test
+    public void aRemovedVideoIsSettledByThreeIdentities() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
+                + " {\"status\": \"ERROR\", \"reason\": \"This video has been removed by the uploader\"}}", auth);
+        assertTrue(open("removed").isUnplayable());
+        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED", "ANDROID_VR", "IOS"), calls());
+    }
+
+    /** A generic reason is not a verdict: the lane is asked to the end. */
+    @Test
+    public void aGenericRefusalIsNotSettledEarly() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
+                + " {\"status\": \"ERROR\", \"reason\": \"Video unavailable\"}}", auth);
+        open("gone");
+        assertEquals(8, calls().size());
     }
 
     /** Live: VISIONOS's HLS answer is held and only the live-DASH client is asked. */
@@ -136,6 +168,18 @@ public class VideoInfoPlannerTest {
         VideoInfoBotWallTest.ShadowWalk.signedIn = true;
         open("normal");
         assertEquals(Collections.singletonList("TV_DOWNGRADED+auth"), calls());
+    }
+
+    /** No signed-in evidence exists, so a signed-in walk is today's walk, planner or not. */
+    @Test
+    public void signedInTheWalkIsUnchanged() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> unplayable(NOT_AVAILABLE + " " + client, auth);
+        open("kids");
+        List<String> planned = calls();
+        VideoInfoService.setPlannerEnabled(false);
+        open("kids");
+        assertEquals(calls(), planned);
     }
 
     /** Off, the walk is the ring as before (the released order, WEB_EMBED last). */
