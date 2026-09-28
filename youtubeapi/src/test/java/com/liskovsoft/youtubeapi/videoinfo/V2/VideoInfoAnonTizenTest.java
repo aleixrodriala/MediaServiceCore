@@ -105,6 +105,16 @@ public class VideoInfoAnonTizenTest {
         assertEquals(calls.toString(), "WEB_EMBED", calls.get(calls.size() - 1));
     }
 
+    /** An ended stream whose recording is gone answers UNPLAYABLE too; TV_TIZEN cannot help it. */
+    @Test
+    public void aLiveRefusalIsNotSentToTizen() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
+                + " {\"status\": \"UNPLAYABLE\", \"reason\": \"This live stream recording is not available\"},"
+                + " \"videoDetails\": {\"videoId\": \"ended\", \"isLiveContent\": true}}", auth);
+        open("ended");
+        assertFalse(calls().toString(), calls().contains("TV_TIZEN"));
+    }
+
     /** Without the switch the walk never asks TV_TIZEN signed out. */
     @Test
     public void offByDefault() {

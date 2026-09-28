@@ -313,6 +313,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
         sAnonTizenAfterRefusal = enabled;
     }
 
+    /** Any sign the answer is about a live stream, current, ended or scheduled. */
+    static boolean hasLiveSignal(VideoInfo result) {
+        return result.isLive() || result.getStartTimestamp() != null
+                || result.getVideoDetails() != null && result.getVideoDetails().isLiveContent();
+    }
+
     static List<AppClient> moveWebEmbedLast(List<AppClient> order) {
         if (order.isEmpty() || !order.contains(AppClient.WEB_EMBED)
                 || order.get(order.size() - 1) == AppClient.WEB_EMBED) {
@@ -1247,6 +1253,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // account route is inserted at most once, and a mid-walk wall never re-asks anyone).
         final BotWallBook.WalkEvidence wallEvidence = new BotWallBook.WalkEvidence();
         final java.util.Set<AppClient> attempted = java.util.EnumSet.noneOf(AppClient.class);
+        // NEWTUBE(planner): TV_TIZEN was put next by the anonymous-refusal rule, not by a wall plan.
+        boolean anonTizenSpeculative = false;
         boolean authenticatedClientAttempted = false;
         int anonChallengeHits = 0;
         int attempt = 0;
@@ -1313,8 +1321,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
                         android.os.SystemClock.elapsedRealtime());
             }
             boolean[] noResponse = new boolean[1];
+            // The anonymous-refusal rule's TV_TIZEN is a speculative ask: the short budget, not the
+            // account route's cold-start one (it may hang with the rest of the ring still to go).
+            long attemptBudgetMs = anonTizenSpeculative && nextType == BotWallBook.ACCOUNT_ROUTE
+                    ? Math.min(remainingBudgetMs, CLIENT_ATTEMPT_TIMEOUT_MS) : remainingBudgetMs;
             VideoInfo result = getVideoInfoWithTimeout(
-                    nextType, videoId, clickTrackingParams, cancellationSignal, remainingBudgetMs,
+                    nextType, videoId, clickTrackingParams, cancellationSignal, attemptBudgetMs,
                     noResponse);
             if (abortCanceledRequest(videoId, "post-attempt", cancellationSignal)) {
                 botCheck.markCutShort();
@@ -1347,9 +1359,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
                         wallKeys, wallEvidence, wallPlan.walled, visitOrder, visitIndex, attempted,
                         attempt);
             }
+            // The wall is read NOW: this walk's own answers may have just established one, and then
+            // its plan owns TV_TIZEN's single anonymous ask. Live signals (an ended stream whose
+            // recording is gone answers UNPLAYABLE) are not a refusal TV_TIZEN can help with.
             if (sAnonTizenAfterRefusal && mobileWall && !authenticated && result != null
                     && liveWithoutDash == null && !wallPlan.walled
-                    && result.isUnknownRestricted() && !nextType.isWebPotRequired()
+                    && !mBotWall.isWalled(wallKeys.network(), android.os.SystemClock.elapsedRealtime())
+                    && result.isUnknownRestricted() && !hasLiveSignal(result)
+                    && !nextType.isWebPotRequired()
                     && nextType != BotWallBook.ACCOUNT_ROUTE
                     && !attempted.contains(BotWallBook.ACCOUNT_ROUTE)
                     && (visitIndex + 1 >= visitOrder.size()
@@ -1357,6 +1374,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     && !mBotWall.isRouteFailed(wallKeys.network(), noMediaVideoKey(videoId),
                             android.os.SystemClock.elapsedRealtime())) {
                 visitOrder = insertAfter(visitOrder, visitIndex, BotWallBook.ACCOUNT_ROUTE);
+                anonTizenSpeculative = true;
                 android.util.Log.d("NetPath", "player-ring anon-tizen next after=" + nextType
                         + " attempt=" + attempt + " reason=unplayable");
             }
