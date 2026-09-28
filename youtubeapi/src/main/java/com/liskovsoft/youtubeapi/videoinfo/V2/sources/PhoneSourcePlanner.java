@@ -120,9 +120,14 @@ public final class PhoneSourcePlanner {
         }
 
         // A recovery walk asks the source whose media just failed last, not never: it may be the
-        // only one that serves this video. Applied last, so nothing moves in behind it.
+        // only one that serves this video. Applied last, so nothing moves in behind it. Signed out
+        // that includes TV_TIZEN (it served the video after a refusal, and the refusal rule must
+        // not put it straight back next); a benched account route stays out.
         AppClient suspect = context.recoverySuspect;
         if (suspect != null && order.remove(suspect)) {
+            order.add(suspect);
+        } else if (suspect == ACCOUNT_ROUTE && context.lane == Lane.SIGNED_OUT
+                && !context.accountRouteBenched) {
             order.add(suspect);
         }
         return order;
@@ -141,19 +146,27 @@ public final class PhoneSourcePlanner {
 
     /**
      * An age gate is settled - no source left in this walk can serve it - once every source of the
-     * lane that serves age-gated videos has answered it with the age gate or will not be asked.
+     * lane that serves age-gated videos has answered without serving it, or is not in this walk
+     * (benched). Its answer need not be the age gate itself: for a video that is also not
+     * embeddable WEB_EMBED answers with the embed refusal. A source that was asked and did not
+     * answer (a timeout) has refused nothing, so the walk goes on.
      *
-     * @param ageGated  the sources that answered this walk with an age gate
+     * @param ageGated  whether any answer of this walk was an age gate
+     * @param refused   the sources that answered this walk without serving the video
+     * @param attempted the sources asked so far
      * @param remaining the sources the walk would still ask
      */
-    public static boolean isAgeGateSettled(Lane lane, Set<AppClient> ageGated,
-            List<AppClient> remaining) {
-        if (ageGated.isEmpty()) {
+    public static boolean isAgeGateSettled(Lane lane, boolean ageGated, Set<AppClient> refused,
+            Set<AppClient> attempted, List<AppClient> remaining) {
+        if (!ageGated) {
             return false;
         }
         for (AppClient server : lane == Lane.SIGNED_IN
                 ? AGE_GATE_SERVERS_SIGNED_IN : AGE_GATE_SERVERS_SIGNED_OUT) {
-            if (!ageGated.contains(server) && remaining.contains(server)) {
+            if (refused.contains(server)) {
+                continue;
+            }
+            if (attempted.contains(server) || remaining.contains(server)) {
                 return false;
             }
         }

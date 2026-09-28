@@ -65,11 +65,17 @@ public class PhoneSourcePlannerTest {
                 AppClient.ANDROID_VR, true);
     }
 
-    /** Signed out, a TV_TIZEN suspect (admitted after a refusal, never planned) is not added. */
+    /**
+     * Signed out, TV_TIZEN (admitted after a refusal, never planned) that just failed is asked last
+     * rather than re-admitted next by the refusal rule; benched, it stays out.
+     */
     @Test
-    public void aSuspectOutsideTheLaneIsNotAdded() {
-        assertOrder("VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI", SIGNED_OUT,
+    public void aSignedOutTizenSuspectIsAskedLast() {
+        assertOrder("VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI TV_TIZEN", SIGNED_OUT,
                 AppClient.TV_TIZEN, false);
+        List<AppClient> benched = PhoneSourcePlanner.order(
+                new PhoneSourcePlanner.Context(SIGNED_OUT, AppClient.TV_TIZEN, false, true));
+        assertFalse(benched.toString(), benched.contains(AppClient.TV_TIZEN));
     }
 
     /** Only an anonymous non-web refusal signed out admits TV_TIZEN without the account. */
@@ -84,22 +90,37 @@ public class PhoneSourcePlannerTest {
 
     @Test
     public void anAgeGateIsSettledOnceEverySourceThatServesOneAnsweredIt() {
-        List<AppClient> signedOutRest = Arrays.asList(AppClient.WEB_EMBED, AppClient.ANDROID_VR, AppClient.IOS);
-        assertFalse(PhoneSourcePlanner.isAgeGateSettled(SIGNED_OUT, EnumSet.of(AppClient.VISIONOS), signedOutRest));
-        assertTrue(PhoneSourcePlanner.isAgeGateSettled(SIGNED_OUT,
-                EnumSet.of(AppClient.VISIONOS, AppClient.WEB_EMBED), signedOutRest.subList(1, 3)));
-
-        List<AppClient> signedInRest = Arrays.asList(AppClient.TV_TIZEN, AppClient.WEB_EMBED, AppClient.ANDROID_VR);
-        assertFalse(PhoneSourcePlanner.isAgeGateSettled(SIGNED_IN, EnumSet.of(AppClient.VISIONOS), signedInRest));
-        assertFalse(PhoneSourcePlanner.isAgeGateSettled(SIGNED_IN,
-                EnumSet.of(AppClient.VISIONOS, AppClient.TV_TIZEN), signedInRest.subList(1, 3)));
-        assertTrue(PhoneSourcePlanner.isAgeGateSettled(SIGNED_IN,
-                EnumSet.of(AppClient.VISIONOS, AppClient.TV_TIZEN, AppClient.WEB_EMBED), signedInRest.subList(2, 3)));
-        // The account route benched (not in the walk): WEB_EMBED's gate settles it.
-        assertTrue(PhoneSourcePlanner.isAgeGateSettled(SIGNED_IN,
+        EnumSet<AppClient> none = EnumSet.noneOf(AppClient.class);
+        List<AppClient> signedOutRest = Arrays.asList(AppClient.WEB_EMBED, AppClient.ANDROID_VR);
+        // VISIONOS's gate alone: WEB_EMBED is still to come.
+        assertFalse(PhoneSourcePlanner.isAgeGateSettled(SIGNED_OUT, true, EnumSet.of(AppClient.VISIONOS),
+                EnumSet.of(AppClient.VISIONOS), signedOutRest));
+        // WEB_EMBED answered without serving (its gate, or the embed refusal): settled.
+        assertTrue(PhoneSourcePlanner.isAgeGateSettled(SIGNED_OUT, true,
+                EnumSet.of(AppClient.VISIONOS, AppClient.WEB_EMBED),
                 EnumSet.of(AppClient.VISIONOS, AppClient.WEB_EMBED), Arrays.asList(AppClient.ANDROID_VR)));
-        assertFalse(PhoneSourcePlanner.isAgeGateSettled(SIGNED_OUT, EnumSet.noneOf(AppClient.class),
-                Arrays.<AppClient>asList()));
+        // WEB_EMBED asked but silent (a timeout) has refused nothing.
+        assertFalse(PhoneSourcePlanner.isAgeGateSettled(SIGNED_OUT, true, EnumSet.of(AppClient.VISIONOS),
+                EnumSet.of(AppClient.VISIONOS, AppClient.WEB_EMBED), Arrays.asList(AppClient.ANDROID_VR)));
+        // No age gate seen: never.
+        assertFalse(PhoneSourcePlanner.isAgeGateSettled(SIGNED_OUT, false,
+                EnumSet.of(AppClient.VISIONOS, AppClient.WEB_EMBED),
+                EnumSet.of(AppClient.VISIONOS, AppClient.WEB_EMBED), Arrays.<AppClient>asList()));
+
+        List<AppClient> signedInRest = Arrays.asList(AppClient.WEB_EMBED, AppClient.ANDROID_VR);
+        assertFalse(PhoneSourcePlanner.isAgeGateSettled(SIGNED_IN, true,
+                EnumSet.of(AppClient.VISIONOS, AppClient.TV_TIZEN),
+                EnumSet.of(AppClient.VISIONOS, AppClient.TV_TIZEN), signedInRest));
+        assertTrue(PhoneSourcePlanner.isAgeGateSettled(SIGNED_IN, true,
+                EnumSet.of(AppClient.VISIONOS, AppClient.TV_TIZEN, AppClient.WEB_EMBED),
+                EnumSet.of(AppClient.VISIONOS, AppClient.TV_TIZEN, AppClient.WEB_EMBED),
+                Arrays.asList(AppClient.ANDROID_VR)));
+        // The account route benched (never in the walk): WEB_EMBED's answer settles it.
+        assertTrue(PhoneSourcePlanner.isAgeGateSettled(SIGNED_IN, true,
+                EnumSet.of(AppClient.VISIONOS, AppClient.WEB_EMBED),
+                EnumSet.of(AppClient.VISIONOS, AppClient.WEB_EMBED), Arrays.asList(AppClient.ANDROID_VR)));
+        assertFalse(PhoneSourcePlanner.isAgeGateSettled(SIGNED_OUT, true, none, none,
+                Arrays.asList(AppClient.WEB_EMBED)));
     }
 
     @Test

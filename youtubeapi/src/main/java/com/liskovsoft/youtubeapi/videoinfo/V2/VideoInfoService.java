@@ -911,6 +911,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
          */
         static final int MIN_IDENTITIES = 3;
         private final boolean mByIdentity;
+        private final boolean mAccountRequired;
         private final java.util.Set<PlayerSource.Identity> mIdentities =
                 java.util.EnumSet.noneOf(PlayerSource.Identity.class);
 
@@ -919,7 +920,18 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
 
         UnplayableConsensus(boolean byIdentity) {
+            this(byIdentity, false);
+        }
+
+        /**
+         * @param accountRequired signed in: identities settle nothing without the witness the
+         *                        server confirmed signed in - three anonymous answers must not
+         *                        settle a video the account was never heard on (Codex astra
+         *                        review of LANES.md, 2026-09-29)
+         */
+        UnplayableConsensus(boolean byIdentity, boolean accountRequired) {
             mByIdentity = byIdentity;
+            mAccountRequired = accountRequired;
         }
 
         /**
@@ -959,7 +971,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         private boolean isDefinitive() {
             return mAuth && mAnonymous && mClients.size() >= MIN_CLIENTS
-                    || mByIdentity && mIdentities.size() + (mAuth ? 1 : 0) >= MIN_IDENTITIES;
+                    || mByIdentity && (mAuth || !mAccountRequired)
+                            && mIdentities.size() + (mAuth ? 1 : 0) >= MIN_IDENTITIES;
         }
 
         String clients() {
@@ -1292,16 +1305,17 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // all. See AuthRouteWalkState.
         final AuthRouteWalkState authRoute = new AuthRouteWalkState(mAccountGeneration);
         // Stops the walk once the ring agrees the video cannot play. See UnplayableConsensus.
-        final UnplayableConsensus unplayable = new UnplayableConsensus(planned);
+        final UnplayableConsensus unplayable = new UnplayableConsensus(planned, authenticated);
         // NEWTUBE(botwall): this walk's anonymous bot checks, and who has been asked already (the
         // account route is inserted at most once, and a mid-walk wall never re-asks anyone).
         final BotWallBook.WalkEvidence wallEvidence = new BotWallBook.WalkEvidence();
         final java.util.Set<AppClient> attempted = java.util.EnumSet.noneOf(AppClient.class);
         // NEWTUBE(planner): TV_TIZEN was put next by the anonymous-refusal rule, not by a wall plan.
         boolean anonTizenSpeculative = false;
-        // NEWTUBE(planner): the sources that answered this walk with an age gate (see
-        // PhoneSourcePlanner.isAgeGateSettled).
-        final java.util.Set<AppClient> ageGated = java.util.EnumSet.noneOf(AppClient.class);
+        // NEWTUBE(planner): the first age gate of this walk, and the sources that answered it
+        // without serving the video (see PhoneSourcePlanner.isAgeGateSettled).
+        VideoInfo firstAgeGate = null;
+        final java.util.Set<AppClient> refused = java.util.EnumSet.noneOf(AppClient.class);
         boolean authenticatedClientAttempted = false;
         int anonChallengeHits = 0;
         int attempt = 0;
@@ -1422,6 +1436,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     && liveWithoutDash == null && !wallPlan.walled
                     && !mBotWall.isWalled(wallKeys.network(), android.os.SystemClock.elapsedRealtime())
                     && !attempted.contains(BotWallBook.ACCOUNT_ROUTE)
+                    && !(recoveryWalk && lastWinner == BotWallBook.ACCOUNT_ROUTE)
                     && (visitIndex + 1 >= visitOrder.size()
                             || visitOrder.get(visitIndex + 1) != BotWallBook.ACCOUNT_ROUTE)
                     && !mBotWall.isRouteFailed(wallKeys.network(), noMediaVideoKey(videoId),
@@ -1565,18 +1580,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
 
             // NEWTUBE(planner): an age gate nothing left in this walk can serve is the verdict:
-            // signed out that is WEB_EMBED's answer (the second request, where the ring asked eight
-            // clients and minted three web tokens to hear the same gate), signed in the account
-            // route's and WEB_EMBED's. Only YouTube's structured age gate counts (isAgeGate): a
-            // plain sign-in request keeps walking.
-            if (planned && liveWithoutDash == null && result != null && result.isAgeGate()) {
-                ageGated.add(nextType);
-                if (PhoneSourcePlanner.isAgeGateSettled(lane, ageGated,
-                        visitOrder.subList(visitIndex + 1, visitOrder.size()))) {
+            // signed out once WEB_EMBED has answered without serving it (the second request, where
+            // the ring asked eight clients and minted three web tokens to hear the same gate),
+            // signed in once the account route and WEB_EMBED have. Only YouTube's structured age
+            // gate starts it (isAgeGate): a plain sign-in request keeps walking. The age gate is
+            // the answer returned, whatever the last source said (an embed refusal, usually).
+            if (planned && liveWithoutDash == null && result != null && !playable) {
+                if (firstAgeGate == null && result.isAgeGate()) {
+                    firstAgeGate = result;
+                }
+                refused.add(nextType);
+                if (PhoneSourcePlanner.isAgeGateSettled(lane, firstAgeGate != null, refused,
+                        attempted, visitOrder.subList(visitIndex + 1, visitOrder.size()))) {
                     android.util.Log.d("NetPath", "player-ring age-gate-settled video=" + videoId
-                            + " clients=" + ageGated + " attempts=" + attempt
+                            + " refused=" + refused + " attempts=" + attempt
                             + " skipped=" + (visitOrder.size() - visitIndex - 1));
-                    return result;
+                    return firstAgeGate;
                 }
             }
 

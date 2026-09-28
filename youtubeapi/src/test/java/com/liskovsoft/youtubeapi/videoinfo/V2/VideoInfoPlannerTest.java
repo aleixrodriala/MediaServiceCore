@@ -225,6 +225,61 @@ public class VideoInfoPlannerTest {
     }
 
     /**
+     * 18+ and not embeddable: WEB_EMBED answers with the embed refusal, not the gate. Still
+     * settled at the second request, and the verdict shown is the age gate.
+     */
+    @Test
+    public void anAgeGateWebEmbedRefusesForItsEmbedPolicyIsSettledToo() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
+                ? unplayable("Playback on other websites has been disabled by the video owner", auth)
+                : ageGate(auth);
+        VideoInfo result = open("adult");
+        assertTrue(result.isAgeGate());
+        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED"), calls());
+    }
+
+    /** WEB_EMBED silent (a timeout) refused nothing: the walk goes on. */
+    @Test
+    public void anAgeGateIsNotSettledByATimeout() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
+                ? null : ageGate(auth);
+        open("adult");
+        assertEquals(calls().toString(), 8, calls().size());
+    }
+
+    /**
+     * Signed in with the account route benched, three anonymous identities settle nothing: the
+     * account was never heard on this video.
+     */
+    @Test
+    public void signedInARemovalNeedsTheAccountWitness() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        BotWallBook book = ReflectionHelpers.getField(service, "mBotWall");
+        book.noteRouteFailed("wifi:100", VideoInfoService.noMediaVideoKey("removed"), "media-403",
+                android.os.SystemClock.elapsedRealtime());
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
+                + " {\"status\": \"ERROR\", \"reason\": \"This video has been removed by the uploader\"}}", auth);
+        open("removed");
+        assertEquals(calls().toString(), 8, calls().size());
+    }
+
+    /**
+     * Signed out, TV_TIZEN served a kids video and its media failed: the recovery walk does not put
+     * it straight back next after VISIONOS's refusal; it is asked last.
+     */
+    @Test
+    public void aKidsRecoveryFromTizenAsksItLast() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> unplayable(NOT_AVAILABLE + " " + client, auth);
+        ReflectionHelpers.setField(service, "mRecoveryWalk", true);
+        ReflectionHelpers.setField(service, "mRecoverySuspect", AppClient.TV_TIZEN);
+        open("kids");
+        List<String> calls = calls();
+        assertEquals(calls.toString(), "WEB_EMBED", calls.get(1));
+        assertEquals(calls.toString(), "TV_TIZEN", calls.get(calls.size() - 1));
+        assertEquals(calls.toString(), 1, java.util.Collections.frequency(calls, "TV_TIZEN"));
+    }
+
+    /**
      * A plain sign-in request (no age marker) is not an age gate: the lane is asked to the end.
      * (Worded differently per client here: the same LOGIN_REQUIRED text from two clients is read
      * as a localized bot check, BotCheckDetector.isRepeatedLoginRequired.)
