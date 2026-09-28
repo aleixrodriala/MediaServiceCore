@@ -45,6 +45,25 @@ public class VideoInfoParsingTest {
             """;
 
     @Test
+    public void ageGateIsToldApartFromABotCheck() throws IOException {
+        VideoInfo age = parse("""
+                {"playabilityStatus": {"status": "LOGIN_REQUIRED",
+                  "reason": "Sign in to confirm your age", "desktopLegacyAgeGateReason": 1}}
+                """);
+        VideoInfo bot = parse("""
+                {"playabilityStatus": {"status": "LOGIN_REQUIRED",
+                  "reason": "Sign in to confirm you\u2019re not a bot",
+                  "skip": {"playabilityErrorSkipConfig": {"skipOnPlayabilityError": false}}}}
+                """);
+
+        assertTrue(age.isAgeGate());
+        assertTrue(age.isAgeRestricted());
+        assertFalse(age.isBotCheckRequired());
+        assertFalse(bot.isAgeGate());
+        assertTrue(bot.isBotCheckRequired());
+    }
+
+    @Test
     public void authenticatedReloadVerdictRemainsDeniedWithoutMedia() throws IOException {
         VideoInfo info = parse("""
                 {

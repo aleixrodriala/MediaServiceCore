@@ -1395,7 +1395,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
 
             if (result != null) {
+                // NEWTUBE(age-gate): an age gate repeats the same LOGIN_REQUIRED reason on every
+                // client too, so it must not read as a localized bot check: that tripped the
+                // bot-check circuit before an age-capable client (WEB_EMBED) was reached, and
+                // then answered "not a bot" for other videos for a minute (netbench 2026-09-28).
                 boolean repeatedLoginRequired = firstLoginRequired != null
+                        && !result.isAgeGate() && !firstLoginRequired.isAgeGate()
                         && BotCheckDetector.isRepeatedLoginRequired(
                                 firstLoginRequired.getRawPlayabilityStatus(),
                                 firstLoginRequired.getPlayabilityStatus(),

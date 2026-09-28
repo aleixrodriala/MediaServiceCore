@@ -132,6 +132,26 @@ public class VideoInfoWebEmbedLastTest {
         assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth"), calls());
     }
 
+    /**
+     * 7. Signed out, age-gated: every client repeats the same LOGIN_REQUIRED age reason, with
+     * YouTube's desktopLegacyAgeGateReason marker. That is an age gate, not a localized bot check:
+     * the walk must reach WEB_EMBED (which serves embeddable age-gated videos) and must not arm the
+     * bot-check circuit that would answer "not a bot" for the next, unrelated video.
+     */
+    @Test
+    public void signedOutAgeGateReachesWebEmbedWithoutABotCheck() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
+                ? playable(auth) : ageGate().apply(auth);
+        VideoInfo result = open("age");
+        assertFalse(result.isUnplayable());
+        assertEquals(AppClient.WEB_EMBED, result.getClient());
+        assertEquals(null, ReflectionHelpers.getField(service, "mBotCheckResult"));
+
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> playable(auth);
+        assertFalse(open("next").isUnplayable());
+        assertEquals(Collections.singletonList("VISIONOS"), calls());
+    }
+
     /** 6. The pure reorder: WEB_EMBED to the end, everything else in its order, no-ops kept. */
     @Test
     public void moveWebEmbedLastKeepsTheRestInOrder() {
@@ -214,6 +234,11 @@ public class VideoInfoWebEmbedLastTest {
     private static Answer loginRequired(String reason) {
         return auth -> parse("{\"playabilityStatus\": {\"status\": \"LOGIN_REQUIRED\","
                 + " \"reason\": \"" + reason + "\"}}", auth);
+    }
+
+    private static Answer ageGate() {
+        return auth -> parse("{\"playabilityStatus\": {\"status\": \"LOGIN_REQUIRED\","
+                + " \"reason\": \"" + AGE + "\", \"desktopLegacyAgeGateReason\": 1}}", auth);
     }
 
     private static Answer live(boolean dash) {

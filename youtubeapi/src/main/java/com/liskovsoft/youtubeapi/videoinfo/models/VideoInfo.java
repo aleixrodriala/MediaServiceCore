@@ -70,6 +70,12 @@ public class VideoInfo {
     @JsonPath("$.playabilityStatus.playableInEmbed")
     private boolean mIsPlayableInEmbed;
 
+    // NEWTUBE(age-gate): 1 on every client's "Sign in to confirm your age" answer and absent (0)
+    // on a "confirm you're not a bot" one (netbench 2026-09-28: WaOKSUlf4TM on VISIONOS, TV,
+    // ANDROID_VR...; the bot wall on v03RjDNwG1o had no such field). Locale-independent.
+    @JsonPath("$.playabilityStatus.desktopLegacyAgeGateReason")
+    private int mDesktopLegacyAgeGateReason;
+
     @JsonPath("$.playabilityStatus.errorScreen.playerErrorMessageRenderer.subreason")
     private TextItem mPlayabilityDescription;
 
@@ -256,6 +262,16 @@ public class VideoInfo {
      */
     public boolean isVisibilityRestricted() {
         return ServiceHelper.atLeastOneEquals(mPlayabilityStatus, STATUS_ERROR);
+    }
+
+    /**
+     * NEWTUBE(age-gate): an age gate, as opposed to a bot check that also answers LOGIN_REQUIRED.
+     * YouTube's structured marker, or an explicit AGE_* status.
+     */
+    public boolean isAgeGate() {
+        return mDesktopLegacyAgeGateReason != 0
+                || ServiceHelper.atLeastOneEquals(mPlayabilityStatus, STATUS_AGE_CHECK_REQUIRED,
+                        STATUS_AGE_VERIFICATION_REQUIRED);
     }
 
     /**
