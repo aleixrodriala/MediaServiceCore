@@ -152,6 +152,22 @@ public class VideoInfoWebEmbedLastTest {
         assertEquals(Collections.singletonList("VISIONOS"), calls());
     }
 
+    /**
+     * An age gate first must not hide a real bot check behind it: when the clients after it repeat
+     * one unmarked LOGIN_REQUIRED reason (a localized "not a bot"), they are compared with each
+     * other, not with the age answer, and the challenge is still recognised.
+     */
+    @Test
+    public void anAgeGateFirstStillLetsARepeatedBotCheckThrough() {
+        // No Latin keyword, so only the repetition can tell (Japanese: "please sign in").
+        String localizedBotCheck = "\u30ed\u30b0\u30a4\u30f3\u3057\u3066\u304f\u3060\u3055\u3044";
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.VISIONOS
+                ? ageGate().apply(auth) : loginRequired(localizedBotCheck).apply(auth);
+        open("mixed");
+        assertTrue(calls().toString(),
+                ReflectionHelpers.getField(service, "mBotCheckResult") != null);
+    }
+
     /** 6. The pure reorder: WEB_EMBED to the end, everything else in its order, no-ops kept. */
     @Test
     public void moveWebEmbedLastKeepsTheRestInOrder() {

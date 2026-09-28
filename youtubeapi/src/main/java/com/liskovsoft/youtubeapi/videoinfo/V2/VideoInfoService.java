@@ -1399,8 +1399,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 // client too, so it must not read as a localized bot check: that tripped the
                 // bot-check circuit before an age-capable client (WEB_EMBED) was reached, and
                 // then answered "not a bot" for other videos for a minute (netbench 2026-09-28).
-                boolean repeatedLoginRequired = firstLoginRequired != null
-                        && !result.isAgeGate() && !firstLoginRequired.isAgeGate()
+                // firstLoginRequired is never an age gate (see below).
+                boolean repeatedLoginRequired = firstLoginRequired != null && !result.isAgeGate()
                         && BotCheckDetector.isRepeatedLoginRequired(
                                 firstLoginRequired.getRawPlayabilityStatus(),
                                 firstLoginRequired.getPlayabilityStatus(),
@@ -1438,7 +1438,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
                         return result;
                     }
                 }
-                if (firstLoginRequired == null && result.isLoginRequired()) {
+                // An age gate is kept out of the comparison slot, or two later bot-check answers
+                // would each be compared with it and never with each other.
+                if (firstLoginRequired == null && result.isLoginRequired() && !result.isAgeGate()) {
                     firstLoginRequired = result;
                 }
             }
