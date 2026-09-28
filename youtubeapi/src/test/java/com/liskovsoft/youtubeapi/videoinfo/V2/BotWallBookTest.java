@@ -284,8 +284,8 @@ public class BotWallBookTest {
     public void signedOutTheProbeRotatesAcrossClientFamilies() {
         long now = establish(T0);
         long t = now;
-        AppClient[] expected = {AppClient.VISIONOS, AppClient.ANDROID_VR, AppClient.WEB,
-                AppClient.VISIONOS};
+        AppClient[] expected = {AppClient.VISIONOS, AppClient.ANDROID_VR, AppClient.VISIONOS,
+                AppClient.ANDROID_VR};
         for (int i = 0; i < expected.length; i++) {
             t += BotWallBook.probeIntervalMs(i, false);
             // re-confirmed by the previous probe, like a real refused probe does

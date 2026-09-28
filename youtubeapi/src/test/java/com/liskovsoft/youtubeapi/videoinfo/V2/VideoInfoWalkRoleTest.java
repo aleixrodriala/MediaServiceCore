@@ -76,7 +76,6 @@ public class VideoInfoWalkRoleTest {
         VideoInfoService.setPreferAttestedWebFallback(true);
         VideoInfoService.setSkipTvFallbackClients(true);
         VideoInfoService.setPreferDashManifestForLive(true);
-        VideoInfoService.setWebEmbedLast(true);
         service = ReflectionHelpers.callConstructor(VideoInfoService.class);
         initIfNull("mAuthRouteQuarantine", new AuthRouteQuarantineBook());
         initIfNull("mBotWall", new BotWallBook());
@@ -92,7 +91,6 @@ public class VideoInfoWalkRoleTest {
         VideoInfoService.setPreferAttestedWebFallback(false);
         VideoInfoService.setSkipTvFallbackClients(false);
         VideoInfoService.setPreferDashManifestForLive(false);
-        VideoInfoService.setWebEmbedLast(false);
     }
 
     /** The player's 403 set a recovery cursor; the next-video preload runs before the reload. */

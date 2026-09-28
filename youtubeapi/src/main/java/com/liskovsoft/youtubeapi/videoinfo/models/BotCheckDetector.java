@@ -85,6 +85,19 @@ public final class BotCheckDetector {
     private static final String REMOVED_BY_UPLOADER = "removed-by-uploader";
     private static final String ACCOUNT_TERMINATED = "account-terminated";
     private static final String REMOVED_FOR_VIOLATION = "removed-for-violation";
+    private static final String MEMBERS_ONLY = "members-only";
+
+    /**
+     * Members-only content, refused (UNPLAYABLE) to everyone who is not a member of the channel. A
+     * member's account route serves it, and a served answer ends the walk before any consensus, so
+     * as a key it only settles the walks that cannot play it. Captured 2026-09-29 (w664JpkrDio, the
+     * owner's account, which is not a member; TV clients, English): "Join this channel from your
+     * computer or mobile app to get access to members-only content like this video." Other clients'
+     * and locales' wordings are not captured yet; a miss only costs requests.
+     */
+    private static final String[] MEMBERS_ONLY_OPENINGS = {
+            "join this channel",
+    };
 
     /**
      * WHOLE verdicts, normalized (see {@link #canonicalReason}), that are terminal for the CONTENT
@@ -204,6 +217,9 @@ public final class BotCheckDetector {
         String key = TERMINAL_REASONS.get(canonical);
         if (key != null) {
             return key;
+        }
+        if (STATUS_UNPLAYABLE.equals(status) && startsWithAny(verdict, MEMBERS_ONLY_OPENINGS)) {
+            return MEMBERS_ONLY;
         }
         return isViolationRemoval(verdict, sentences) ? REMOVED_FOR_VIOLATION : null;
     }

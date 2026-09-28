@@ -32,8 +32,8 @@ import okhttp3.ResponseBody;
 import retrofit2.Converter;
 
 /**
- * NEWTUBE(planner): the phone's walk with the order from PhoneSourcePlanner, as
- * MobileMainApplication configures it plus {@code setPlannerEnabled}.
+ * NEWTUBE(planner): the phone's walk, both lanes, with the order from PhoneSourcePlanner (netbench
+ * LANES.md), as MobileMainApplication configures it.
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest = Config.NONE, sdk = 28, application = Application.class,
@@ -54,8 +54,6 @@ public class VideoInfoPlannerTest {
         VideoInfoService.setPreferAttestedWebFallback(true);
         VideoInfoService.setSkipTvFallbackClients(true);
         VideoInfoService.setPreferDashManifestForLive(true);
-        VideoInfoService.setWebEmbedLast(true);
-        VideoInfoService.setPlannerEnabled(true);
         service = ReflectionHelpers.callConstructor(VideoInfoService.class);
         initIfNull("mAuthRouteQuarantine", new AuthRouteQuarantineBook());
         initIfNull("mBotWall", new BotWallBook());
@@ -70,8 +68,6 @@ public class VideoInfoPlannerTest {
         VideoInfoService.setPreferAttestedWebFallback(false);
         VideoInfoService.setSkipTvFallbackClients(false);
         VideoInfoService.setPreferDashManifestForLive(false);
-        VideoInfoService.setWebEmbedLast(false);
-        VideoInfoService.setPlannerEnabled(false);
     }
 
     @Test
@@ -88,17 +84,6 @@ public class VideoInfoPlannerTest {
         VideoInfo result = open("kids");
         assertEquals(AppClient.TV_TIZEN, result.getClient());
         assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN"), calls());
-    }
-
-    /**
-     * The app marks an auth-capable client's answer authenticated whether or not an account went
-     * with it; signed out, nothing did, so the planned walk reads it as the anonymous answer it is.
-     */
-    @Test
-    public void aSignedOutTizenAnswerIsAnonymous() {
-        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.TV_TIZEN
-                ? playable(true) : unplayable(NOT_AVAILABLE, auth);
-        assertFalse(open("kids").isAuth());
     }
 
     @Test
@@ -194,34 +179,154 @@ public class VideoInfoPlannerTest {
         assertEquals(Arrays.asList("VISIONOS", "ANDROID_VR"), calls());
     }
 
+    /**
+     * Members only, not a member (the wording the TV clients gave the owner's account, 2026-09-29):
+     * no TV_TIZEN, and the three identities settle it at the fourth request.
+     */
     @Test
-    public void signedInTheAccountHeadStillLeads() {
-        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
-        open("normal");
-        assertEquals(Collections.singletonList("TV_DOWNGRADED+auth"), calls());
+    public void aMembersOnlyVideoIsSettledWithoutTizen() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> unplayable("Join this channel from your"
+                + " computer or mobile app to get access to members-only content like this video.", auth);
+        assertTrue(open("members").isUnplayable());
+        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED", "ANDROID_VR", "IOS"), calls());
     }
 
-    /** No signed-in evidence exists, so a signed-in walk is today's walk, planner or not. */
+    /** A member signed in: the account route serves it second. */
     @Test
-    public void signedInTheWalkIsUnchanged() {
+    public void signedInAMemberIsServedByTheAccountRoute() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.TV_TIZEN && auth
+                ? playable(auth) : unplayable("Join this channel to get access to members-only content"
+                        + " like this video, and other exclusive perks.", auth);
+        assertEquals(AppClient.TV_TIZEN, open("members").getClient());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth"), calls());
+    }
+
+    /** An ended stream whose recording is gone answers UNPLAYABLE too; TV_TIZEN cannot help it. */
+    @Test
+    public void aLiveRefusalIsNotSentToTizen() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
+                + " {\"status\": \"UNPLAYABLE\", \"reason\": \"This live stream recording is not available\"},"
+                + " \"videoDetails\": {\"videoId\": \"ended\", \"isLiveContent\": true}}", auth);
+        open("ended");
+        assertFalse(calls().toString(), calls().contains("TV_TIZEN"));
+    }
+
+    /**
+     * Signed out, an age gate WEB_EMBED answers too (not embeddable) is settled there: no other
+     * anonymous source serves an age gate, so the ring's six more requests are skipped.
+     */
+    @Test
+    public void anAgeGateNothingServesIsSettledAtTheSecondRequest() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> ageGate(auth);
+        VideoInfo result = open("adult");
+        assertTrue(result.isAgeGate());
+        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED"), calls());
+    }
+
+    /**
+     * A plain sign-in request (no age marker) is not an age gate: the lane is asked to the end.
+     * (Worded differently per client here: the same LOGIN_REQUIRED text from two clients is read
+     * as a localized bot check, BotCheckDetector.isRepeatedLoginRequired.)
+     */
+    @Test
+    public void aSignInRequestWithoutTheAgeMarkerKeepsWalking() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
+                + " {\"status\": \"LOGIN_REQUIRED\", \"reason\": \"Private video " + client + "\"}}", auth);
+        open("private");
+        assertEquals(calls().toString(), 8, calls().size());
+    }
+
+    /** Signed in, an ordinary video is still one anonymous VISIONOS request. */
+    @Test
+    public void signedInAnOrdinaryVideoIsOneRequest() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        assertFalse(open("normal").isUnplayable());
+        assertEquals(Collections.singletonList("VISIONOS"), calls());
+    }
+
+    /**
+     * Signed in, what VISIONOS refuses goes to TV_TIZEN with the account (netbench 2026-09-29: it
+     * served ordinary, both kinds of 18+ and made-for-kids videos).
+     */
+    @Test
+    public void signedInAKidsVideoIsServedByTheAccountRoute() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.TV_TIZEN && auth
+                ? playable(auth) : unplayable(NOT_AVAILABLE, auth);
+        VideoInfo result = open("kids");
+        assertEquals(AppClient.TV_TIZEN, result.getClient());
+        assertTrue(result.isAuth());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth"), calls());
+    }
+
+    @Test
+    public void signedInAnAgeGateIsServedByTheAccountRoute() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.TV_TIZEN && auth
+                ? playable(auth) : ageGate(auth);
+        assertEquals(AppClient.TV_TIZEN, open("adult").getClient());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth"), calls());
+    }
+
+    /** An account that may not watch it (not age-verified): settled once WEB_EMBED answers the gate too. */
+    @Test
+    public void signedInAnAgeGateNothingServesIsSettledAtTheThirdRequest() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> ageGate(auth);
+        assertTrue(open("adult").isAgeGate());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth", "WEB_EMBED"), calls());
+    }
+
+    /** The dead TVHTML5 heads (media 403 / SABR-only with the account) are never asked. */
+    @Test
+    public void signedInTheTvHeadsAreNeverAsked() {
         VideoInfoBotWallTest.ShadowWalk.signedIn = true;
         VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> unplayable(NOT_AVAILABLE + " " + client, auth);
-        open("kids");
-        List<String> planned = calls();
-        VideoInfoService.setPlannerEnabled(false);
-        open("kids");
-        assertEquals(calls(), planned);
+        open("gone");
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth", "WEB_EMBED", "ANDROID_VR", "IOS",
+                "ANDROID_REEL", "MWEB", "WEB", "WEB_SAFARI"), calls());
     }
 
-    /** Off, the walk is the ring as before (the released order, WEB_EMBED last). */
+    /**
+     * Signed in, the account the server confirmed is the third identity: a removal is settled at
+     * the third request (VISIONOS, TV_TIZEN with the account, WEB_EMBED).
+     */
     @Test
-    public void offTheRingIsUnchanged() {
-        VideoInfoService.setPlannerEnabled(false);
+    public void signedInARemovedVideoIsSettledAtTheThirdRequest() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
+                + " {\"status\": \"ERROR\", \"reason\": \"This video has been removed by the uploader\"}"
+                + (auth ? ", \"responseContext\": {\"serviceTrackingParams\": [{\"service\": \"GFEEDBACK\","
+                        + " \"params\": [{\"key\": \"logged_in\", \"value\": \"1\"}]}]}" : "") + "}", auth);
+        assertTrue(open("removed").isUnplayable());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth", "WEB_EMBED"), calls());
+    }
+
+    /** The account route benched for this video (its media 403'd) is not planned for it. */
+    @Test
+    public void signedInABenchedAccountRouteIsNotPlanned() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        BotWallBook book = ReflectionHelpers.getField(service, "mBotWall");
+        book.noteRouteFailed("wifi:100", VideoInfoService.noMediaVideoKey("kids"), "media-403",
+                android.os.SystemClock.elapsedRealtime());
         VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
-                ? playable(auth) : unplayable(NOT_AVAILABLE + " " + client, auth);
-        open("kids");
-        assertEquals(Arrays.asList("VISIONOS", "WEB", "WEB_SAFARI", "GEO", "MWEB", "ANDROID_VR", "ANDROID_REEL",
-                "TV", "IOS", "WEB_EMBED"), calls());
+                ? playable(auth) : unplayable(NOT_AVAILABLE, auth);
+        assertEquals(AppClient.WEB_EMBED, open("kids").getClient());
+        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED"), calls());
+    }
+
+    /** Signed in, a VISIONOS media 403 recovers on the account route and asks VISIONOS last. */
+    @Test
+    public void signedInRecoveryFromVisionOsStartsOnTheAccountRoute() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> unplayable(NOT_AVAILABLE + " " + client, auth);
+        ReflectionHelpers.setField(service, "mRecoveryWalk", true);
+        ReflectionHelpers.setField(service, "mRecoverySuspect", AppClient.VISIONOS);
+        open("recover");
+        List<String> calls = calls();
+        assertEquals(calls.toString(), "TV_TIZEN+auth", calls.get(0));
+        assertEquals(calls.toString(), "VISIONOS", calls.get(calls.size() - 1));
     }
 
     // ------------------------------------------------------------------------------------------
@@ -247,6 +352,11 @@ public class VideoInfoPlannerTest {
 
     private static VideoInfo playable(boolean auth) {
         return parse("{\"playabilityStatus\": {\"status\": \"OK\"}}", auth);
+    }
+
+    private static VideoInfo ageGate(boolean auth) {
+        return parse("{\"playabilityStatus\": {\"status\": \"LOGIN_REQUIRED\","
+                + " \"reason\": \"Sign in to confirm your age\", \"desktopLegacyAgeGateReason\": 1}}", auth);
     }
 
     private static VideoInfo unplayable(String reason, boolean auth) {

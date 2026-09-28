@@ -22,25 +22,23 @@ public class VideoInfoVisitOrderTest {
      * TV, a media 403 and a 10-minute quarantine of the whole authenticated route.
      */
     @Test
-    public void authenticatedHeadGetsAColdStartBudget() {
-        long head = VideoInfoService.attemptTimeoutMsFor(AppClient.TV_DOWNGRADED);
+    public void theAccountRouteGetsAColdStartBudget() {
+        long route = VideoInfoService.attemptTimeoutMsFor(AppClient.TV_TIZEN);
         long speculative = VideoInfoService.attemptTimeoutMsFor(AppClient.ANDROID_VR);
 
-        assertEquals(head, VideoInfoService.attemptTimeoutMsFor(AppClient.TV));
-        assertTrue("auth head must outlast a cold start", head >= 15_000);
-        assertTrue("speculative clients keep the short budget", speculative < head);
+        assertTrue("the account route must outlast a cold start", route >= 15_000);
+        assertTrue("speculative clients keep the short budget", speculative < route);
     }
 
     /**
-     * Every client keeps the budget it had before the source catalog took it over: the account
-     * route and the authenticated head first (by walk role), then 20 s for the web-pot family (a
-     * cold BotGuard mint, or WEB_EMBED's embed page), else 7 s.
+     * The account route by its walk role; then 20 s for the web-pot family (a cold BotGuard mint,
+     * or WEB_EMBED's embed page), else 7 s. The TVHTML5 heads lost their 15 s with the heads (the
+     * phone no longer asks them: netbench LANES.md).
      */
     @Test
     public void everyClientKeepsItsAttemptBudget() {
         for (AppClient client : AppClient.values()) {
-            long expected = client == AppClient.TV_TIZEN || client == AppClient.TV_DOWNGRADED
-                    || client == AppClient.TV ? 15_000
+            long expected = client == AppClient.TV_TIZEN ? 15_000
                     : client.isWebPotRequired() ? 20_000 : 7_000;
             assertEquals(client.name(), expected, VideoInfoService.attemptTimeoutMsFor(client));
         }

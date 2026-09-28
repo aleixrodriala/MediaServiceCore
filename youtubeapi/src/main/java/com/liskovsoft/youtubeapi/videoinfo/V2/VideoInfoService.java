@@ -207,38 +207,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private static final AppClient[] TV_FALLBACK_CLIENTS = {
             AppClient.TV_LEGACY, AppClient.TV_DOWNGRADED, AppClient.TV_EMBED, AppClient.TV_SIMPLY
     };
-    // NEWTUBE(no-web-embed): [2026-09-28: the cause below was our own request, not WEB_EMBED - see
-    // web-embed-last, which the phone sets instead since the player honours the pre-roll wait.]
-    // WEB_EMBED answers "This video is unavailable - Error code: 152 - 18"
-    // to every request, on every network: every WEB_EMBED answer in every Pixel and emulator
-    // capture since 2026-09 (again on 2026-09-26 10:45, right after a VISIONOS timeout), and
-    // yt-dlp master's own web_embedded client from the home IP on 2026-09-25/26 - including its
-    // test video for exactly the case WEB_EMBED is kept for, an embeddable age-gated video
-    // (HtVdAasjOgU, "works with web_embedded"). So on the phone it is one guaranteed-dead /player
-    // (plus a BotGuard mint and the embed-page fetch for encryptedHostFlags) in every walk that
-    // reaches it. Skipped through isSkippedClient, like the TV fallback trim; age-restricted
-    // videos go to the signed-in account route (TV_TIZEN) instead, and signed out they cannot
-    // play - the same end state as before, one request cheaper. Phone-only static gate;
-    // VIDEO_INFO_TYPE_LIST and TV are untouched. A forced client (debug.arc.player_client) and
-    // the web-auth playground pointed at WEB_EMBED (debug.arc.web_auth) still reach it.
-    private static volatile boolean sSkipWebEmbed;
-    // NEWTUBE(web-embed-last): the 152-18 above was never WEB_EMBED being dead - the app sent the
-    // embed page's encryptedHostFlags with a different visitor than the one they are bound to (see
-    // YtCfgService.EmbedIdentity). With the right pair it serves, among others, made-for-kids
-    // videos that every other client refuses or answers SABR-only (issue #5, 2026-09-28). This
-    // switch puts it LAST instead of skipping it: a video another client serves never reaches it,
-    // and one that nothing else can play gets one more round trip instead of an error. Its media is
-    // held back for the answer's pre-roll wait, which the phone's player honours (ReadinessGate);
-    // the phone sets this since then.
-    private static volatile boolean sWebEmbedLast;
-    // NEWTUBE(planner): signed out, a client that refuses the video outright (UNPLAYABLE: made-for-
-    // kids videos on VISIONOS and ANDROID_VR) sends the walk to TV_TIZEN, asked WITHOUT the account,
-    // next. netbench 2026-09-28: the one anonymous client that serves those at once and with no
-    // pre-roll (Pixel 9 over LTE, first frame 0.8-1.3 s), where WEB_EMBED - last in the walk -
-    // costs the rest of the ring plus its ad wait. Once per walk; never on a walled network (the
-    // wall's plan owns TV_TIZEN's anonymous ask); never after TV_TIZEN proved dead there.
-    private static volatile boolean sAnonTizenAfterRefusal;
-    private static volatile boolean sPlanner;
     // Web-family-first fallback (NewTube touch flavor): GVS acceptance is client/session-specific,
     // not a transport or carrier-CGNAT property. On-device isolation found that iOS and the old
     // Android VR request could return signed URLs whose init ranges worked but deep ranges got 403;
@@ -290,61 +258,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         sSkipTvFallbackClients = skip;
     }
 
-    /**
-     * Enabled once from the mobile flavor (MobileMainApplication). Makes the failover walk skip
-     * WEB_EMBED ({@link #sSkipWebEmbed}). Never called on TV.
-     */
-    public static void setSkipWebEmbed(boolean skip) {
-        sSkipWebEmbed = skip;
-    }
-
-    /**
-     * Enabled once from the mobile flavor (MobileMainApplication), instead of
-     * {@link #setSkipWebEmbed}: WEB_EMBED moves to the end of every normal walk
-     * ({@link #sWebEmbedLast}). Never called on TV.
-     */
-    public static void setWebEmbedLast(boolean last) {
-        sWebEmbedLast = last;
-    }
-
-    /**
-     * Enabled once from the mobile flavor (MobileMainApplication): see
-     * {@link #sAnonTizenAfterRefusal}. Never called on TV.
-     */
-    public static void setAnonTizenAfterRefusal(boolean enabled) {
-        sAnonTizenAfterRefusal = enabled;
-    }
-
-    /**
-     * NEWTUBE(planner): a signed-out phone walk takes its order from PhoneSourcePlanner (netbench
-     * PLANNER.md) instead of upstream's ring and the gates above, and asks TV_TIZEN without the
-     * account after a refusal (the setAnonTizenAfterRefusal rule). Signed in, nothing changes.
-     * Mobile only (needs setPreferNoPotClient).
-     */
-    public static void setPlannerEnabled(boolean enabled) {
-        sPlanner = enabled;
-    }
-
     /** Any sign the answer is about a live stream, current, ended or scheduled. */
     static boolean hasLiveSignal(VideoInfo result) {
         return result.isLive() || result.getStartTimestamp() != null
                 || result.getVideoDetails() != null && result.getVideoDetails().isLiveContent();
-    }
-
-    static List<AppClient> moveWebEmbedLast(List<AppClient> order) {
-        if (order.isEmpty() || !order.contains(AppClient.WEB_EMBED)
-                || order.get(order.size() - 1) == AppClient.WEB_EMBED) {
-            return order;
-        }
-
-        List<AppClient> result = new java.util.ArrayList<>(order.size());
-        for (AppClient type : order) {
-            if (type != AppClient.WEB_EMBED) {
-                result.add(type);
-            }
-        }
-        result.add(AppClient.WEB_EMBED);
-        return result;
     }
 
     /**
@@ -480,9 +397,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     private static boolean isSkippedClient(AppClient client) {
-        return (sSkipTvFallbackClients && Helpers.equalsAny(client, (Object[]) TV_FALLBACK_CLIENTS))
-                || (sSkipWebEmbed && client == AppClient.WEB_EMBED
-                        && AppClient.webAuthClient() != AppClient.WEB_EMBED);
+        return sSkipTvFallbackClients && Helpers.equalsAny(client, (Object[]) TV_FALLBACK_CLIENTS);
     }
 
     @Nullable
@@ -990,9 +905,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
          * NEWTUBE(planner): a signed-out walk has no signed-in witness, so it never reached the
          * verdict and asked the whole ring about a removed video. Planned, its first sources ride
          * three different visitors (the web session, the app, the embed page - PlayerSource
-         * identity); the same allowlisted verdict from all three is the same independence, reached
-         * without an account.
+         * identity); the same allowlisted verdict from three identities is the same independence,
+         * reached without an account. Signed in, the account the server confirmed is one more
+         * identity: VISIONOS, TV_TIZEN with the account and WEB_EMBED settle it at the third request.
          */
+        static final int MIN_IDENTITIES = 3;
         private final boolean mByIdentity;
         private final java.util.Set<PlayerSource.Identity> mIdentities =
                 java.util.EnumSet.noneOf(PlayerSource.Identity.class);
@@ -1042,7 +959,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         private boolean isDefinitive() {
             return mAuth && mAnonymous && mClients.size() >= MIN_CLIENTS
-                    || mByIdentity && mIdentities.size() >= PlayerSource.Identity.values().length;
+                    || mByIdentity && mIdentities.size() + (mAuth ? 1 : 0) >= MIN_IDENTITIES;
         }
 
         String clients() {
@@ -1128,12 +1045,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // set after a successful failover made every later open start from stale routing state.
         // TV keeps its historical behavior. A speculative walk leaves both to the video the user
         // opens (see WalkRole).
-        if (!speculative && sPreferAttestedWebFallback
+        if (!speculative && sPreferNoPotClient
                 && routingGeneration == mRoutingGeneration.get()) {
             mNextInfoType = null;
             mRecoveryWalk = false;
             mRecoverySuspect = null;
-        } else if (!speculative && sPreferAttestedWebFallback) {
+        } else if (!speculative && sPreferNoPotClient) {
             android.util.Log.d("NetPath", "player-ring keep-newer-recovery requestGen="
                     + routingGeneration + " currentGen=" + mRoutingGeneration.get());
         }
@@ -1286,8 +1203,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // BotWallBook. The key is looked up only once the book has something to say, so a healthy
         // open pays no extra system calls.
         final boolean mobileWall = sPreferNoPotClient && sDebugForcedClient == null;
-        // NEWTUBE(planner): see setPlannerEnabled. Signed out only: there is no signed-in evidence.
-        final boolean planned = sPlanner && mobileWall && !authenticated;
+        // NEWTUBE(planner): the phone's order, both lanes, comes from PhoneSourcePlanner (netbench
+        // LANES.md); upstream's ring and the helpers that bent it are the TV path only.
+        final boolean planned = mobileWall;
+        final PhoneSourcePlanner.Lane lane = authenticated
+                ? PhoneSourcePlanner.Lane.SIGNED_IN : PhoneSourcePlanner.Lane.SIGNED_OUT;
         maybeResetBotWallForDebug();
         final WallKeys wallKeys = new WallKeys();
         final long walkStartMs = android.os.SystemClock.elapsedRealtime();
@@ -1316,20 +1236,23 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
             visitOrder = new java.util.ArrayList<>(wallPlan.order);
         } else if (planned) {
+            // Signed in, the account route is planned unless BotWallBook has benched it for this
+            // video or this attachment (a media 403, a challenge, a reload-page or SABR-only answer).
+            final boolean accountRouteBenched = authenticated && mBotWall.hasRouteRecords()
+                    && mBotWall.isRouteFailed(wallKeys.network(), noMediaVideoKey(videoId), walkStartMs);
             visitOrder = PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(
-                    recoveryWalk ? lastWinner : null, anonChallenged));
+                    lane, recoveryWalk ? lastWinner : null, anonChallenged, accountRouteBenched));
             android.util.Log.d("NetPath", "player-ring plan video=" + videoId
+                    + " lane=" + (authenticated ? "signed-in" : "signed-out")
                     + (recoveryWalk ? " suspect=" + lastWinner : "")
                     + (anonChallenged ? " anon-challenged" : "")
+                    + (accountRouteBenched ? " account-route=benched" : "")
                     + " order=" + visitOrder);
         } else {
             visitOrder = buildRequestVisitOrder(
                     beginType, lastWinner, sPreferAttestedWebFallback,
                     recoveryWalk, authenticated, forbiddenAuthClients, authenticatedWebFirst,
                     anonChallenged);
-            if (sWebEmbedLast && !AppClient.isWebEmbedAuthEnabled()) {
-                visitOrder = moveWebEmbedLast(visitOrder);
-            }
             if (anonChallenged) {
                 android.util.Log.d("NetPath", "player-ring anon-deprioritized network="
                         + mAnonChallengeNetwork + " first=" + visitOrder.get(0));
@@ -1376,6 +1299,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
         final java.util.Set<AppClient> attempted = java.util.EnumSet.noneOf(AppClient.class);
         // NEWTUBE(planner): TV_TIZEN was put next by the anonymous-refusal rule, not by a wall plan.
         boolean anonTizenSpeculative = false;
+        // NEWTUBE(planner): the sources that answered this walk with an age gate (see
+        // PhoneSourcePlanner.isAgeGateSettled).
+        final java.util.Set<AppClient> ageGated = java.util.EnumSet.noneOf(AppClient.class);
         boolean authenticatedClientAttempted = false;
         int anonChallengeHits = 0;
         int attempt = 0;
@@ -1407,10 +1333,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 break;
             }
 
-            // Phone ring trim: TV-only fallback clients (and WEB_EMBED, where setSkipWebEmbed is
-            // on) are skipped (a stale mNextInfoType from nextVideoInfoType may land on one -
-            // WEB_EMBED is element 0, the recovery begin after any off-ring winner; it's simply
-            // not probed).
+            // Phone ring trim: TV-only fallback clients are skipped (a stale mNextInfoType from
+            // nextVideoInfoType may land on one; it's simply not probed).
             if (isSkippedClient(nextType)
                     && sDebugForcedClient != nextType
                     && !(authenticated && nextType == AppClient.TV_DOWNGRADED)) {
@@ -1449,15 +1373,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
             VideoInfo result = getVideoInfoWithTimeout(
                     nextType, videoId, clickTrackingParams, cancellationSignal, attemptBudgetMs,
                     noResponse);
-            // NEWTUBE(planner): signed out, no request carried an account, yet an auth-capable
-            // client's answer (TV_TIZEN) was marked authenticated because it MAY carry one - so its
-            // challenge read as the account route failing and its refusal as a signed-in witness.
-            // Corrected for planned walks, where TV 7.x (whose made-for-kids answer is a lone "not a
-            // bot") is never asked; the ring keeps the old flag until that answer is discounted as
-            // wall evidence too (PLANNER.md, follow-ups).
-            if (planned && result != null && result.isAuth()) {
-                result.setAuth(false);
-            }
             if (abortCanceledRequest(videoId, "post-attempt", cancellationSignal)) {
                 botCheck.markCutShort();
                 break;
@@ -1493,15 +1408,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
                         wallKeys, wallEvidence, wallPlan.walled, visitOrder, visitIndex, attempted,
                         attempt);
             }
-            // The wall is read NOW: this walk's own answers may have just established one, and then
-            // its plan owns TV_TIZEN's single anonymous ask. Live signals (an ended stream whose
-            // recording is gone answers UNPLAYABLE) are not a refusal TV_TIZEN can help with.
-            if ((sAnonTizenAfterRefusal || planned) && mobileWall && !authenticated && result != null
+            // NEWTUBE(planner): signed out, an anonymous content refusal admits the account route
+            // without the account (PhoneSourcePlanner.admitsAccountRouteAfter). The wall is read
+            // NOW: this walk's own answers may have just established one, and then its plan owns
+            // TV_TIZEN's single anonymous ask. Live signals (an ended stream whose recording is gone
+            // answers UNPLAYABLE) and verdicts terminal for everyone (members only, removed) are not
+            // a refusal TV_TIZEN can help with.
+            if (planned && PhoneSourcePlanner.admitsAccountRouteAfter(lane, nextType)
+                    && result != null && !result.isAuth()
+                    && result.isUnknownRestricted() && !hasLiveSignal(result)
+                    && BotCheckDetector.definitiveUnplayableKey(result.getRawPlayabilityStatus(),
+                            result.getPlayabilityStatus()) == null
                     && liveWithoutDash == null && !wallPlan.walled
                     && !mBotWall.isWalled(wallKeys.network(), android.os.SystemClock.elapsedRealtime())
-                    && result.isUnknownRestricted() && !hasLiveSignal(result)
-                    && !nextType.isWebPotRequired()
-                    && nextType != BotWallBook.ACCOUNT_ROUTE
                     && !attempted.contains(BotWallBook.ACCOUNT_ROUTE)
                     && (visitIndex + 1 >= visitOrder.size()
                             || visitOrder.get(visitIndex + 1) != BotWallBook.ACCOUNT_ROUTE)
@@ -1643,6 +1562,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
                         + " attempts=" + attempt
                         + " skipped=" + (visitOrder.size() - visitIndex - 1));
                 return result;
+            }
+
+            // NEWTUBE(planner): an age gate nothing left in this walk can serve is the verdict:
+            // signed out that is WEB_EMBED's answer (the second request, where the ring asked eight
+            // clients and minted three web tokens to hear the same gate), signed in the account
+            // route's and WEB_EMBED's. Only YouTube's structured age gate counts (isAgeGate): a
+            // plain sign-in request keeps walking.
+            if (planned && liveWithoutDash == null && result != null && result.isAgeGate()) {
+                ageGated.add(nextType);
+                if (PhoneSourcePlanner.isAgeGateSettled(lane, ageGated,
+                        visitOrder.subList(visitIndex + 1, visitOrder.size()))) {
+                    android.util.Log.d("NetPath", "player-ring age-gate-settled video=" + videoId
+                            + " clients=" + ageGated + " attempts=" + attempt
+                            + " skipped=" + (visitOrder.size() - visitIndex - 1));
+                    return result;
+                }
             }
 
             // Failover walks leave one logcat line per extra /player attempt (happy path =
@@ -3181,11 +3116,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
         if (client == BotWallBook.ACCOUNT_ROUTE) {
             return AUTH_HEAD_ATTEMPT_TIMEOUT_MS;
         }
-        for (AppClient head : AUTHENTICATED_HEAD) {
-            if (head == client) {
-                return AUTH_HEAD_ATTEMPT_TIMEOUT_MS;
-            }
-        }
 
         // NEWTUBE(source-catalog): otherwise the source's own budget.
         if (PlayerSourceCatalog.defaultFor(client).budget == PlayerSource.Budget.WEB_POT) {
@@ -3431,7 +3361,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return null;
         }
 
-        videoInfo.setAuth(auth);
+        // NEWTUBE(planner): "the request carried the account", not "the client could have": signed
+        // out, an auth-capable client's answer (TV_TIZEN) read as the account route failing, as a
+        // signed-in consensus witness, and skipped the guest subtitle enrichment (LANES.md, C-5).
+        videoInfo.setAuth(auth && hasAuthentication());
         // NEWTUBE(readiness): the pre-roll wait counts from here (see PrerollAds).
         videoInfo.setReceivedAtMs(android.os.SystemClock.elapsedRealtime());
 
@@ -3445,7 +3378,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return null;
         }
 
-        videoInfo.getVideoInfo().setAuth(auth);
+        videoInfo.getVideoInfo().setAuth(auth && hasAuthentication());
         videoInfo.getVideoInfo().setReceivedAtMs(android.os.SystemClock.elapsedRealtime());
 
         return videoInfo.getVideoInfo();

@@ -63,7 +63,6 @@ public class VideoInfoBotWallTest {
         VideoInfoService.setPreferAttestedWebFallback(true);
         VideoInfoService.setSkipTvFallbackClients(true);
         VideoInfoService.setPreferDashManifestForLive(true);
-        VideoInfoService.setSkipWebEmbed(true); // as MobileMainApplication does
         service = ReflectionHelpers.callConstructor(VideoInfoService.class);
         // The shadowed constructor skips field initializers; give the instance what the walk uses.
         initIfNull("mAuthRouteQuarantine", new AuthRouteQuarantineBook());
@@ -85,7 +84,6 @@ public class VideoInfoBotWallTest {
         VideoInfoService.setPreferAttestedWebFallback(false);
         VideoInfoService.setSkipTvFallbackClients(false);
         VideoInfoService.setPreferDashManifestForLive(false);
-        VideoInfoService.setSkipWebEmbed(false);
         VideoInfoService.setDebugBotWallSource(null);
         VideoInfoService.setDebugForcedClient(null);
     }
@@ -184,9 +182,9 @@ public class VideoInfoBotWallTest {
     }
 
     /**
-     * Signed out, the same wall: the first walk stops at the second challenged platform client
-     * (7 requests instead of 11 - WEB_EMBED is skipped too), and later opens ask nobody until the
-     * next probe.
+     * Signed out, the same wall: the first walk stops at the third challenged platform client
+     * (VISIONOS, ANDROID_VR, IOS; WEB_EMBED's error in between is no challenge), asks TV_TIZEN
+     * once, and later opens ask nobody until the next probe.
      */
     @Test
     public void signedOutUnderTheWallTheSecondOpenCostsNothing() {
@@ -194,8 +192,7 @@ public class VideoInfoBotWallTest {
 
         VideoInfo first = open("a");
         assertTrue(first.isBotCheckRequired());
-        assertEquals(Arrays.asList("VISIONOS", "WEB", "WEB_SAFARI", "GEO", "MWEB",
-                "ANDROID_VR", "TV_TIZEN"), drain());
+        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED", "ANDROID_VR", "IOS", "TV_TIZEN"), drain());
 
         VideoInfo second = open("b");
         assertTrue(second.isBotCheckRequired());
@@ -326,7 +323,8 @@ public class VideoInfoBotWallTest {
             movedUp |= item.msg.startsWith("player-ring account-route next reason=bot-check");
         }
         assertTrue(established);
-        assertTrue(movedUp);
+        // Planned second signed in: already next, so no "account-route next" move is needed.
+        assertFalse(movedUp);
 
         assertEquals(Collections.singletonList("TV_TIZEN+auth"), requestsFor("aqz-KE-bpKQ"));
     }
@@ -352,15 +350,13 @@ public class VideoInfoBotWallTest {
 
         ShadowSystemClock.advanceBy(Duration.ofMillis(BotWallBook.probeIntervalMs(0, false)));
         assertEquals(Collections.singletonList("VISIONOS"), requestsFor("b"));
-        ShadowSystemClock.advanceBy(Duration.ofMillis(BotWallBook.probeIntervalMs(1, false)));
-        assertEquals(Collections.singletonList("ANDROID_VR"), requestsFor("c"));
 
-        // The Web family recovers; VISIONOS and ANDROID_VR are still refused.
-        ShadowWalk.script = (client, auth) -> client == AppClient.WEB ? playable(auth)
+        // The Android family recovers; VISIONOS is still refused.
+        ShadowWalk.script = (client, auth) -> client == AppClient.ANDROID_VR ? playable(auth)
                 : walledLte(client, auth);
-        ShadowSystemClock.advanceBy(Duration.ofMillis(BotWallBook.probeIntervalMs(2, false)));
-        assertFalse(open("d").isUnplayable());
-        assertEquals(Collections.singletonList("WEB"), drain());
+        ShadowSystemClock.advanceBy(Duration.ofMillis(BotWallBook.probeIntervalMs(1, false)));
+        assertFalse(open("c").isUnplayable());
+        assertEquals(Collections.singletonList("ANDROID_VR"), drain());
         assertFalse("the recovered family ended the wall", isWalled());
     }
 
@@ -476,8 +472,7 @@ public class VideoInfoBotWallTest {
 
     @Test
     public void theAccountRouteGetsTheHeadBudgetAndCanBeForced() {
-        assertEquals(VideoInfoService.attemptTimeoutMsFor(AppClient.TV_DOWNGRADED),
-                VideoInfoService.attemptTimeoutMsFor(AppClient.TV_TIZEN));
+        assertEquals(15_000, VideoInfoService.attemptTimeoutMsFor(AppClient.TV_TIZEN));
         assertTrue(VideoInfoService.setDebugForcedClient("tv_tizen"));
     }
 
@@ -530,7 +525,7 @@ public class VideoInfoBotWallTest {
         boolean suspectLogged = false;
         for (org.robolectric.shadows.ShadowLog.LogItem item
                 : org.robolectric.shadows.ShadowLog.getLogsForTag("NetPath")) {
-            suspectLogged |= item.msg.startsWith("player-ring authenticated-recovery")
+            suspectLogged |= item.msg.startsWith("player-ring plan")
                     && item.msg.contains("suspect=TV_TIZEN");
         }
         assertTrue(suspectLogged);
@@ -624,7 +619,7 @@ public class VideoInfoBotWallTest {
 
         VideoInfo second = open("b");
         assertFalse(second.isUnplayable());
-        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth", "WEB"), drain());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth", "WEB_EMBED"), drain());
         assertFalse("the serve cleared the wall the same walk raised", isWalled());
     }
 

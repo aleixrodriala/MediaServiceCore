@@ -22,10 +22,16 @@ public final class SabrVodCapability {
      * property of the client rather than of the phone, its account or its carrier. Anonymous
      * VISIONOS - the client the phone's ring actually wins with - serves the same request at
      * HTTP 200. Requiring auth here could therefore only ever select the failing route.
+     *
+     * <p>NEWTUBE(planner): and only VISIONOS. {@link AppClient#isSabrSupported()} lists every client
+     * whose SABR endpoint answers, but without a PO token all of them except VISIONOS are served only
+     * up to ~56-60 s (HANDOFF section 28). Accepted here, a SABR-only IOS / ANDROID* answer ended the
+     * walk as "playable" and the video stopped at about a minute (netbench LANES.md, audit A2). The
+     * experiment is a delivery choice; it must not pick a source that cannot finish the video.
      */
     public static boolean isEligible(VideoInfo info) {
         if (info == null || !"OK".equals(info.getRawPlayabilityStatus()) || info.isBotCheckRequired()
-                || info.getClient() == null || !info.getClient().isSabrSupported()
+                || info.getClient() != AppClient.VISIONOS || !info.getClient().isSabrSupported()
                 || info.getVideoDetails() == null || info.isLive() || info.getVideoDetails().isLiveContent()
                 || info.getAdaptiveFormats() == null || info.getAdaptiveFormats().isEmpty()
                 || info.getServerAbrStreamingUrl() == null || info.getServerAbrStreamingUrl().isEmpty()

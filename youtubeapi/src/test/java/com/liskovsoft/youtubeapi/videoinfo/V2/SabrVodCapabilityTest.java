@@ -69,15 +69,17 @@ public class SabrVodCapabilityTest {
         assertTrue(info.isAdaptiveFormatsBroken());
         assertTrue(VideoInfoService.isAuthRouteSabrOnlyVerdict(AppClient.TV, info));
     }
-    @Test public void everyAcceptedClientIsOneMeasuredToServeSabrMedia() throws Exception {
+    /**
+     * Only VISIONOS: the one client whose SABR media is served past the first minute without a PO
+     * token (HANDOFF section 28). IOS / ANDROID / ANDROID_VR answer, then stop at ~60 s.
+     */
+    @Test public void theOnlyAcceptedClientIsTheOneMeasuredToServeAWholeVideo() throws Exception {
         SabrVodCapability.setEnabled(true);
-        for (AppClient client : new AppClient[]{AppClient.VISIONOS, AppClient.IOS,
-                AppClient.ANDROID, AppClient.ANDROID_VR}) {
-            VideoInfo info = parse(JSON);
-            info.setClient(client);
-            assertTrue(client.name(), SabrVodCapability.accepts(info));
-        }
-        for (AppClient client : new AppClient[]{AppClient.TV, AppClient.TV_DOWNGRADED,
+        VideoInfo visionOs = parse(JSON);
+        visionOs.setClient(AppClient.VISIONOS);
+        assertTrue(SabrVodCapability.accepts(visionOs));
+        for (AppClient client : new AppClient[]{AppClient.IOS, AppClient.ANDROID, AppClient.ANDROID_VR,
+                AppClient.ANDROID_REEL, AppClient.TV, AppClient.TV_DOWNGRADED,
                 AppClient.TV_SIMPLY, AppClient.TV_EMBED, AppClient.WEB, AppClient.WEB_EMBED,
                 AppClient.MWEB}) {
             VideoInfo info = parse(JSON);

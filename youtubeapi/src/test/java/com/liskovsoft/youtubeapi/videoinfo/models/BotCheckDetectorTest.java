@@ -104,6 +104,23 @@ public class BotCheckDetectorTest {
      * 6SJNVb0GnPI on the Pixel (2026-09-28): seven clients named the policy and added a "learn
      * more ... in your country" sentence, WEB_EMBED named the terms of service. One verdict.
      */
+    /**
+     * Members only, not a member: the TV clients' wording (captured 2026-09-29) and the watch-page
+     * wording are one verdict; any other status, or a sentence that does not open with it, is not.
+     */
+    @Test
+    public void membersOnlyIsOneVerdictWhateverTheWording() {
+        String tv = BotCheckDetector.definitiveUnplayableKey("UNPLAYABLE", "Join this channel from"
+                + " your computer or mobile app to get access to members-only content like this video.");
+        assertEquals("members-only", tv);
+        assertEquals(tv, BotCheckDetector.definitiveUnplayableKey("UNPLAYABLE", "Join this channel to get"
+                + " access to members-only content like this video, and other exclusive perks."));
+        assertNull(BotCheckDetector.definitiveUnplayableKey("LOGIN_REQUIRED", "Join this channel to get"
+                + " access to members-only content like this video."));
+        assertNull(BotCheckDetector.definitiveUnplayableKey("UNPLAYABLE", "You can join this channel"
+                + " to get access."));
+    }
+
     @Test
     public void aRemovalForAViolationIsOneVerdictWhateverThePolicyOrTheClient() {
         String app = BotCheckDetector.definitiveUnplayableKey("ERROR", "Este vídeo se ha retirado"

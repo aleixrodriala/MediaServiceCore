@@ -104,13 +104,17 @@ final class BotWallBook {
     /** The cheapest anonymous identity (no token, no cipher) and the ring's own head. */
     static final AppClient PROBE_CLIENT = AppClient.VISIONOS;
     /**
-     * Signed-out probe rotation, one client per family: the token-free Apple head, the Android
-     * platform identity, the attested Web family (WEB). WEB_EMBED is not a probe: it is the ring's
-     * last resort (VideoInfoService.setWebEmbedLast) and has never been measured against a wall,
-     * so a video only it serves (made-for-kids, issue #5) waits for the wall to lift.
+     * Signed-out probe rotation, one client per family: the token-free Apple head and the Android
+     * platform identity. A probe ends the wall only by SERVING the video (noteAnonServed), so each
+     * family is represented by a client whose answers this build plays. The attested Web family
+     * (WEB) was the third until the planner (netbench LANES.md): its answers are SABR-only or
+     * progressive-only, which the walk never accepts, so a WEB probe could re-confirm a wall but
+     * never end one - and with WEB at the end of the lane, "the family the establishing walk did
+     * not see refused" made it the FIRST probe. WEB_EMBED is not a probe either: it has never been
+     * measured against a wall.
      */
     static final AppClient[] PROBE_FAMILIES = {
-            AppClient.VISIONOS, AppClient.ANDROID_VR, AppClient.WEB
+            AppClient.VISIONOS, AppClient.ANDROID_VR
     };
     /** The one request shape that carries the account AND hands out URLs that serve. */
     static final AppClient ACCOUNT_ROUTE = AppClient.TV_TIZEN;
@@ -569,6 +573,14 @@ final class BotWallBook {
 
     synchronized boolean isWalled(@Nullable String network, long nowMs) {
         return activeWall(network, nowMs) != null;
+    }
+
+    /**
+     * Cheap pre-check for the signed-in plan (PhoneSourcePlanner): false means the account route is
+     * benched nowhere, so a healthy walk never has to look up its network key.
+     */
+    synchronized boolean hasRouteRecords() {
+        return !mRoutes.isEmpty();
     }
 
     /**
