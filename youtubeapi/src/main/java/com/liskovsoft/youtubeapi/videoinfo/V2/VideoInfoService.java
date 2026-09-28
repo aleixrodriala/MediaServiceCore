@@ -17,6 +17,7 @@ import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitHelper;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSource;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSourceCatalog;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.SourceWinnerHint;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitOkHttpHelper;
 import com.liskovsoft.youtubeapi.service.internal.MediaServiceData;
 import com.liskovsoft.youtubeapi.innertube.initialresponse.InitialResponseService;
@@ -3392,12 +3393,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         mInfoTypeRestored = true;
 
-        int videoInfoType = getData().getVideoInfoType();
-        if (videoInfoType < 0 || videoInfoType >= AppClient.values().length) {
+        // NEWTUBE(source-catalog): keyed by source id; the legacy ordinal is migrated once.
+        PlayerSource hint = SourceWinnerHint.read(winnerHintPrefs());
+        if (hint == null) {
             return;
         }
 
-        AppClient restored = AppClient.values()[videoInfoType];
+        AppClient restored = hint.client;
         // NEWTUBE(live-winner): ANDROID_VR is never a useful VOD head on the phone - its media hits
         // the deep-range 403 wall (HANDOFF §17) - and until live answers stopped updating the winner
         // (see persistRecentTypeIfNeeded) every live open persisted it here. A restored ANDROID_VR
@@ -3429,7 +3431,32 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return;
         }
 
-        getData().setVideoInfoType(mActualInfoType != null ? mActualInfoType.ordinal() : -1);
+        SourceWinnerHint.write(winnerHintPrefs(), mActualInfoType);
+    }
+
+    /**
+     * NEWTUBE(source-catalog): the winner hint's own preference; upstream's ordinal field in
+     * MediaServiceData is only read, once, to migrate it (see SourceWinnerHint).
+     */
+    private SourceWinnerHint.Prefs winnerHintPrefs() {
+        return new SourceWinnerHint.Prefs() {
+            private static final String KEY = "newtube_player_winner_source";
+
+            @Override
+            public String get() {
+                return GlobalPreferences.sInstance.getString(KEY, null);
+            }
+
+            @Override
+            public void put(String id) {
+                GlobalPreferences.sInstance.putString(KEY, id);
+            }
+
+            @Override
+            public int legacyOrdinal() {
+                return getData().getVideoInfoType();
+            }
+        };
     }
 
     private void persistRecentTypeIfNeeded(VideoInfo videoInfo) {
