@@ -21,6 +21,13 @@ internal interface PoTokenGenerator : Closeable {
      */
     fun isExpired(): Boolean
 
+    /**
+     * NEWTUBE(pot-wv4): secret-free NetPath fields describing how this generator got its BotGuard
+     * challenge (`challenge=`, `ytcfg=`, `eventId=`...), appended to the `web-pot-session` line.
+     * Never a token, a visitor or a page value.
+     */
+    fun diagnostics(): String = ""
+
     interface Factory {
         /**
          * Initializes a [PoTokenGenerator] by loading the BotGuard VM, running it, and obtaining

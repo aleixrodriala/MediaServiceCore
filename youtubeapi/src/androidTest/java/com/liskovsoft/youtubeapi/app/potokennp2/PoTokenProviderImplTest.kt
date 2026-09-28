@@ -5,6 +5,7 @@ import com.liskovsoft.mediaserviceinterfaces.data.MediaItemFormatInfo
 import com.liskovsoft.googlecommon.common.helpers.tests.TestHelpers
 import com.liskovsoft.sharedutils.prefs.GlobalPreferences
 import com.liskovsoft.youtubeapi.app.potokennp2.generators.PoTokenWebView3
+import com.liskovsoft.youtubeapi.app.potokennp2.generators.PoTokenWebView4
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager
 import org.junit.Assert
 import org.junit.Before
@@ -53,6 +54,38 @@ class PoTokenProviderImplTest {
         PoTokenProviderImpl.poTokenFactory = PoTokenWebView3
 
         assertPoTokenResponse()
+    }
+
+    @Test
+    fun testWebPoTokenIsNotEmpty4() {
+        PoTokenProviderImpl.poTokenFactory = PoTokenWebView4
+
+        // NEWTUBE(pot-wv4): upstream asserts exactly 120 ("the new pot is shorter"). Old-flow content
+        // tokens were 204-460 chars on the phone, so a bound tells the flows apart without pinning
+        // a size that is descriptive, not an invariant. The NetPath line should say challenge=homepage.
+        assertWebPoTokenMaxLength(130)
+    }
+
+    @Test
+    fun testWebPoTokenOnEmptyVideoId4() {
+        PoTokenProviderImpl.poTokenFactory = PoTokenWebView4
+
+        assertWebPoTokenOnEmptyVideoId()
+    }
+
+    @Test
+    fun testPoTokenResponse4() {
+        PoTokenProviderImpl.poTokenFactory = PoTokenWebView4
+
+        assertPoTokenResponse()
+    }
+
+    private fun assertWebPoTokenMaxLength(maxLength: Int) {
+        val webClientPoToken = PoTokenProviderImpl.getWebClientPoToken(VIDEO_ID)
+        val length = webClientPoToken?.playerRequestPoToken?.length ?: 0
+
+        Assert.assertNotNull("PoToken not empty", webClientPoToken)
+        Assert.assertTrue("PoToken length $length is in 1..$maxLength", length in 1..maxLength)
     }
 
     private fun assertWebPoTokenLength(length: Int) {

@@ -91,6 +91,14 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                 null -> throw e
                 else -> throw cause // includes PoTokenException
             }
+        } catch (e: LinkageError) {
+            // NoClassDefFoundError and friends: the poToken code touched a platform API that
+            // this (older) device does not provide. An Error is not an Exception, so without
+            // this branch it escapes every caller and kills the whole video info lookup.
+            // Treat it like a broken WebView so we stop retrying and fall back gracefully.
+            Log.e(TAG, "Could not obtain poToken because of a missing platform API", e)
+            webViewBadImpl = true
+            return null
         }
     }
 
@@ -169,11 +177,16 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                     //webPoTokenGenerator = (poTokenFactory ?: PoTokenWebView)
                     //    .newPoTokenGenerator(AppService.instance().context)
 
+                    // NEWTUBE(pot-wv4): set when the selected generator failed and PoTokenWebView was
+                    // built instead, so the session line says it is the fallback.
+                    var fallbackFields = ""
+
                     try {
                         // create a new webPoTokenGenerator
                         val context = AppService.instance().context
+                        val factory = poTokenFactory
                         webPoTokenGenerator = try {
-                            (poTokenFactory ?: PoTokenWebView)
+                            (factory ?: PoTokenWebView)
                                 .newPoTokenGenerator(context)
                         } catch (e: Exception) {
                             when (e) {
@@ -181,9 +194,11 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                                     // BadWebViewException: Error invoking onRunBotguardResult
                                     // PoTokenException: mintCallback is not defined
                                     // PoTokenWebView2/3 may fail due to too many requests. Switching to the default variant.
-                                    if (poTokenFactory != null && poTokenFactory != PoTokenWebView)
+                                    if (factory != null && factory != PoTokenWebView) {
+                                        fallbackFields = " fallbackFrom=" + generatorName(factory) +
+                                                " fallbackError=" + e.javaClass.simpleName
                                         PoTokenWebView.newPoTokenGenerator(context)
-                                    else
+                                    } else
                                         throw e
                                 }
                                 else -> throw e
@@ -196,12 +211,17 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                             .generatePoToken(webPoTokenVisitorData!!)
                     } catch (e: Throwable) {
                         logWebPotSession("failed", reason, visitorSource, previousAgeMs, startedMs,
-                            " error=" + e.javaClass.simpleName)
+                            " error=" + e.javaClass.simpleName + fallbackFields)
                         throw e
                     }
                     webPoTokenSessionBuiltAtMs = SystemClock.elapsedRealtime()
+                    // NEWTUBE(pot-wv4): challenge=/ytcfg=/eventId=/contentFlag=... and the session
+                    // token's length, appended after generator= so existing line parsers keep working.
                     logWebPotSession("new", reason, visitorSource, previousAgeMs, startedMs,
-                        " generator=" + webPoTokenGenerator!!.javaClass.simpleName)
+                        " generator=" + webPoTokenGenerator!!.javaClass.simpleName
+                                + webPoTokenGenerator!!.diagnostics()
+                                + " potLen=" + webPoTokenStreamingPot!!.length
+                                + fallbackFields)
                 }
 
                 return@synchronized Quadruple(
@@ -212,11 +232,19 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                 )
             }
 
+        val mintStartedMs = SystemClock.elapsedRealtime()
         val playerPot = try {
             // Not using synchronized here, since poTokenGenerator would be able to generate
             // multiple poTokens in parallel if needed. The only important thing is for exactly one
             // visitorData/streaming poToken to be generated before anything else.
-            if (videoId.isEmpty()) "" else poTokenGenerator.generatePoToken(videoId)
+            if (videoId.isEmpty()) "" else poTokenGenerator.generatePoToken(videoId).also {
+                // NEWTUBE(pot-wv4): the content token's length and mint time. The length is a
+                // secret-free hint of which flow minted it (old flow 204-460 chars in 8 mints,
+                // upstream reports ~120 for PoTokenWebView4); descriptive, not an invariant.
+                android.util.Log.d("NetPath", "web-pot-mint kind=content potLen=" + it.length
+                        + " ms=" + (SystemClock.elapsedRealtime() - mintStartedMs)
+                        + " generator=" + poTokenGenerator.javaClass.simpleName)
+            }
         } catch (throwable: Throwable) {
             if (hasBeenRecreated) {
                 // the poTokenGenerator has just been recreated (and possibly this is already the
@@ -250,6 +278,10 @@ internal object PoTokenProviderImpl : PoTokenProvider {
      * never the id), how long the previous session lived, how long the build took, and the token
      * binding this implementation uses (streaming token bound to the visitor, player token bound to
      * the video). No token or raw visitor ever reaches the line.
+     * NEWTUBE(pot-wv4): a successful build also appends how the generator got its challenge
+     * (PoTokenGenerator.diagnostics: challenge=homepage|att-get|legacy, ytcfg=, eventId=,
+     * contentFlag=, ...), the session token's length (potLen=) and, when the selected generator
+     * failed, fallbackFrom=/fallbackError=.
      */
     private fun logWebPotSession(outcome: String, reason: String, visitorSource: String,
                                  previousAgeMs: Long, startedMs: Long, extra: String) {
@@ -295,3 +327,10 @@ internal fun webPotSessionReason(
     stateCleared -> "reset"
     else -> "expired"
 }
+
+/**
+ * NEWTUBE(pot-wv4): the generator class a factory builds, for NetPath. Every factory is its
+ * generator's companion object (`PoTokenWebView4.Companion` -> `PoTokenWebView4`).
+ */
+internal fun generatorName(factory: PoTokenGenerator.Factory): String =
+    factory.javaClass.enclosingClass?.simpleName ?: factory.javaClass.simpleName

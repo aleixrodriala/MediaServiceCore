@@ -16,7 +16,9 @@ import com.liskovsoft.sharedutils.okhttp.OkHttpManager
 import com.liskovsoft.youtubeapi.app.potokennp2.core.BadWebViewException
 import com.liskovsoft.youtubeapi.app.potokennp2.core.PoTokenException
 import com.liskovsoft.youtubeapi.app.potokennp2.core.PoTokenGenerator
+import com.liskovsoft.youtubeapi.app.potokennp2.core.awaitOrThrow
 import com.liskovsoft.youtubeapi.app.potokennp2.core.buildExceptionForJsError
+import com.liskovsoft.youtubeapi.app.potokennp2.misc.PoTokenChallengeInfo
 import com.liskovsoft.youtubeapi.app.potokennp2.misc.evaluateJavascriptLegacy
 import com.liskovsoft.youtubeapi.app.potokennp2.misc.hasThermalServiceBug
 import com.liskovsoft.youtubeapi.app.potokennp2.misc.hasUsbServiceBug
@@ -36,6 +38,9 @@ internal class PoTokenWebView private constructor(
     private val webView = WebView(context)
     private val poTokenEmitters = mutableListOf<Pair<String, (String) -> Unit>>()
     private var expirationMs: Long = -1
+    // NEWTUBE(pot-wv4): GenerateIT's TTL, for the web-pot-session line
+    @Volatile
+    private var ttlSecs: Long = -1
     var initError: Throwable? = null
 
     //region Initialization
@@ -176,6 +181,7 @@ internal class PoTokenWebView private constructor(
         // leave 10 minutes of margin just to be sure
         //expirationInstant = Instant.now().plusSeconds(expirationTimeInSeconds - 600)
         expirationMs = System.currentTimeMillis() + ((expirationTimeInSeconds - 600) * 1_000)
+        ttlSecs = expirationTimeInSeconds
 
         runOnMainThread {
             webView.evaluateJavascriptLegacy(
@@ -225,7 +231,16 @@ internal class PoTokenWebView private constructor(
             )
         }
 
-        latch.await()
+        // NEWTUBE(pot-wv4): bounded, like PoTokenWebView4's mint. This used to be `latch.await()` with
+        // no bound, and a mint error (onObtainPoTokenError drops the emitters without calling them)
+        // or a WebView that lost its content held the calling /player thread indefinitely. A mint
+        // measured 13 ms warm (PoTokenGate), so 10 s only ends a wait that would never have ended.
+        try {
+            awaitOrThrow(latch, MINT_TIMEOUT_MS, "$TAG mint")
+        } catch (e: PoTokenException) {
+            popPoTokenEmitter(identifier)
+            throw initError ?: e
+        }
 
         initError?.let { throw it }
 
@@ -261,6 +276,10 @@ internal class PoTokenWebView private constructor(
         //return Instant.now().isAfter(expirationInstant)
         return System.currentTimeMillis() > expirationMs
     }
+
+    // NEWTUBE(pot-wv4): the WAA Create challenge: no page, so never a ytcfg or an EVENT_ID
+    override fun diagnostics(): String =
+        PoTokenChallengeInfo(PoTokenChallengeInfo.LEGACY, ttlSecs = ttlSecs).toLogFields()
 
     //endregion
 
@@ -382,6 +401,7 @@ internal class PoTokenWebView private constructor(
         private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.3"
         private const val JS_INTERFACE = "PoTokenWebView"
+        private const val MINT_TIMEOUT_MS = 10_000L
 
         override fun newPoTokenGenerator(context: Context): PoTokenGenerator {
             if (hasThermalServiceBug(context)) {
