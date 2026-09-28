@@ -188,13 +188,18 @@ public abstract class VideoInfoServiceBase {
      * manifest with the raw challenge and googlevideo refused every segment it listed (the Pixel
      * over LTE, 2026-09-29: dQw4w9WgXcQ from WEB_EMBED, 403 three times past the pre-roll wait),
      * while the netbench harness, which solves it as yt-dlp does, played the same client's HLS to
-     * the end. Solved only for an answer {@link VodDelivery} would play over HLS; live manifests
-     * are left as they were.
+     * the end. Solved only for an answer {@link VodDelivery} would play over HLS - no adaptive
+     * format with a URL, which is when the loader opens the manifest; live manifests are left as
+     * they were.
      */
     private void solveVodHlsChallenge(VideoInfo videoInfo, List<String> nParams,
             @Nullable List<String> nSolved) {
         String url = videoInfo.getHlsManifestUrl();
-        String n = url != null && VodDelivery.acceptsHls(videoInfo) ? manifestChallenge(url) : null;
+        List<? extends VideoFormat> adaptive = videoInfo.getAdaptiveFormats();
+        boolean noAdaptiveUrl = adaptive == null || adaptive.isEmpty()
+                || videoInfo.isAdaptiveFormatsBroken();
+        String n = url != null && noAdaptiveUrl && VodDelivery.acceptsHls(videoInfo)
+                ? manifestChallenge(url) : null;
         if (n == null) {
             return;
         }
