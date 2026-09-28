@@ -6,6 +6,8 @@ import com.liskovsoft.youtubeapi.app.PoTokenGate;
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.youtubeapi.common.helpers.QueryBuilder;
 import com.liskovsoft.youtubeapi.innertube.ytcfg.YtCfgService;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSource;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSourceCatalog;
 
 public class VideoInfoApiHelper {
     public static final class PlayerRequest {
@@ -33,8 +35,9 @@ public class VideoInfoApiHelper {
         // fetched it goes out on the shared Web visitor with no flags and gets the old 152-18
         // refusal; QueryBuilder never fetches flags of its own for it (they'd belong to another
         // visitor).
-        YtCfgService.EmbedIdentity embed = client == AppClient.WEB_EMBED
-                ? YtCfgService.getEmbedIdentity(videoId) : null;
+        YtCfgService.EmbedIdentity embed =
+                PlayerSourceCatalog.defaultFor(client).identity == PlayerSource.Identity.EMBED_PAGE
+                        ? YtCfgService.getEmbedIdentity(videoId) : null;
         String visitorData = embed != null ? embed.visitorData : getPlayerVisitorData(client);
         boolean webVisitor = embed == null && usesWebVisitorData(client);
         long visitorAgeMs = webVisitor ? PoTokenGate.getWebVisitorAgeMs() : -1;
@@ -57,9 +60,13 @@ public class VideoInfoApiHelper {
         return AppService.instance().getVisitorData();
     }
 
+    /**
+     * The web session's visitor: sources whose identity is WEB_SESSION, and EMBED_PAGE sources
+     * when their page could not be fetched (see PlayerSource.Identity).
+     */
     static boolean usesWebVisitorData(AppClient client) {
-        return client.isWebPotRequired() || client == AppClient.ANDROID_VR
-                || client == AppClient.VISIONOS;
+        PlayerSource.Identity identity = PlayerSourceCatalog.defaultFor(client).identity;
+        return identity == PlayerSource.Identity.WEB_SESSION || identity == PlayerSource.Identity.EMBED_PAGE;
     }
 
     private static String safeVideoId(String videoId) {
