@@ -107,10 +107,11 @@ public class AuthService {
         if (tokenResult != null && tokenResult.getRefreshToken() != null) {
             return tokenResult;
         } else {
-            String msg = String.format("Error. Refresh token is empty!\nDebug data: device code: %s, client id: %s, client secret: %s\nError msg: %s",
-                    deviceCode,
-                    mAppService.getClientId(),
-                    mAppService.getClientSecret(),
+            // NEWTUBE(diagnostics): no device code or client secret in the message - it reaches
+            // logcat, and logcat reaches the in-app diagnostic export.
+            String msg = String.format("Error. Refresh token is empty!\nDebug data: device code: %s, client id: %s\nError msg: %s",
+                    deviceCode != null ? "present" : "null",
+                    mAppService.getClientId() != null ? "present" : "null",
                     tokenResult != null ? tokenResult.getError() : String.valueOf(lastError));
 
             Log.e(TAG, msg);
