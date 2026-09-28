@@ -1,6 +1,8 @@
 package com.liskovsoft.youtubeapi.app
 
 import com.liskovsoft.youtubeapi.common.helpers.AppClient
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSource.TokenPolicy
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSourceCatalog
 
 /**
  * What a PO token is being asked FOR. The distinction is not cosmetic: these two uses have
@@ -49,15 +51,16 @@ internal fun selectPoTokenSource(
     hasVideoId: Boolean,
     use: PoTokenUse,
     playerPotEnabled: Boolean
-): PoTokenSource = when {
-    // NEWTUBE(web-embed-identity): WEB_EMBED rides the embed page's own visitor
-    // (YtCfgService.EmbedIdentity), not the session a Web token is minted for, and neither its
-    // /player request nor its media need one: yt-dlp's web_embedded downloads the full stream with
-    // no PO token (2026-09-28). A token bound to another visitor could only get it refused.
-    client == AppClient.WEB_EMBED -> PoTokenSource.NONE
-    client.isWebPotRequired ->
+): PoTokenSource = when (PlayerSourceCatalog.defaultFor(client).token) {
+    // NEWTUBE(source-catalog): the policy is the source's (PlayerSourceCatalog). WEB_EMBED's is NONE:
+    // it rides the embed page's own visitor (YtCfgService.EmbedIdentity), not the session a Web
+    // token is minted for, and neither its /player request nor its media need one - yt-dlp's
+    // web_embedded downloads the full stream with no PO token (2026-09-28). A token bound to
+    // another visitor could only get it refused.
+    TokenPolicy.WEB ->
         if (hasVideoId) PoTokenSource.WEB_CONTENT else PoTokenSource.WEB_SESSION
-    use == PoTokenUse.PLAYER_REQUEST && client.isPlayerPotSupported && playerPotEnabled && hasVideoId ->
-        PoTokenSource.WEB_CONTENT
-    else -> PoTokenSource.NONE
+    TokenPolicy.PLAYER_REQUEST_OPT_IN ->
+        if (use == PoTokenUse.PLAYER_REQUEST && playerPotEnabled && hasVideoId) PoTokenSource.WEB_CONTENT
+        else PoTokenSource.NONE
+    TokenPolicy.NONE -> PoTokenSource.NONE
 }
