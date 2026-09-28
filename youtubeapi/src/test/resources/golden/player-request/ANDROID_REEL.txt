@@ -1,0 +1,10 @@
+POST https://youtubei.googleapis.com/youtubei/v1/reel/reel_item_watch
+X-Goog-Visitor-Id: golden-app-visitor
+User-Agent: com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip
+X-Youtube-Client-Name: 3
+X-Youtube-Client-Version: 21.26.364
+Content-Type(body): application/json
+
+{"context": {"client": {"clientName": "ANDROID","clientVersion": "21.26.364","clientScreen": "WATCH","userAgent": "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip","androidSdkVersion":"30","osName":"Android","osVersion":"11","acceptLanguage": "en-US","acceptRegion": "US","utcOffsetMinutes": "0","visitorData": "golden-app-visitor"},"user":{"enableSafetyMode": false,"lockedSafetyMode":false}},"playbackContext": {"contentPlaybackContext": {"html5Preference": "HTML5_PREF_WANTS","lactMilliseconds": 60000,"isInlinePlaybackNoAd": true,"signatureTimestamp": 20697},"devicePlaybackCapabilities": {"supportsVp9Encoding": true,"supportXhr": true}},"playerRequest": {"racyCheckOk": true,"contentCheckOk": true,"videoId": "golden-vid1","cpn": "golden-cpn-0001"}}
+
+auth signed-out=false signed-in=false

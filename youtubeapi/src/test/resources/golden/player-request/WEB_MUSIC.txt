@@ -1,0 +1,11 @@
+POST https://www.youtube.com/youtubei/v1/player
+Origin: https://www.youtube.com
+X-Goog-Visitor-Id: golden-app-visitor
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36
+X-Youtube-Client-Name: 67
+X-Youtube-Client-Version: 1.20250219.01.00
+Content-Type(body): application/json
+
+{"context": {"client": {"clientName": "WEB_REMIX","clientVersion": "1.20250219.01.00","clientScreen": "WATCH","userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36","browserName": "Chrome","browserVersion": "147.0.0.0","acceptLanguage": "en-US","acceptRegion": "US","utcOffsetMinutes": "0","visitorData": "golden-app-visitor"},"user":{"enableSafetyMode": false,"lockedSafetyMode":false}},"playbackContext": {"contentPlaybackContext": {"html5Preference": "HTML5_PREF_WANTS","lactMilliseconds": 60000,"isInlinePlaybackNoAd": true,"signatureTimestamp": 20697},"devicePlaybackCapabilities": {"supportsVp9Encoding": true,"supportXhr": true}},"racyCheckOk": true,"contentCheckOk": true,"videoId": "golden-vid1","cpn": "golden-cpn-0001"}
+
+auth signed-out=false signed-in=false
