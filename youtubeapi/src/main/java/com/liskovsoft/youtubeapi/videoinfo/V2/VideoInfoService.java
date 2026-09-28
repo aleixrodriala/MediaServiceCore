@@ -3355,7 +3355,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     private @Nullable VideoInfo getVideoInfo(Call<VideoInfo> wrapper, boolean auth) {
-        VideoInfo videoInfo = RetrofitHelper.get(wrapper, auth);
+        // NEWTUBE(net): the phone walk needs a refused connection as a transport failure (see
+        // RetrofitHelper.getOrThrowOnConnect); TV keeps upstream's null.
+        VideoInfo videoInfo = sPreferNoPotClient
+                ? RetrofitHelper.getOrThrowOnConnect(wrapper, auth) : RetrofitHelper.get(wrapper, auth);
 
         if (videoInfo == null) {
             return null;
@@ -3372,7 +3375,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     private @Nullable VideoInfo getVideoInfoReel(Call<VideoInfoReel> wrapper, boolean auth) {
-        VideoInfoReel videoInfo = RetrofitHelper.get(wrapper, auth);
+        VideoInfoReel videoInfo = sPreferNoPotClient
+                ? RetrofitHelper.getOrThrowOnConnect(wrapper, auth) : RetrofitHelper.get(wrapper, auth);
 
         if (videoInfo == null || videoInfo.getVideoInfo() == null) {
             return null;

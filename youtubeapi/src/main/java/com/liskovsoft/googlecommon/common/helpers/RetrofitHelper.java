@@ -107,6 +107,27 @@ public class RetrofitHelper {
         return response != null ? response.body() : null;
     }
 
+    /**
+     * NEWTUBE(net): {@link #get(Call, boolean)} for the /player walk, where a refused connection is
+     * the link being down, not an empty answer. {@link #getResponse} swallows ConnectException to
+     * null (upstream: a dead third-party host), so the walk counted it as an answer and walked every
+     * client of a no-route outage instead of stopping after two (VideoInfoService
+     * TRANSPORT_DOWN_STREAK; netbench audit C-11). Rethrown the way getResponse reports every other
+     * IOException.
+     */
+    public static <T> T getOrThrowOnConnect(Call<T> wrapper, boolean auth) {
+        if (!auth) {
+            RetrofitOkHttpHelper.addAuthSkip(wrapper.request());
+        }
+
+        try {
+            Response<T> response = wrapper.execute();
+            return response != null ? response.body() : null;
+        } catch (IOException e) {
+            throw new IllegalStateException(e); // notify caller about network condition
+        }
+    }
+
     public static <T> Headers getHeaders(Call<T> wrapper) {
         Response<T> response = getResponse(wrapper);
 
