@@ -32,6 +32,21 @@ public class VideoInfoVisitOrderTest {
     }
 
     /**
+     * Every client keeps the budget it had before the source catalog took it over: the account
+     * route and the authenticated head first (by walk role), then 20 s for the web-pot family (a
+     * cold BotGuard mint, or WEB_EMBED's embed page), else 7 s.
+     */
+    @Test
+    public void everyClientKeepsItsAttemptBudget() {
+        for (AppClient client : AppClient.values()) {
+            long expected = client == AppClient.TV_TIZEN || client == AppClient.TV_DOWNGRADED
+                    || client == AppClient.TV ? 15_000
+                    : client.isWebPotRequired() ? 20_000 : 7_000;
+            assertEquals(client.name(), expected, VideoInfoService.attemptTimeoutMsFor(client));
+        }
+    }
+
+    /**
      * Web-pot clients used to run with NO per-attempt deadline at all, which is what made a bad
      * link able to spend minutes inside one walk. They are bounded now, but the bound must stay
      * generous: a cold BotGuard mint plus an 8s-connect/8s-read /player is a legitimate wait, and

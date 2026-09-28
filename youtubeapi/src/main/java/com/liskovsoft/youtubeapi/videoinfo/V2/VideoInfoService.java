@@ -15,6 +15,8 @@ import com.liskovsoft.youtubeapi.app.PoTokenGate;
 import com.liskovsoft.youtubeapi.app.nsigsolver.impl.V8ChallengeProvider;
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitHelper;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSource;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSourceCatalog;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitOkHttpHelper;
 import com.liskovsoft.youtubeapi.service.internal.MediaServiceData;
 import com.liskovsoft.youtubeapi.innertube.initialresponse.InitialResponseService;
@@ -2972,7 +2974,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
         }
 
-        if (client.isWebPotRequired()) {
+        // NEWTUBE(source-catalog): otherwise the source's own budget.
+        if (PlayerSourceCatalog.defaultFor(client).budget == PlayerSource.Budget.WEB_POT) {
             return WEB_POT_ATTEMPT_TIMEOUT_MS;
         }
 
