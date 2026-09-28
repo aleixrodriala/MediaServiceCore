@@ -207,7 +207,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             AppClient.TV_LEGACY, AppClient.TV_DOWNGRADED, AppClient.TV_EMBED, AppClient.TV_SIMPLY
     };
     // NEWTUBE(no-web-embed): [2026-09-28: the cause below was our own request, not WEB_EMBED - see
-    // web-embed-last. The phone keeps this gate on until WEB_EMBED is measured in the app.]
+    // web-embed-last, which the phone sets instead since the player honours the pre-roll wait.]
     // WEB_EMBED answers "This video is unavailable - Error code: 152 - 18"
     // to every request, on every network: every WEB_EMBED answer in every Pixel and emulator
     // capture since 2026-09 (again on 2026-09-26 10:45, right after a VISIONOS timeout), and
@@ -226,10 +226,17 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // YtCfgService.EmbedIdentity). With the right pair it serves, among others, made-for-kids
     // videos that every other client refuses or answers SABR-only (issue #5, 2026-09-28). This
     // switch puts it LAST instead of skipping it: a video another client serves never reaches it,
-    // and one that nothing else can play gets one more round trip instead of an error. The phone
-    // doesn't set it yet: its fresh URLs were refused for the first seconds on a Pixel (pre-roll
-    // wait, not honoured yet), so it waits for the player-sources rework.
+    // and one that nothing else can play gets one more round trip instead of an error. Its media is
+    // held back for the answer's pre-roll wait, which the phone's player honours (ReadinessGate);
+    // the phone sets this since then.
     private static volatile boolean sWebEmbedLast;
+    // NEWTUBE(planner): signed out, a client that refuses the video outright (UNPLAYABLE: made-for-
+    // kids videos on VISIONOS and ANDROID_VR) sends the walk to TV_TIZEN, asked WITHOUT the account,
+    // next. netbench 2026-09-28: the one anonymous client that serves those at once and with no
+    // pre-roll (Pixel 9 over LTE, first frame 0.8-1.3 s), where WEB_EMBED - last in the walk -
+    // costs the rest of the ring plus its ad wait. Once per walk; never on a walled network (the
+    // wall's plan owns TV_TIZEN's anonymous ask); never after TV_TIZEN proved dead there.
+    private static volatile boolean sAnonTizenAfterRefusal;
     // Web-family-first fallback (NewTube touch flavor): GVS acceptance is client/session-specific,
     // not a transport or carrier-CGNAT property. On-device isolation found that iOS and the old
     // Android VR request could return signed URLs whose init ranges worked but deep ranges got 403;
@@ -296,6 +303,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setWebEmbedLast(boolean last) {
         sWebEmbedLast = last;
+    }
+
+    /**
+     * Enabled once from the mobile flavor (MobileMainApplication): see
+     * {@link #sAnonTizenAfterRefusal}. Never called on TV.
+     */
+    public static void setAnonTizenAfterRefusal(boolean enabled) {
+        sAnonTizenAfterRefusal = enabled;
     }
 
     static List<AppClient> moveWebEmbedLast(List<AppClient> order) {
@@ -1331,6 +1346,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 visitOrder = noteBotWallEvidence(videoId, nextType, result, authenticated,
                         wallKeys, wallEvidence, wallPlan.walled, visitOrder, visitIndex, attempted,
                         attempt);
+            }
+            if (sAnonTizenAfterRefusal && mobileWall && !authenticated && result != null
+                    && liveWithoutDash == null && !wallPlan.walled
+                    && result.isUnknownRestricted() && !nextType.isWebPotRequired()
+                    && nextType != BotWallBook.ACCOUNT_ROUTE
+                    && !attempted.contains(BotWallBook.ACCOUNT_ROUTE)
+                    && (visitIndex + 1 >= visitOrder.size()
+                            || visitOrder.get(visitIndex + 1) != BotWallBook.ACCOUNT_ROUTE)
+                    && !mBotWall.isRouteFailed(wallKeys.network(), noMediaVideoKey(videoId),
+                            android.os.SystemClock.elapsedRealtime())) {
+                visitOrder = insertAfter(visitOrder, visitIndex, BotWallBook.ACCOUNT_ROUTE);
+                android.util.Log.d("NetPath", "player-ring anon-tizen next after=" + nextType
+                        + " attempt=" + attempt + " reason=unplayable");
             }
             // Signed out, the account route is one more anonymous identity: on a walled
             // attachment it gets ONE ask per wall, whatever it answers - a timeout, a reload-page
