@@ -18,6 +18,7 @@ import com.liskovsoft.youtubeapi.videoinfo.models.DashInfoContent;
 import com.liskovsoft.youtubeapi.videoinfo.models.DashInfoHeaders;
 import com.liskovsoft.youtubeapi.videoinfo.models.DashInfoUrl;
 import com.liskovsoft.youtubeapi.videoinfo.models.VideoInfo;
+import com.liskovsoft.youtubeapi.videoinfo.models.VodDelivery;
 import com.liskovsoft.youtubeapi.videoinfo.models.formats.AdaptiveVideoFormat;
 import com.liskovsoft.youtubeapi.videoinfo.models.formats.VideoFormat;
 
@@ -132,6 +133,9 @@ public abstract class VideoInfoServiceBase {
         videoInfo.setVisitorCookie(getData().getVisitorCookie());
     }
 
+    private static final java.util.regex.Pattern MANIFEST_N =
+            java.util.regex.Pattern.compile("/n/([^/]+)/");
+
     private void decipherFormats(VideoInfo videoInfo) {
         List<? extends VideoFormat> adaptiveFormats = videoInfo.getAdaptiveFormats();
         List<? extends VideoFormat> regularFormats = videoInfo.getRegularFormats();
@@ -167,6 +171,7 @@ public abstract class VideoInfoServiceBase {
             applyNParams(urlHolders, result.getFirst());
             applySignatures(urlHolders, result.getSecond());
         }
+        solveVodHlsChallenge(videoInfo, nParams, result != null ? result.getFirst() : null);
 
         String poToken = PoTokenGate.getPoToken(videoInfo.getClient(), videoInfo.getVideoDetails().getVideoId());
         videoInfo.setPoToken(poToken);
@@ -175,6 +180,54 @@ public abstract class VideoInfoServiceBase {
         // and current enforcement rejects tokens that do not match the originating platform and
         // binding. Clients that do not ask PoTokenGate for a token keep their minted URL untouched.
         applySessionPoToken(urlHolders, poToken);
+    }
+
+    /**
+     * NEWTUBE(hls-vod): a VOD HLS manifest URL carries its throttling challenge as a path pair
+     * ("/n/&lt;challenge&gt;/"), which the format transform above never reads. The app fetched the
+     * manifest with the raw challenge and googlevideo refused every segment it listed (the Pixel
+     * over LTE, 2026-09-29: dQw4w9WgXcQ from WEB_EMBED, 403 three times past the pre-roll wait),
+     * while the netbench harness, which solves it as yt-dlp does, played the same client's HLS to
+     * the end. Solved only for an answer {@link VodDelivery} would play over HLS; live manifests
+     * are left as they were.
+     */
+    private void solveVodHlsChallenge(VideoInfo videoInfo, List<String> nParams,
+            @Nullable List<String> nSolved) {
+        String url = videoInfo.getHlsManifestUrl();
+        String n = url != null && VodDelivery.acceptsHls(videoInfo) ? manifestChallenge(url) : null;
+        if (n == null) {
+            return;
+        }
+        String solved = null;
+        int index = nParams.indexOf(n);
+        if (index >= 0 && nSolved != null && !nSolved.isEmpty()) {
+            // The bulk transform answers per holder, or once when every holder had the same one.
+            solved = nSolved.get(nSolved.size() == nParams.size() ? index : 0);
+        }
+        boolean shared = solved != null;
+        if (solved == null) {
+            solved = mAppService.extractNSig(n);
+        }
+        android.util.Log.d("NetPath", "hls-vod-n video=" + videoInfo.getVideoDetails().getVideoId()
+                + " client=" + videoInfo.getClient() + " solved=" + (solved != null ? "y" : "n")
+                + " shared=" + (shared ? "y" : "n"));
+        if (solved != null) {
+            videoInfo.setHlsManifestUrl(withManifestChallenge(url, solved));
+        }
+    }
+
+    /** The "/n/&lt;challenge&gt;/" path value of a googlevideo manifest URL, or null. */
+    @Nullable
+    static String manifestChallenge(String url) {
+        java.util.regex.Matcher challenge = MANIFEST_N.matcher(url);
+        return challenge.find() ? challenge.group(1) : null;
+    }
+
+    static String withManifestChallenge(String url, String solved) {
+        java.util.regex.Matcher challenge = MANIFEST_N.matcher(url);
+        return challenge.find()
+                ? url.substring(0, challenge.start(1)) + solved + url.substring(challenge.end(1))
+                : url;
     }
 
     /**
