@@ -4,6 +4,8 @@ import com.liskovsoft.sharedutils.helpers.Helpers
 import com.liskovsoft.youtubeapi.app.AppService
 import com.liskovsoft.googlecommon.common.locale.LocaleManager
 import com.liskovsoft.youtubeapi.innertube.ytcfg.YtCfgService
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSource
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSourceCatalog
 
 internal enum class PostDataType { Player, Browse }
 
@@ -337,7 +339,12 @@ internal class QueryBuilder(private val client: AppClient) {
             "absent" -> return ""
             "true" -> true
             "false" -> false
-            else -> !client.isTVClient && !client.isEmbedded
+            // NEWTUBE(source-catalog): the source's own value (TV family and embedded: false).
+            else -> when (PlayerSourceCatalog.defaultFor(client).xhr) {
+                PlayerSource.Xhr.TRUE -> true
+                PlayerSource.Xhr.FALSE -> false
+                PlayerSource.Xhr.ABSENT -> return ""
+            }
         }
         return """,
                     "devicePlaybackCapabilities": {
