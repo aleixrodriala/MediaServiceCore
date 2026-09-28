@@ -408,9 +408,14 @@ internal class PoTokenWebView private constructor(
                 potWv.loadHtmlAndObtainBotguard(context)
             }
 
-            latch.await(20, TimeUnit.SECONDS)
+            val completed = latch.await(20, TimeUnit.SECONDS)
 
             initError?.let { throw it }
+            // NEWTUBE(pot-init-timeout): upstream ef7dbd34 added this to PoTokenWebView2/3 only. On a
+            // timeout, potWv may not be assigned yet (UninitializedPropertyAccessException) or BotGuard
+            // is not ready (a half-initialized generator); fail with a PoTokenException instead, and
+            // check it before touching potWv.
+            if (!completed) throw PoTokenException("${TAG}: failed to initialize within 20 s")
             potWv.initError?.let { throw it }
 
             return potWv
