@@ -150,6 +150,9 @@ public class YouTubeMediaItemService implements MediaItemService {
     // those must keep being re-polled. Total failures (null result) aren't cached either.
     private static final long UNPLAYABLE_REUSE_MS = 30_000;
     private volatile UnplayableEntry mUnplayableEntry;
+    /** NEWTUBE(walk-role): videos whose cached answer a speculative walk fetched. */
+    private final java.util.Set<String> mSpeculativeResults =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /** Immutable (videoId, time, result) triple so a torn multi-field read can't mix entries. */
     private static final class UnplayableEntry {
@@ -245,11 +248,32 @@ public class YouTubeMediaItemService implements MediaItemService {
         return getFormatInfo(videoId, clickTrackingParams, null);
     }
 
+    /**
+     * NEWTUBE(walk-role): a video the user has not opened (the next-video preload, a touch preload,
+     * the warmup). Cached and single-flighted like any other; its walk leaves the watched video's
+     * routing state alone (VideoInfoService.WalkRole).
+     */
+    @Override
+    public MediaItemFormatInfo getSpeculativeFormatInfo(String videoId) {
+        return getFormatInfo(videoId, null, null, VideoInfoService.WalkRole.SPECULATIVE);
+    }
+
+    @Override
+    public Observable<MediaItemFormatInfo> getSpeculativeFormatInfoObserve(String videoId) {
+        return getFormatInfoObserve(videoId, null, false, VideoInfoService.WalkRole.SPECULATIVE);
+    }
+
     private MediaItemFormatInfo getFormatInfo(String videoId, String clickTrackingParams,
             @Nullable FormatFlight suppliedFlight) {
+        return getFormatInfo(videoId, clickTrackingParams, suppliedFlight, VideoInfoService.WalkRole.ACTIVE);
+    }
+
+    private MediaItemFormatInfo getFormatInfo(String videoId, String clickTrackingParams,
+            @Nullable FormatFlight suppliedFlight, VideoInfoService.WalkRole role) {
         MediaItemFormatInfo cachedFormatInfo = getCachedFormatInfo(videoId);
 
         if (cachedFormatInfo != null) {
+            adoptIfSpeculative(videoId, cachedFormatInfo, role);
             if (suppliedFlight != null) {
                 mFormatInfoFlights.remove(videoId, suppliedFlight);
             }
@@ -264,7 +288,7 @@ public class YouTubeMediaItemService implements MediaItemService {
 
         // TV path: unchanged single fetch.
         if (!sSingleFlightEnabled || videoId == null) {
-            return fetchFormatInfo(videoId, clickTrackingParams, null);
+            return fetchFormatInfo(videoId, clickTrackingParams, null, role);
         }
 
         // Mobile path: collapse concurrent fetches for the same videoId into one round-trip.
@@ -281,10 +305,11 @@ public class YouTubeMediaItemService implements MediaItemService {
                 // Another caller for this videoId may have just populated the cache while we waited.
                 MediaItemFormatInfo cached = getCachedFormatInfo(videoId);
                 if (cached != null) {
+                    adoptIfSpeculative(videoId, cached, role);
                     return cached;
                 }
 
-                return fetchFormatInfo(videoId, clickTrackingParams, flight);
+                return fetchFormatInfo(videoId, clickTrackingParams, flight, role);
             } finally {
                 // Only remove our own flight so a newer request for this video isn't disturbed.
                 mFormatInfoFlights.remove(videoId, flight);
@@ -311,21 +336,33 @@ public class YouTubeMediaItemService implements MediaItemService {
     }
 
     private MediaItemFormatInfo fetchFormatInfo(String videoId, String clickTrackingParams,
-            @Nullable FormatFlight flight) {
+            @Nullable FormatFlight flight, VideoInfoService.WalkRole role) {
         checkSigned();
 
-        VideoInfo videoInfo = flight != null
-                ? getVideoInfoService().getVideoInfo(
-                        videoId, clickTrackingParams, flight::isCanceled)
-                : getVideoInfoService().getVideoInfo(videoId, clickTrackingParams);
+        VideoInfo videoInfo = getVideoInfoService().getVideoInfo(videoId, clickTrackingParams,
+                flight != null ? flight::isCanceled : null, role);
 
         MediaItemFormatInfo formatInfo = YouTubeMediaItemFormatInfo.from(videoInfo);
 
         setCachedFormatInfo(videoId, formatInfo, clickTrackingParams);
+        // NEWTUBE(walk-role): an open that reuses this answer adopts it (see adoptIfSpeculative).
+        if (videoId != null) {
+            if (role == VideoInfoService.WalkRole.SPECULATIVE && formatInfo != null) {
+                if (mSpeculativeResults.size() >= 32) {
+                    mSpeculativeResults.clear(); // preloads nobody opened; bounded, not precious
+                }
+                mSpeculativeResults.add(videoId);
+            } else {
+                mSpeculativeResults.remove(videoId);
+            }
+        }
 
         // Mobile negative cache (see UNPLAYABLE_REUSE_MS). Keyed on the REQUESTED videoId (some
         // unplayable responses lack videoDetails, so the result's own getVideoId() can be null).
-        if (sSingleFlightEnabled && videoId != null) {
+        // NEWTUBE(walk-role): not a preload's bot-check answer - it may be the circuit's cooldown
+        // verdict, and the user's open of that video must still be able to take the probe.
+        if (sSingleFlightEnabled && videoId != null && !(role == VideoInfoService.WalkRole.SPECULATIVE
+                && formatInfo != null && formatInfo.isBotCheckRequired())) {
             if (formatInfo != null && formatInfo.isUnplayable()) {
                 mUnplayableEntry = new UnplayableEntry(videoId, formatInfo);
             } else {
@@ -340,6 +377,17 @@ public class YouTubeMediaItemService implements MediaItemService {
         preconnectMediaHost(formatInfo);
 
         return formatInfo;
+    }
+
+    /**
+     * NEWTUBE(walk-role): an ACTIVE caller got an answer a speculative walk fetched - it joined the
+     * preload's flight or read its cache entry - so the engine takes it as the watched video's.
+     */
+    private void adoptIfSpeculative(String videoId, MediaItemFormatInfo formatInfo,
+            VideoInfoService.WalkRole role) {
+        if (role == VideoInfoService.WalkRole.ACTIVE && videoId != null && mSpeculativeResults.remove(videoId)) {
+            getVideoInfoService().adoptSpeculativeResult(videoId, formatInfo.isUnplayable(), formatInfo.isLive());
+        }
     }
 
     private FormatFlight getFormatInfoFlight(String videoId) {
@@ -396,8 +444,14 @@ public class YouTubeMediaItemService implements MediaItemService {
 
     private Observable<MediaItemFormatInfo> getFormatInfoObserve(String videoId,
             String clickTrackingParams, boolean latestRequest) {
+        return getFormatInfoObserve(videoId, clickTrackingParams, latestRequest,
+                VideoInfoService.WalkRole.ACTIVE);
+    }
+
+    private Observable<MediaItemFormatInfo> getFormatInfoObserve(String videoId,
+            String clickTrackingParams, boolean latestRequest, VideoInfoService.WalkRole role) {
         if (!sSingleFlightEnabled || videoId == null) {
-            return RxHelper.fromCallable(() -> getFormatInfo(videoId, clickTrackingParams));
+            return RxHelper.fromCallable(() -> getFormatInfo(videoId, clickTrackingParams, null, role));
         }
 
         // Reserve the flight NOW, before Rx schedules the blocking callable. A newer tap can then
@@ -405,7 +459,7 @@ public class YouTubeMediaItemService implements MediaItemService {
         // reserve/join here, so every observer attached to the stale flight completes consistently.
         FormatFlight flight = getFormatInfoFlight(videoId);
         return RxHelper.create(emitter -> {
-            MediaItemFormatInfo result = getFormatInfo(videoId, clickTrackingParams, flight);
+            MediaItemFormatInfo result = getFormatInfo(videoId, clickTrackingParams, flight, role);
             if (result != null) {
                 emitter.onNext(result);
                 emitter.onComplete();

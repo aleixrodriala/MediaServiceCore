@@ -492,6 +492,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private final AtomicLong mRoutingGeneration = new AtomicLong();
     // Guards the one-time restore of the persisted "winning" fast client at cold start (mobile only).
     private boolean mInfoTypeRestored;
+
+    /**
+     * NEWTUBE(walk-role): who a walk is for. The routing state here - the recovery cursor, the
+     * current client that recovery blames, the cold-start hint, the "was it playable" flag, the bot
+     * check's one probe per interval, the transport-down memory - belongs to the video the user is
+     * watching. A SPECULATIVE walk (the next-video preload, a touch preload, the session warmup)
+     * warms the caches and records its video's winner, and leaves all of that alone. Evidence about
+     * the network itself (a bot wall, a challenge, the account route) counts whoever saw it.
+     */
+    public enum WalkRole { ACTIVE, SPECULATIVE }
+
+    /** The role of the walk in progress; walks are serialized by this service's monitor. */
+    private WalkRole mWalkRole = WalkRole.ACTIVE;
     private boolean mAuthBlock;
     private volatile long mBotCheckCooldownUntilMs;
     private volatile boolean mBotCheckAuthenticatedAttempted;
@@ -686,7 +699,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         }
     }
     private List<TranslationLanguage> mCachedTranslationLanguages;
-    private boolean mIsUnplayable;
+    private volatile boolean mIsUnplayable;
 
     private VideoInfoService() {
         mVideoInfoApi = RetrofitHelper.create(VideoInfoApi.class);
@@ -1031,7 +1044,22 @@ public class VideoInfoService extends VideoInfoServiceBase {
         return getVideoInfo(videoId, clickTrackingParams, null);
     }
 
+    public VideoInfo getVideoInfo(String videoId, String clickTrackingParams,
+            @Nullable CancellationSignal cancellationSignal) {
+        return getVideoInfo(videoId, clickTrackingParams, cancellationSignal, WalkRole.ACTIVE);
+    }
+
     public synchronized VideoInfo getVideoInfo(String videoId, String clickTrackingParams,
+            @Nullable CancellationSignal cancellationSignal, WalkRole role) {
+        mWalkRole = role;
+        try {
+            return getVideoInfoAs(videoId, clickTrackingParams, cancellationSignal);
+        } finally {
+            mWalkRole = WalkRole.ACTIVE;
+        }
+    }
+
+    private VideoInfo getVideoInfoAs(String videoId, String clickTrackingParams,
             @Nullable CancellationSignal cancellationSignal) {
         if (videoId == null) {
             return null;
@@ -1042,6 +1070,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         final long routingGeneration = mRoutingGeneration.get();
         final boolean authenticated = hasAuthentication();
+        final boolean speculative = mWalkRole == WalkRole.SPECULATIVE;
         mBotCheckProbePending = false; // see spendBotCheckProbeIfPending
         VideoInfo blockedResult = getActiveBotCheckResult(authenticated, videoId);
         if (blockedResult != null) {
@@ -1062,12 +1091,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
         // An error cursor and a persisted cold-start hint are both one-shot on mobile. Leaving either
         // set after a successful failover made every later open start from stale routing state.
-        // TV keeps its historical behavior.
-        if (sPreferAttestedWebFallback && routingGeneration == mRoutingGeneration.get()) {
+        // TV keeps its historical behavior. A speculative walk leaves both to the video the user
+        // opens (see WalkRole).
+        if (!speculative && sPreferAttestedWebFallback
+                && routingGeneration == mRoutingGeneration.get()) {
             mNextInfoType = null;
             mRecoveryWalk = false;
             mRecoverySuspect = null;
-        } else if (sPreferAttestedWebFallback) {
+        } else if (!speculative && sPreferAttestedWebFallback) {
             android.util.Log.d("NetPath", "player-ring keep-newer-recovery requestGen="
                     + routingGeneration + " currentGen=" + mRoutingGeneration.get());
         }
@@ -1097,8 +1128,18 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return null;
         }
 
-        persistRecentTypeIfNeeded(result);
         rememberVideoWinner(videoId, result);
+        if (speculative) {
+            // NEWTUBE(walk-role): the current client, the cold-start hint and the "was it
+            // playable" flag describe the video being watched; this one is not (yet).
+            android.util.Log.d("NetPath", "player-ring speculative video=" + videoId
+                    + " client=" + result.getClient() + " routing=kept");
+            if (!result.isUnplayable()) {
+                clearBotCheckCircuit();
+            }
+            return result;
+        }
+        persistRecentTypeIfNeeded(result);
 
         mIsUnplayable = result.isUnplayable();
 
@@ -1153,7 +1194,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // puts the Web family immediately behind it. TV (flag unset) keeps the raw ring as before.
         // NEWTUBE(recovery-blame): a recovery walk steps past the client that served the FAILING
         // video, which a prefetch may no longer have in mActualInfoType (see switchNextFormat).
-        final AppClient lastWinner = mRecoveryWalk && mRecoverySuspect != null
+        // NEWTUBE(walk-role): a speculative walk (next-video preload, touch preload, warmup) is not
+        // the recovery of the video being watched: it neither follows nor spends the cursor.
+        final boolean speculative = mWalkRole == WalkRole.SPECULATIVE;
+        final boolean cursorOwned = mRecoveryWalk && !speculative;
+        final AppClient lastWinner = cursorOwned && mRecoverySuspect != null
                 ? mRecoverySuspect : mActualInfoType;
         // NEWTUBE(net): an outage is not evidence against the client that was working.
         //
@@ -1164,13 +1209,15 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // ended with playback restored on WEB_EMBED (auth=n, sabr=y) instead of the learned
         // TV_DOWNGRADED (auth=y, 41 formats), i.e. the outage silently cost the user authenticated
         // playback until something else reset the routing.
-        final boolean recoveryWalk = mRecoveryWalk && !mLastWalkTransportDown;
-        if (mRecoveryWalk && mLastWalkTransportDown) {
+        final boolean recoveryWalk = cursorOwned && !mLastWalkTransportDown;
+        if (cursorOwned && mLastWalkTransportDown) {
             android.util.Log.d("NetPath", "player-ring recovery-suppressed reason=transport-down"
                     + " keeping=" + lastWinner);
         }
-        // Only this walk's own outcome may set it again.
-        mLastWalkTransportDown = false;
+        // Only this walk's own outcome may set it again (the watched video's walks only).
+        if (!speculative) {
+            mLastWalkTransportDown = false;
+        }
         // A normal signed-in open starts on the account-bearing TV route, matching yt-dlp's use
         // of tv_downgraded for authenticated extraction. An error-driven reload is different: its
         // cursor deliberately points past the client whose GVS URL just failed. Re-promoting TV on
@@ -1192,9 +1239,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
         final AppClient defaultBegin = authenticated && !authenticatedRecovery
                 ? authBegin
                 : (sPreferNoPotClient ? PREFERRED_FIRST_CLIENT : VIDEO_INFO_TYPE_LIST[0]);
+        // mNextInfoType is the recovery cursor or the cold-start hint; a speculative walk may use
+        // only the hint.
         final AppClient beginType = authenticated && !authenticatedRecovery
                 ? authBegin
-                : (mNextInfoType != null ? mNextInfoType : defaultBegin);
+                : (mNextInfoType != null && !(mRecoveryWalk && speculative)
+                        ? mNextInfoType : defaultBegin);
 
         // NEWTUBE(botwall): mobile only, and never while a client is forced (the playground must
         // measure exactly the client it names). Keyed on the network attachment - see
@@ -1452,7 +1502,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 if (sPreferNoPotClient && ++noResponseStreak >= TRANSPORT_DOWN_STREAK) {
                     transportDown = true;
                     botCheck.markCutShort();
-                    mLastWalkTransportDown = true;
+                    if (!speculative) {
+                        mLastWalkTransportDown = true;
+                    }
                     android.util.Log.w("NetPath", "player-ring transport-down video=" + videoId
                             + " attempts=" + attempt + " streak=" + noResponseStreak
                             + " lastClient=" + nextType);
@@ -1930,6 +1982,26 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 + " auth=" + (result.isAuth() ? "y" : "n") + " realStatus="
                 + result.getRawPlayabilityStatus() + " -> LOGIN_REQUIRED");
         return VideoInfo.botCheckVerdict(DEBUG_BOT_CHECK_REASON, result.isAuth());
+    }
+
+    /**
+     * NEWTUBE(walk-role): the user opened a video whose answer a speculative walk fetched (a preload
+     * flight the open joined, or its cached result), so that answer's client is now the watched
+     * one: the state that walk left alone is set as the watched video's own walk would have set it.
+     * Not synchronized - an open served from the cache must not wait behind another walk.
+     */
+    public void adoptSpeculativeResult(String videoId, boolean unplayable, boolean live) {
+        mIsUnplayable = unplayable;
+        AppClient winner = videoId != null && !unplayable ? mVideoWinners.get(videoId) : null;
+        if (winner == null || winner == mActualInfoType) {
+            return;
+        }
+        mActualInfoType = winner;
+        android.util.Log.d("NetPath", "player-ring speculative-adopted video=" + videoId
+                + " client=" + winner);
+        if (!(sPreferDashManifestForLive && live)) {
+            persistVideoInfoType();
+        }
     }
 
     /** See {@link #mVideoWinners}. Only a playable answer names a route worth blaming later. */
@@ -2895,7 +2967,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
 
             long nowMs = android.os.SystemClock.elapsedRealtime();
-            if (nowMs - mBotCheckNextProbeAtMs >= 0) {
+            // NEWTUBE(walk-role): the one probe per interval re-tests the server for the user's
+            // own open; a preload taking it left that open answered from the cooldown.
+            if (nowMs - mBotCheckNextProbeAtMs >= 0 && mWalkRole != WalkRole.SPECULATIVE) {
                 // NEWTUBE(botwall): spent when the walk SENDS its first request, not here - a
                 // canceled tap-time prefetch must not use up the interval's only probe.
                 mBotCheckProbePending = true;
@@ -2920,9 +2994,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
         mBotCheckNetwork = sPreferNoPotClient ? activeNetworkKey() : null;
         mBotCheckNextProbeAtMs =
                 android.os.SystemClock.elapsedRealtime() + BOT_CHECK_PROBE_INTERVAL_MS;
-        mNextInfoType = null;
-        mRecoveryWalk = false;
-        mRecoverySuspect = null;
+        // NEWTUBE(walk-role): the challenge is network evidence whoever saw it; the cursor is the
+        // watched video's, and only its own walk may drop it.
+        if (mWalkRole != WalkRole.SPECULATIVE) {
+            mNextInfoType = null;
+            mRecoveryWalk = false;
+            mRecoverySuspect = null;
+        }
         android.util.Log.w("NetPath", "bot-check trip client=" + client
                 + " signal=" + signal + " authAttempted=" + (authenticatedAttempted ? "y" : "n")
                 + " ringExhausted=" + (ringExhausted ? "y" : "n")

@@ -781,6 +781,12 @@ public class VideoInfoBotWallTest {
         protected static boolean resetCache(AppClient client) {
             return client.isWebPotRequired();
         }
+
+        /** No BotGuard in a unit test: no token (the format transform of a full getVideoInfo). */
+        @Implementation
+        protected static String getPoToken(AppClient client, String videoId) {
+            return null;
+        }
     }
 
     @Implements(VideoInfoService.class)
@@ -813,6 +819,11 @@ public class VideoInfoBotWallTest {
         @Implementation
         protected static boolean hasAuthentication() {
             return signedIn;
+        }
+
+        /** A full getVideoInfo stops after the walk: no subtitle or storyboard enrichment. */
+        @Implementation
+        protected void applyFixesIfNeeded(VideoInfo result, String videoId, String clickTrackingParams) {
         }
 
         /** One scripted /player answer, then the production debug-injection step. */

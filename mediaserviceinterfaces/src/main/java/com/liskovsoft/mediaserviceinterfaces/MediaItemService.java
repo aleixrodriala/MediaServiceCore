@@ -60,6 +60,16 @@ public interface MediaItemService {
     default Observable<MediaItemFormatInfo> getLatestFormatInfoObserve(String videoId) {
         return getFormatInfoObserve(videoId);
     }
+    /**
+     * NEWTUBE(walk-role): format info for a video the user has not opened (a preload or warmup),
+     * fetched so that it does not move the watched video's routing state.
+     */
+    default Observable<MediaItemFormatInfo> getSpeculativeFormatInfoObserve(String videoId) {
+        return getFormatInfoObserve(videoId);
+    }
+    default MediaItemFormatInfo getSpeculativeFormatInfo(String videoId) {
+        return getFormatInfo(videoId);
+    }
     Observable<MediaItemStoryboard> getStoryboardObserve(MediaItem item);
     Observable<MediaItemStoryboard> getStoryboardObserve(String videoId);
     Observable<MediaItemMetadata> getMetadataObserve(MediaItem item);
