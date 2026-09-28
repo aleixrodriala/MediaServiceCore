@@ -137,8 +137,12 @@ public final class BotCheckDetector {
      * en tu p..." and WEB_EMBED answered "Este vídeo se ha retirado porque infringía los Términos
      * del Servicio de YouTube" - one verdict, which the whole-sentence rule split in two (and whose
      * second sentence tripped the region veto), so the walk asked all eight sources. So this one
-     * verdict is its FIRST sentence starting with one of these removal clauses; every policy and
-     * every client's wording is the same key. The non-Spanish forms are unverified guesses.
+     * verdict is a first sentence that starts with one of these removal clauses and names no
+     * device, site, app or embedding ({@link #VIOLATION_QUALIFIERS}) nor a region, followed by
+     * nothing or by "learn more" sentences only ({@link #LEARN_MORE}, which may name the country):
+     * any other tail can qualify the verdict ("... applies only in your country"). Every policy
+     * and every client's wording is then the same key. The non-Spanish forms are unverified
+     * guesses; a miss only costs requests.
      */
     private static final String[] VIOLATION_REMOVALS = {
             "this video has been removed for violating youtube's",
@@ -149,6 +153,20 @@ public final class BotCheckDetector {
             "dieses video wurde entfernt, weil es gegen",
             "questo video e stato rimosso per violazione",
             "este video foi removido por violar",
+    };
+
+    /** A removal "on this device / website / app" or of an embed is not the content's verdict. */
+    private static final String[] VIOLATION_QUALIFIERS = {
+            "device", "site", "app", "embed", "player", "dispositivo", "sitio", "aplicacion",
+            "insert", "reproductor", "appareil", "lecteur", "gerat", "seite", "sito",
+            "applicazione", "aplicativo",
+    };
+
+    /** The opening of a "learn more" sentence, the only tail a violation removal may carry. */
+    private static final String[] LEARN_MORE = {
+            "learn more", "obten mas informacion", "mas informacion", "en savoir plus",
+            "weitere informationen", "mehr erfahren", "scopri di piu", "ulteriori informazioni",
+            "saiba mais",
     };
 
     /** A second guard: any hint of a region restriction vetoes an allowlisted match. */
@@ -176,9 +194,8 @@ public final class BotCheckDetector {
         }
 
         String canonical = canonicalReason(reason);
-        int sentenceEnd = canonical.indexOf(". ");
-        String verdict = sentenceEnd > 0
-                ? canonicalReason(canonical.substring(0, sentenceEnd)) : canonical;
+        String[] sentences = canonical.split("\\. ");
+        String verdict = canonicalReason(sentences[0]);
         for (String hint : REGION_HINTS) {
             if (verdict.contains(hint)) {
                 return null;
@@ -188,12 +205,33 @@ public final class BotCheckDetector {
         if (key != null) {
             return key;
         }
-        for (String removal : VIOLATION_REMOVALS) {
-            if (verdict.startsWith(removal)) {
-                return REMOVED_FOR_VIOLATION;
+        return isViolationRemoval(verdict, sentences) ? REMOVED_FOR_VIOLATION : null;
+    }
+
+    private static boolean isViolationRemoval(String verdict, String[] sentences) {
+        if (!startsWithAny(verdict, VIOLATION_REMOVALS)) {
+            return false;
+        }
+        for (String qualifier : VIOLATION_QUALIFIERS) {
+            if (verdict.contains(qualifier)) {
+                return false;
             }
         }
-        return null;
+        for (int i = 1; i < sentences.length; i++) {
+            if (!startsWithAny(sentences[i], LEARN_MORE)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean startsWithAny(String value, String[] prefixes) {
+        for (String prefix : prefixes) {
+            if (value.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

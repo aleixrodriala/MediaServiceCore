@@ -157,6 +157,21 @@ public class VideoInfoPlannerTest {
         assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED", "ANDROID_VR", "IOS"), calls());
     }
 
+    /**
+     * Three identities refusing with a removal qualified by the site are no verdict: the walk
+     * goes on past the fourth request to the source that serves the video.
+     */
+    @Test
+    public void aQualifiedRemovalFromThreeIdentitiesDoesNotStopTheWalk() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.ANDROID_REEL
+                ? playable(auth) : parse("{\"playabilityStatus\": {\"status\": \"ERROR\","
+                        + " \"reason\": \"This video has been removed for violating YouTube's"
+                        + " embedding policy on this website\"}}", auth);
+        assertEquals(AppClient.ANDROID_REEL, open("qualified").getClient());
+        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED", "ANDROID_VR", "IOS", "ANDROID_REEL"),
+                calls());
+    }
+
     /** A generic reason is not a verdict: the lane is asked to the end. */
     @Test
     public void aGenericRefusalIsNotSettledEarly() {

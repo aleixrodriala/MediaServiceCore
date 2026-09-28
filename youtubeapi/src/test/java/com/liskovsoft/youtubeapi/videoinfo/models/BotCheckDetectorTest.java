@@ -130,6 +130,23 @@ public class BotCheckDetectorTest {
                                 + " country"));
     }
 
+    /** Codex sol's counterexamples (2026-09-29): a qualified removal is not the content's verdict. */
+    @Test
+    public void aRemovalQualifiedByADeviceASiteOrAnyTailOtherThanLearnMoreIsNotAVerdict() {
+        for (String reason : new String[] {
+                "This video has been removed for violating YouTube's embedding policy on this"
+                        + " website",
+                "This video has been removed for violating YouTube's policy on this device.",
+                "Este vídeo se ha retirado por infringir la política de YouTube en esta aplicación.",
+                "This video has been removed for violating YouTube's local-law policy. This"
+                        + " restriction applies only in your country.",
+                "This video has been removed for violating YouTube's policy in the U.S. only.",
+                "This video has been removed for violating YouTube's Terms of Service. Sign in to"
+                        + " confirm your age."}) {
+            assertNull(reason, BotCheckDetector.definitiveUnplayableKey("ERROR", reason));
+        }
+    }
+
     /**
      * The WHOLE reason must be an allowlisted sentence: a qualified, extended or reworded variant
      * is not the same verdict, and a copyright claim names a claimant, so it is never one.
