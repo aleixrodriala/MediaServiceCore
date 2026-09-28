@@ -847,6 +847,9 @@ class YouTubeContentService implements ContentService {
 
     @Override
     public void enableHistory(boolean enable) {
+        if (AccountWrites.blocked(enable ? "history-resume" : "history-pause")) {
+            return;
+        }
         if (enable) {
             getActionsService().resumeWatchHistory();
         } else {
@@ -856,6 +859,9 @@ class YouTubeContentService implements ContentService {
 
     @Override
     public void clearHistory() {
+        if (AccountWrites.blocked("history-clear")) {
+            return;
+        }
         getActionsService().clearWatchHistory();
     }
 

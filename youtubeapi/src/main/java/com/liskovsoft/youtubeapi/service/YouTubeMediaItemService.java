@@ -544,6 +544,9 @@ public class YouTubeMediaItemService implements MediaItemService {
 
     @Override
     public void updateHistoryPosition(String videoId, float positionSec) {
+        if (AccountWrites.blocked("history-position")) {
+            return;
+        }
         checkSigned();
 
         MediaItemFormatInfo formatInfo = getTrackingFormatInfo(videoId);
