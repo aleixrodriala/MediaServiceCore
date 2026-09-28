@@ -141,6 +141,22 @@ public class VideoInfoPlannerTest {
         assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED", "ANDROID_VR", "IOS"), calls());
     }
 
+    /**
+     * The same removal as the Pixel saw it: a policy sentence with a "learn more" tail from the
+     * app and web sources, the terms of service from the embed page. Still the fourth request.
+     */
+    @Test
+    public void aRemovalWordedDifferentlyByTheEmbedPageIsStillSettledAtTheFourthRequest() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
+                + " {\"status\": \"ERROR\", \"reason\": \"" + (client == AppClient.WEB_EMBED
+                ? "Este vídeo se ha retirado porque infringía los Términos del Servicio de YouTube"
+                : "Este vídeo se ha retirado por infringir la política de YouTube sobre la incitación"
+                        + " al odio. Obtén más información sobre cómo combatir la incitación al odio"
+                        + " en tu país.") + "\"}}", auth);
+        assertTrue(open("removed").isUnplayable());
+        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED", "ANDROID_VR", "IOS"), calls());
+    }
+
     /** A generic reason is not a verdict: the lane is asked to the end. */
     @Test
     public void aGenericRefusalIsNotSettledEarly() {

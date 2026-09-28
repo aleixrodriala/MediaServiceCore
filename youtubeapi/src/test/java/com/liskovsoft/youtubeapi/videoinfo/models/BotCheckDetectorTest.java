@@ -2,6 +2,7 @@ package com.liskovsoft.youtubeapi.videoinfo.models;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -97,6 +98,36 @@ public class BotCheckDetectorTest {
             assertNotNull(reason, BotCheckDetector.definitiveUnplayableKey("ERROR", reason));
             assertNotNull(reason, BotCheckDetector.definitiveUnplayableKey("UNPLAYABLE", reason));
         }
+    }
+
+    /**
+     * 6SJNVb0GnPI on the Pixel (2026-09-28): seven clients named the policy and added a "learn
+     * more ... in your country" sentence, WEB_EMBED named the terms of service. One verdict.
+     */
+    @Test
+    public void aRemovalForAViolationIsOneVerdictWhateverThePolicyOrTheClient() {
+        String app = BotCheckDetector.definitiveUnplayableKey("ERROR", "Este vídeo se ha retirado"
+                + " por infringir la política de YouTube sobre la incitación al odio. Obtén más"
+                + " información sobre cómo combatir la incitación al odio en tu país.");
+        assertNotNull(app);
+        assertEquals(app, BotCheckDetector.definitiveUnplayableKey("ERROR",
+                "Este vídeo se ha retirado porque infringía los Términos del Servicio de YouTube"));
+        for (String reason : new String[] {
+                "This video has been removed for violating YouTube's policy on hate speech. Learn"
+                        + " more about combating hate speech in your country.",
+                "This video has been removed for violating YouTube's Terms of Service",
+                "This video has been removed for violating YouTube\u2019s Community Guidelines.",
+                "Dieses Video wurde entfernt, weil es gegen die Nutzungsbedingungen von YouTube"
+                        + " verst\u00f6\u00dft."}) {
+            assertEquals(reason, app, BotCheckDetector.definitiveUnplayableKey("ERROR", reason));
+        }
+        assertNotEquals("a removal by the uploader is another verdict", app,
+                BotCheckDetector.definitiveUnplayableKey("ERROR",
+                        "This video has been removed by the uploader"));
+        assertNull("a region in the verdict's own sentence still vetoes it",
+                BotCheckDetector.definitiveUnplayableKey("ERROR",
+                        "This video has been removed for violating YouTube's policy in your"
+                                + " country"));
     }
 
     /**

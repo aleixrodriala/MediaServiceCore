@@ -963,15 +963,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
      *
      * <p>Definitive = at least {@link #MIN_CLIENTS} distinct clients, at least one the SERVER
      * confirmed signed in ({@code srvAuth=y} - sending the credential is not enough) and one that
-     * carried no account, all answering with the same reason that
+     * carried no account, all answering with the same verdict that
      * {@link BotCheckDetector#definitiveUnplayableKey} ALLOWLISTS as terminal for the content (an
-     * unpublished live recording, a removal, a terminated account, a copyright takedown), and no
-     * parsed answer so far saying anything else. Stability over speed: a generic "Video
-     * unavailable" never qualifies. A credential the server did not confirm still counts as a
-     * distinct client, not as the signed-in witness. ERROR answers with no allowlisted reason are
-     * neutral (they are the client-specific ones here: embedding disabled, client too old); no
-     * answer at all is no evidence. Anything else - a playable or OK answer, a sign-in or age gate,
-     * any other reason - ends the consensus for the rest of the walk. Mobile only.
+     * unpublished live recording, a removal by the uploader or for a violation - however each
+     * client words it - or a terminated account), and no parsed answer so far saying anything
+     * else. Stability over speed: a generic "Video unavailable" never qualifies. A credential the
+     * server did not confirm still counts as a distinct client, not as the signed-in witness.
+     * ERROR answers with no allowlisted reason are neutral (they are the client-specific ones
+     * here: embedding disabled, client too old); no answer at all is no evidence. Anything else -
+     * a playable or OK answer, a sign-in or age gate, any other reason - ends the consensus for
+     * the rest of the walk. Mobile only.
      *
      * <p>One instance per walk. Not thread-safe: {@code firstPlayable} runs under this service's
      * monitor and the instance never escapes it.
@@ -989,7 +990,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
          * NEWTUBE(planner): a signed-out walk has no signed-in witness, so it never reached the
          * verdict and asked the whole ring about a removed video. Planned, its first sources ride
          * three different visitors (the web session, the app, the embed page - PlayerSource
-         * identity); the same allowlisted reason from all three is the same independence, reached
+         * identity); the same allowlisted verdict from all three is the same independence, reached
          * without an account.
          */
         private final boolean mByIdentity;
