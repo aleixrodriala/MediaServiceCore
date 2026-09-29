@@ -75,6 +75,7 @@ public final class PhoneSourcePlanner {
         final boolean anonChallenged;
         final boolean accountRouteBenched;
         final boolean accountRouteFirst;
+        final boolean accountRouteHinted;
 
         /**
          * @param recoverySuspect     the source that served the watched video when its media
@@ -94,11 +95,24 @@ public final class PhoneSourcePlanner {
          */
         public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
                 boolean accountRouteBenched, boolean accountRouteFirst) {
+            this(lane, recoverySuspect, anonChallenged, accountRouteBenched, accountRouteFirst, false);
+        }
+
+        /**
+         * @param accountRouteHinted either lane: this video's channel is remembered as one the
+         *                           account route serves and VISIONOS refuses (KidsChannelMemory),
+         *                           so the account route is asked first - anonymously signed out.
+         *                           Ignored when benched and in a recovery walk: health and the
+         *                           recovery order outrank it
+         */
+        public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
+                boolean accountRouteBenched, boolean accountRouteFirst, boolean accountRouteHinted) {
             this.lane = lane;
             this.recoverySuspect = recoverySuspect;
             this.anonChallenged = anonChallenged;
             this.accountRouteBenched = accountRouteBenched;
             this.accountRouteFirst = accountRouteFirst;
+            this.accountRouteHinted = accountRouteHinted;
         }
     }
 
@@ -117,6 +131,17 @@ public final class PhoneSourcePlanner {
         } else if (context.accountRouteFirst) {
             // Under test: the account's own answer first (Premium formats, the account's policy,
             // history credited without a second request), at the cost of its signature solve.
+            order.remove(ACCOUNT_ROUTE);
+            order.add(0, ACCOUNT_ROUTE);
+        }
+
+        // NEWTUBE(kids-channel): a video of this channel was refused by VISIONOS and served by the
+        // account route, so this one asks the account route first - the refusal it skips is the
+        // request it saves. Signed out that is the same anonymous ask the refusal would have
+        // admitted next; signed in, the account route's own place. Never a benched route (health
+        // outranks the hint) nor a recovery walk (its suspect decides).
+        if (context.accountRouteHinted && !context.accountRouteBenched
+                && context.recoverySuspect == null) {
             order.remove(ACCOUNT_ROUTE);
             order.add(0, ACCOUNT_ROUTE);
         }
@@ -158,6 +183,18 @@ public final class PhoneSourcePlanner {
      */
     public static boolean admitsAccountRouteAfter(Lane lane, AppClient client) {
         return lane == Lane.SIGNED_OUT && client != ACCOUNT_ROUTE && !client.isWebPotRequired();
+    }
+
+    /**
+     * NEWTUBE(kids-channel): the sources measured to refuse every made-for-kids video ("This video
+     * is not available", 6 of 6 each on the harness, and every kids walk on the Pixel) while
+     * serving ordinary ones: their content refusal before an account-route serve is
+     * KidsChannelMemory's proof, and their serve is evidence against a remembered channel. Not
+     * IOS or ANDROID_REEL: they answer kids videos with SABR only or progressive formats rather
+     * than refuse them (netbench recap), so neither their refusal nor their serve says "kids".
+     */
+    public static boolean refusesMadeForKids(AppClient client) {
+        return client == AppClient.VISIONOS || client == AppClient.ANDROID_VR;
     }
 
     /**
