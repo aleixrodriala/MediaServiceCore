@@ -44,6 +44,19 @@ public class PhoneSourcePlannerTest {
                 AppClient.TV_TIZEN, false);
     }
 
+    /** The A/B switch: signed in, the account route leads; signed out and benched, it changes nothing. */
+    @Test
+    public void theAccountRouteFirstSwitch() {
+        assertEquals("TV_TIZEN VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(SIGNED_IN, null, false, false, true))));
+        assertEquals("VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI TV_TIZEN",
+                join(PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(SIGNED_IN, AppClient.TV_TIZEN, false, false, true))));
+        assertEquals("VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(SIGNED_IN, null, false, true, true))));
+        assertEquals("VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(SIGNED_OUT, null, false, false, true))));
+    }
+
     @Test
     public void aBenchedAccountRouteIsNotPlanned() {
         List<AppClient> order = PhoneSourcePlanner.order(
@@ -128,6 +141,14 @@ public class PhoneSourcePlannerTest {
         for (AppClient client : PhoneSourcePlanner.ORDER) {
             assertTrue(client + " in the catalog", PlayerSourceCatalog.covers(client));
         }
+    }
+
+    private static String join(List<AppClient> order) {
+        StringBuilder actual = new StringBuilder();
+        for (AppClient client : order) {
+            actual.append(actual.length() > 0 ? " " : "").append(client);
+        }
+        return actual.toString();
     }
 
     private static void assertOrder(String expected, PhoneSourcePlanner.Lane lane, AppClient suspect,

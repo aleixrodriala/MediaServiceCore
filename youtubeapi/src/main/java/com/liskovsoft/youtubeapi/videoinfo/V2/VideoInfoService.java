@@ -69,6 +69,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // of median cold-start latency in the Pixel 9 sample while retaining attested Web recovery.
     // TV builds never enable this flag, so they keep the WEB_EMBED-first order and unbounded
     // (no-timeout) behaviour byte-for-byte.
+    private static volatile boolean sAccountRouteFirst;
     private static volatile boolean sPreferNoPotClient;
     private static final AppClient PREFERRED_FIRST_CLIENT = AppClient.VISIONOS;
     // Short per-attempt timeout guarding a hanging fast client (ANDROID_VR "often hangs?"). Applied
@@ -239,6 +240,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setPreferNoPotClient(boolean prefer) {
         sPreferNoPotClient = prefer;
+    }
+
+    /**
+     * NEWTUBE(planner): signed in, the account route (TV_TIZEN) first instead of second. A debug and
+     * benchmark A/B switch (netbench LANES.md section 2.1), off by default.
+     */
+    public static void setAccountRouteFirst(boolean first) {
+        sAccountRouteFirst = first;
     }
 
     /**
@@ -1265,7 +1274,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
             final boolean accountRouteBenched = authenticated && mBotWall.hasRouteRecords()
                     && mBotWall.isRouteFailed(wallKeys.network(), noMediaVideoKey(videoId), walkStartMs);
             visitOrder = PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(
-                    lane, recoveryWalk ? lastWinner : null, anonChallenged, accountRouteBenched));
+                    lane, recoveryWalk ? lastWinner : null, anonChallenged, accountRouteBenched,
+                    sAccountRouteFirst));
             android.util.Log.d("NetPath", "player-ring plan video=" + videoId
                     + " lane=" + (authenticated ? "signed-in" : "signed-out")
                     + (recoveryWalk ? " suspect=" + lastWinner : "")

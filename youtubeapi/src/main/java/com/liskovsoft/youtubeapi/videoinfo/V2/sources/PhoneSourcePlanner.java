@@ -74,6 +74,7 @@ public final class PhoneSourcePlanner {
         final AppClient recoverySuspect;
         final boolean anonChallenged;
         final boolean accountRouteBenched;
+        final boolean accountRouteFirst;
 
         /**
          * @param recoverySuspect     the source that served the watched video when its media
@@ -84,10 +85,20 @@ public final class PhoneSourcePlanner {
          */
         public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
                 boolean accountRouteBenched) {
+            this(lane, recoverySuspect, anonChallenged, accountRouteBenched, false);
+        }
+
+        /**
+         * @param accountRouteFirst signed in: ask the account route first instead of second (the
+         *                          A/B of LANES.md section 2.1; a debug switch, off by default)
+         */
+        public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
+                boolean accountRouteBenched, boolean accountRouteFirst) {
             this.lane = lane;
             this.recoverySuspect = recoverySuspect;
             this.anonChallenged = anonChallenged;
             this.accountRouteBenched = accountRouteBenched;
+            this.accountRouteFirst = accountRouteFirst;
         }
     }
 
@@ -103,6 +114,11 @@ public final class PhoneSourcePlanner {
         // is planned unless it has just failed here.
         if (context.lane == Lane.SIGNED_OUT || context.accountRouteBenched) {
             order.remove(ACCOUNT_ROUTE);
+        } else if (context.accountRouteFirst) {
+            // Under test: the account's own answer first (Premium formats, the account's policy,
+            // history credited without a second request), at the cost of its signature solve.
+            order.remove(ACCOUNT_ROUTE);
+            order.add(0, ACCOUNT_ROUTE);
         }
 
         // The anonymous web identity is challenged here: every web client is a round trip to a
