@@ -79,8 +79,33 @@ public final class PlaybackIdentity {
     public static void onFreshVisitorAdopted(@Nullable String fresh) {
         PlaybackIdentityBook.Pending pending = sBook.takePending(System.currentTimeMillis());
         if (pending == null) {
-            return; // a challenge rotation (dormant), not a playback re-roll
+            return; // a challenge rotation (dormant), or the background mint got there first
         }
+        complete(pending, fresh, "session");
+    }
+
+    /**
+     * NEWTUBE(playback-identity), the background mint (PoTokenGate.rerollPlaybackIdentity, keeping
+     * on): {@code fresh} was minted off the playback path right after the wall, while the recovered
+     * video plays, so the next open - in this process or after a restart - starts on a ready kept
+     * visitor instead of minting it inside its first request (+1.7-3.3 s on the emulators, v22).
+     * True when it completed the re-roll: the caller then retires the walled session. False when a
+     * session build already completed it, or the mint failed (null): the re-roll stays pending and
+     * the next session build mints it as before (refunded if that fails too).
+     */
+    public static boolean onFreshVisitorMinted(@Nullable String fresh) {
+        if (fresh == null || !sKeepEnabled) {
+            return false;
+        }
+        PlaybackIdentityBook.Pending pending = sBook.takePending(System.currentTimeMillis());
+        if (pending == null) {
+            return false;
+        }
+        complete(pending, fresh, "background");
+        return true;
+    }
+
+    private static void complete(PlaybackIdentityBook.Pending pending, @Nullable String fresh, String mint) {
         boolean kept = false;
         if (fresh == null) {
             // The visitor API failed and the app's (walled) visitor was adopted again: nothing was
@@ -96,7 +121,7 @@ public final class PlaybackIdentity {
         android.util.Log.d("NetPath", "playback-identity reroll reason=wall video=" + pending.videoId
                 + " from=" + pending.fromFingerprint + " to=" + VisitorFingerprint.of(fresh)
                 + " budgetLeft=" + pending.budgetLeft + " fresh=" + (fresh != null ? "y" : "n")
-                + " keep=" + (kept ? "y" : "n"));
+                + " keep=" + (kept ? "y" : "n") + " mint=" + mint);
     }
 
     /** The re-rolled identity met the wall again: no reason to keep it. */

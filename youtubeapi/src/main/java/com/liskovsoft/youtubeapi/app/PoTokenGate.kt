@@ -9,6 +9,8 @@ import com.liskovsoft.youtubeapi.app.potokennp2.misc.selectFactory
 import com.liskovsoft.youtubeapi.common.helpers.AppClient
 import com.liskovsoft.youtubeapi.innertube.ytcfg.YtCfgService
 import android.os.SystemClock
+import com.liskovsoft.youtubeapi.app.potokennp2.visitor.VisitorService
+import kotlin.concurrent.thread
 
 /**
  * PoTokenType
@@ -315,6 +317,28 @@ internal object PoTokenGate {
         }
         val from = mWebPoToken?.visitorData ?: PoTokenProviderImpl.peekSessionVisitorData()
         PlaybackIdentity.arm(videoId, from, budgetLeft)
+        if (PlaybackIdentity.isKeepEnabled()) {
+            // NEWTUBE(playback-identity): mint the fresh visitor now, off the playback path, and keep
+            // it; the walled session stays until then (the recovery asks WEB_EMBED and TV_TIZEN
+            // first, which do not use it). Until the mint lands the re-roll is pending, so a
+            // web-session request in between mints it inside its session build, as without this.
+            thread(isDaemon = true, name = "playback-identity-mint") {
+                val fresh = try {
+                    VisitorService.getVisitorData()
+                } catch (e: Exception) {
+                    null
+                }
+                if (PlaybackIdentity.onFreshVisitorMinted(fresh)) {
+                    // Retire the walled session: the next request peeks the kept visitor, no wait.
+                    mWebPoToken = null
+                    mWebPoTokenCreatedAtMs = -1
+                    PoTokenProviderImpl.resetCache()
+                } else if (fresh == null) {
+                    Log.d(TAG, "Playback identity mint failed in the background: the next session mints it")
+                }
+            }
+            return true
+        }
         PoTokenProviderImpl.requestFreshVisitor()
         mWebPoToken = null
         mWebPoTokenCreatedAtMs = -1

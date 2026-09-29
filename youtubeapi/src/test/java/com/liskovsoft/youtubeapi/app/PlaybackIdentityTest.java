@@ -82,4 +82,32 @@ public class PlaybackIdentityTest {
         PlaybackIdentity.setKeepEnabled(true);
         assertNull(PlaybackIdentity.keptVisitor());
     }
+
+    /**
+     * The background mint (v22b): minted right after the wall, it completes the re-roll and keeps the
+     * fresh visitor, so no later session build has anything to mint; a session that got there first
+     * wins, and a failed mint leaves the re-roll pending for the session build.
+     */
+    @Test
+    public void aBackgroundMintCompletesTheReRoll() {
+        PlaybackIdentity.setKeepEnabled(true);
+        PlaybackIdentity.arm("v1", "old-visitor", 1);
+        assertFalse("failed mint", PlaybackIdentity.onFreshVisitorMinted(null));
+        assertTrue("still pending", PlaybackIdentity.isRerollPending());
+        assertTrue(PlaybackIdentity.onFreshVisitorMinted("fresh-visitor"));
+        assertFalse(PlaybackIdentity.isRerollPending());
+        assertEquals("fresh-visitor", PlaybackIdentity.keptVisitor());
+        assertFalse("nothing left to complete", PlaybackIdentity.onFreshVisitorMinted("second"));
+        assertEquals("fresh-visitor", PlaybackIdentity.keptVisitor());
+
+        PlaybackIdentity.arm("v2", "fresh-visitor", 0);
+        PlaybackIdentity.onFreshVisitorAdopted("third"); // the session build got there first
+        assertFalse(PlaybackIdentity.onFreshVisitorMinted("late"));
+        assertEquals("third", PlaybackIdentity.keptVisitor());
+
+        PlaybackIdentity.setKeepEnabled(false);
+        PlaybackIdentity.arm("v3", "third", 0);
+        assertFalse("keeping off: the session build mints", PlaybackIdentity.onFreshVisitorMinted("x"));
+        assertTrue(PlaybackIdentity.isRerollPending());
+    }
 }
