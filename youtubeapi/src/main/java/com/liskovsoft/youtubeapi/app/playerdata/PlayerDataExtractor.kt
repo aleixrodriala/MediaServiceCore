@@ -185,8 +185,8 @@ internal class PlayerDataExtractor(val playerUrl: String) {
         }
 
         try {
-            val nParam = "5cNpZqIJ7ixNqU68Y7S"
-            val sigParam = "NJAJEij0EwRgIhAI0KExTgjfPk-MPM9MAdzyyPRt=BM8-XO5tm5hlMCSVpAiEAv7eP3CURqZNSPow8BXXAoazVoXgeMP7gH9BdylHCwgw=gwzz"
+            val nParam = CHECK_N
+            val sigParam = CHECK_SIG
             val result = V8ChallengeProvider.bulkSolve(
                 listOf(
                     JsChallengeRequest(JsChallengeType.N, ChallengeInput(fixedPlayerUrl, listOf(nParam))),
@@ -219,7 +219,17 @@ internal class PlayerDataExtractor(val playerUrl: String) {
             val startMs = android.os.SystemClock.elapsedRealtime()
             android.util.Log.d("NetPath", "v8-warmup start")
             try {
-                V8ChallengeProvider.warmup()
+                // NEWTUBE(v8-memo): with the runtime, evaluate this player into it and cross-check
+                // it against today's path on checkSigData's fixed challenges, so the first
+                // signature/n solve of the process is usually a hit instead of 206-240 ms of
+                // player re-evaluation (Pixel 9, netbench ttff-analysis.md 3.1). That adds one
+                // cache read and two player evaluations to this thread (its own v8-memo line has
+                // the time; "complete" below now includes it); a solve that arrives meanwhile
+                // waits for the verdict instead of evaluating the player itself.
+                V8ChallengeProvider.warmup(fixedPlayerUrl, listOf(
+                    JsChallengeRequest(JsChallengeType.N, ChallengeInput(fixedPlayerUrl, listOf(CHECK_N))),
+                    JsChallengeRequest(JsChallengeType.SIG, ChallengeInput(fixedPlayerUrl, listOf(CHECK_SIG)))
+                ))
                 android.util.Log.d(
                     "NetPath",
                     "v8-warmup complete ms=${android.os.SystemClock.elapsedRealtime() - startMs}"
@@ -233,5 +243,11 @@ internal class PlayerDataExtractor(val playerUrl: String) {
                 android.util.Log.e(tag, "V8 warmup failed: ${e.message}")
             }
         }, "V8WarmUp").start()
+    }
+
+    private companion object {
+        // checkSigData's fixed challenges; the v8-memo guard in warmupSigRuntimeAsync reuses them.
+        const val CHECK_N = "5cNpZqIJ7ixNqU68Y7S"
+        const val CHECK_SIG = "NJAJEij0EwRgIhAI0KExTgjfPk-MPM9MAdzyyPRt=BM8-XO5tm5hlMCSVpAiEAv7eP3CURqZNSPow8BXXAoazVoXgeMP7gH9BdylHCwgw=gwzz"
     }
 }

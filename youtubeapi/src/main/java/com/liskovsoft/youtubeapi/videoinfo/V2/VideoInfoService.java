@@ -371,6 +371,17 @@ public class VideoInfoService extends VideoInfoServiceBase {
         V8ChallengeProvider.releaseRuntime();
     }
 
+    /**
+     * NEWTUBE(v8-memo): the retained solver runtime keeps each player's evaluated n/sig functions,
+     * so a solve stops re-reading and re-evaluating the ~3.7 MB player (206-240 ms per TV_TIZEN /
+     * WEB_EMBED / MWEB answer on the Pixel 9). On by default, behind a per-player cross-check
+     * against the full path. false restores re-evaluating on every solve: the rollback for debug and
+     * benchmark builds (debug.arc.v8_memo=0). Only matters with setKeepSigRuntimeAlive(true).
+     */
+    public static void setSigSolverMemoEnabled(boolean enabled) {
+        V8ChallengeProvider.setPlayerMemoEnabled(enabled);
+    }
+
     // Mobile live routing: WEB_EMBED (the ring head) answers live videos with an HLS-only
     // response (no dashManifestUrl -> no LiveDashManifestParser DVR window), and on
     // pot-enforcing networks its HLS segments 403 instantly — with or without a client-side

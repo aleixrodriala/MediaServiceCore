@@ -34,43 +34,27 @@ internal abstract class JsRuntimeChalBaseJCP: JsChallengeProvider() {
         ScriptType.CORE to "yt.solver.core.min.js"
     )
 
-    protected abstract fun runJsRuntime(stdin: String): String
+    /** [playerUrl]: the player [stdin] evaluates (the v8-memo bookkeeping needs to know). */
+    protected abstract fun runJsRuntime(stdin: String, playerUrl: String): String
+
+    /**
+     * NEWTUBE(v8-memo): the answer of the solvers the runtime already holds for [playerUrl], without
+     * reading or re-evaluating the player, or null to take today's path. See [SolverMemo].
+     */
+    protected open fun solveFromMemo(playerUrl: String, requests: List<JsChallengeRequest>): SolverOutput? = null
+
+    /** NEWTUBE(v8-memo): the memo's answer had an error or a missing value; today's path answered [fullAnswer]. */
+    protected open fun onMemoUnclean(playerUrl: String, memoAnswer: SolverOutput, fullAnswer: SolverOutput) {}
 
     override fun realBulkSolve(requests: List<JsChallengeRequest>): Sequence<JsChallengeProviderResponse> = sequence {
         val grouped: Map<String, List<JsChallengeRequest>> = requests.groupBy { it.input.playerUrl }
 
         for ((playerUrl, groupedRequests) in grouped) {
-            val data = ie.cache.load(cacheSection, "player:$playerUrl")
-            var player = data?.code
-
-            val cached = if (player != null) {
-                true
-            } else {
-                player = getPlayer(playerUrl)
-                false
-            }
-
-            val stdin = constructStdin(player, cached, groupedRequests)
-            // A miss here means the whole player JS is re-preprocessed (parsed by meriyah, printed
-            // by astring) inside V8 before a single challenge is solved -- by far the most expensive
-            // thing this path can do, and invisible in the transform total without this line.
-            android.util.Log.d("NetPath", "v8-player cached=" + (if (cached) "y" else "n")
-                    + " challenges=" + groupedRequests.sumOf { it.input.challenges.size })
-            val stdout = runJsRuntime(stdin)
-
-            val gson = Gson()
-            val output: SolverOutput = try {
-                gson.fromJson(stdout, solverOutputType)
-            } catch (e: JsonSyntaxException) {
-                throw JsChallengeProviderError("Cannot parse solver output", e)
-            }
-
-            if (output.type == "error")
-                throw JsChallengeProviderError(output.error ?: "Unknown solver output error")
-
-            val preprocessed = output.preprocessed_player
-            if (preprocessed != null)
-                ie.cache.store(cacheSection, "player:$playerUrl", CachedData(preprocessed))
+            // NEWTUBE(v8-memo): the kept solvers answer when the guard allows it; today's path
+            // answers otherwise, and also whenever their answer is not clean.
+            val output = SolverMemo.answer(solveFromMemo(playerUrl, groupedRequests), groupedRequests,
+                { solveFull(playerUrl, groupedRequests) },
+                { memo, full -> onMemoUnclean(playerUrl, memo, full) })
 
             for ((request, responseData) in groupedRequests.zip(output.responses)) {
                 if (responseData.type == "error") {
@@ -83,6 +67,43 @@ internal abstract class JsRuntimeChalBaseJCP: JsChallengeProvider() {
                 }
             }
         }
+    }
+
+    /** Today's path: read the player, send all of it, and V8 evaluates it before solving. */
+    private fun solveFull(playerUrl: String, groupedRequests: List<JsChallengeRequest>): SolverOutput {
+        val data = ie.cache.load(cacheSection, "player:$playerUrl")
+        var player = data?.code
+
+        val cached = if (player != null) {
+            true
+        } else {
+            player = getPlayer(playerUrl)
+            false
+        }
+
+        val stdin = constructStdin(player, cached, groupedRequests)
+        // A miss here means the whole player JS is re-preprocessed (parsed by meriyah, printed
+        // by astring) inside V8 before a single challenge is solved -- by far the most expensive
+        // thing this path can do, and invisible in the transform total without this line.
+        android.util.Log.d("NetPath", "v8-player cached=" + (if (cached) "y" else "n")
+                + " challenges=" + groupedRequests.sumOf { it.input.challenges.size })
+        val stdout = runJsRuntime(stdin, playerUrl)
+
+        val gson = Gson()
+        val output: SolverOutput = try {
+            gson.fromJson(stdout, solverOutputType)
+        } catch (e: JsonSyntaxException) {
+            throw JsChallengeProviderError("Cannot parse solver output", e)
+        }
+
+        if (output.type == "error")
+            throw JsChallengeProviderError(output.error ?: "Unknown solver output error")
+
+        val preprocessed = output.preprocessed_player
+        if (preprocessed != null)
+            ie.cache.store(cacheSection, "player:$playerUrl", CachedData(preprocessed))
+
+        return output
     }
 
     private fun constructStdin(player: String, preprocessed: Boolean, requests: List<JsChallengeRequest>): String {
