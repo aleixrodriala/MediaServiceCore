@@ -9,6 +9,7 @@ import com.liskovsoft.googlecommon.common.helpers.VisitorFingerprint
 import com.liskovsoft.sharedutils.helpers.DeviceHelpers
 import com.liskovsoft.sharedutils.mylogger.Log
 import com.liskovsoft.youtubeapi.app.AppService
+import com.liskovsoft.youtubeapi.app.PlaybackIdentity
 import com.liskovsoft.youtubeapi.app.potokennp2.generators.PoTokenWebView
 import com.liskovsoft.youtubeapi.app.potokennp2.core.BadWebViewException
 import com.liskovsoft.youtubeapi.app.potokennp2.core.PoTokenException
@@ -65,10 +66,11 @@ internal object PoTokenProviderImpl : PoTokenProvider {
         // Snapshot the generation before anything else: rotateWebVisitor bumps it (and arms the
         // flag) before clearing the old visitor, so the re-check below catches a rotation mid-read.
         val generation = visitorGeneration
-        if (forceFreshVisitor || !isWebPotSupported) {
+        if (forceFreshVisitor || !isWebPotSupported || PlaybackIdentity.isRerollPending()) {
             return null
         }
-        val visitor = webPoTokenVisitorData ?: AppService.instance().visitorData
+        // NEWTUBE(playback-identity): a kept re-rolled identity replaces the app's visitor here too.
+        val visitor = webPoTokenVisitorData ?: PlaybackIdentity.keptVisitor() ?: AppService.instance().visitorData
         // A rotation that landed while reading would make this the retired identity.
         return if (generation == visitorGeneration && !forceFreshVisitor) visitor else null
     }
@@ -123,7 +125,7 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                     val reason = webPotSessionReason(
                         hadGenerator = webPoTokenGenerator != null,
                         forceRecreate = forceRecreate,
-                        rotation = forceFreshVisitor,
+                        rotation = forceFreshVisitor || PlaybackIdentity.isRerollPending(),
                         stateCleared = webPoTokenVisitorData == null || webPoTokenStreamingPot == null
                     )
                     val previousAgeMs =
@@ -144,15 +146,21 @@ internal object PoTokenProviderImpl : PoTokenProvider {
                     // Publish the fresh visitor BEFORE disarming the rotation: peekSessionVisitorData
                     // reads both without this lock, and in between it would hand out the very
                     // identity being rotated away from.
-                    if (forceFreshVisitor) {
+                    // NEWTUBE(playback-identity): a re-roll armed before a restart mints here too.
+                    if (forceFreshVisitor || PlaybackIdentity.isRerollPending()) {
                         Log.d(TAG, "Rotating web visitor after a bot challenge")
                         val fresh = VisitorService.getVisitorData()
                         visitorSource = if (fresh != null) "visitor-api" else "app"
                         webPoTokenVisitorData = fresh ?: AppService.instance().visitorData
                         forceFreshVisitor = false
+                        // NEWTUBE(playback-identity): completes a playback re-roll's log line (and
+                        // keeps the identity when that switch is on); a no-op for anything else.
+                        PlaybackIdentity.onFreshVisitorAdopted(fresh)
                     } else {
-                        val persistent = AppService.instance().visitorData
-                        visitorSource = if (persistent != null) "app" else "visitor-api"
+                        // NEWTUBE(playback-identity): a kept re-rolled identity, else the app's.
+                        val kept = PlaybackIdentity.keptVisitor()
+                        val persistent = kept ?: AppService.instance().visitorData
+                        visitorSource = if (kept != null) "kept" else if (persistent != null) "app" else "visitor-api"
                         webPoTokenVisitorData = persistent ?: VisitorService.getVisitorData()
                     }
 

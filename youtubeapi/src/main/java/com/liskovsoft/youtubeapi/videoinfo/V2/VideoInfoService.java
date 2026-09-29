@@ -20,6 +20,7 @@ import com.liskovsoft.youtubeapi.videoinfo.V2.sources.LiveCardNotes;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PhoneSourcePlanner;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSource;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSourceCatalog;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlaybackWallMemory;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.RecentRefusals;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.SourceWinnerHint;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitOkHttpHelper;
@@ -362,6 +363,428 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setRecoveryKidsOrderEnabled(boolean enabled) {
         sRecoveryKidsOrder = enabled;
+    }
+
+    // NEWTUBE(vod-vr-late): see setVodVrLateEnabled.
+    private static volatile boolean sVodVrLate;
+
+    /**
+     * NEWTUBE(vod-vr-late): for VOD, ANDROID_VR after TV_TIZEN and ANDROID_REEL, and signed out
+     * TV_TIZEN planned third, anonymously (PhoneSourcePlanner.Context#vodVrLate): ANDROID_VR's VOD
+     * media died at the one-minute wall 6 of 6 at home while VISIONOS, TV_TIZEN and WEB_EMBED
+     * survived; on walled visitors TV_TIZEN anonymous (the same visitor, as an APP_VISITOR source)
+     * played 137 s twice while VISIONOS and ANDROID_VR walled. Recovery walks, and the opens of a
+     * visitor PlaybackWallMemory holds a wall for; an ordinary first open keeps the lane's order
+     * (the refusal walks the device replays hold - removed, private, paid, music-only - would each
+     * pay an anonymous TV_TIZEN ask). A live card keeps ANDROID_VR first. Off in the library; the phone turns it on, rollback
+     * debug.arc.vod_vr_late=0.
+     */
+    public static void setVodVrLateEnabled(boolean enabled) {
+        sVodVrLate = enabled;
+    }
+
+    // NEWTUBE(playback-identity): see setPlaybackRerollEnabled.
+    private static volatile boolean sPlaybackReroll;
+    private static volatile boolean sPlaybackRerollSignedIn;
+
+    /**
+     * NEWTUBE(playback-identity): the answer to a visitor the one-minute wall has found (googlevideo
+     * serves a walled visitor's media to 60.0 s, then 403s every chunk; r11 at home: P(wall | fresh
+     * VISIONOS visitor) = 3/14, ANDROID_VR 6/6). On the first wall of a playback-identity source
+     * (VISIONOS, ANDROID_VR: PlayerSource.Identity.WEB_SESSION) that {@link #notePlaybackMedia403}
+     * hears, the playback identity - the web session's visitor those sources and the Web family
+     * send - is re-rolled (PoTokenGate.rerollPlaybackIdentity, PlaybackIdentity): the next web-session
+     * request mints a fresh visitor. The video's own recovery does not wait for it: it goes to the
+     * sources that survive the wall on the old visitor first (TV_TIZEN, WEB_EMBED; see
+     * PlaybackWallMemory), and a benched VISIONOS asked last would already carry the fresh visitor.
+     * Once per video, within PlaybackIdentityBook's persisted budget (2 per 6 h). The browse identity
+     * (AppService.visitorData: Home, /next, search, TV_TIZEN, IOS, ANDROID_REEL) is never touched.
+     * Off in the library; the phone turns it on, rollback debug.arc.playback_reroll=0. Signed out
+     * only unless {@link #setPlaybackRerollSignedIn}.
+     */
+    public static void setPlaybackRerollEnabled(boolean enabled) {
+        sPlaybackReroll = enabled;
+    }
+
+    /**
+     * NEWTUBE(playback-identity): signed in, the anonymous sources (VISIONOS, ANDROID_VR) send the
+     * same web session visitor as signed out - the app's persistent visitor - and the account
+     * route (TV_TIZEN with the account) sends the account, which a re-roll never touches. Off by
+     * default: the signed-in lane's recovery reaches the account route first.
+     */
+    public static void setPlaybackRerollSignedIn(boolean enabled) {
+        sPlaybackRerollSignedIn = enabled;
+    }
+
+    /** NEWTUBE(playback-identity): re-rolls per 6 h (PlaybackIdentityBook.WINDOW_MS). */
+    public static void setPlaybackRerollBudget(int rerolls) {
+        com.liskovsoft.youtubeapi.app.PlaybackIdentity.book().setBudget(rerolls);
+    }
+
+    /**
+     * NEWTUBE(playback-identity): after a re-roll the fresh visitor stays the playback identity for
+     * the next opens (6 h, persisted) instead of the session adopting the walled app visitor again
+     * on its next rebuild. See PlaybackIdentity. The phone turns it on with the re-roll, rollback
+     * debug.arc.playback_keep=0.
+     */
+    public static void setPlaybackKeepEnabled(boolean enabled) {
+        com.liskovsoft.youtubeapi.app.PlaybackIdentity.setKeepEnabled(enabled);
+    }
+
+    /** NEWTUBE(playback-identity): the phone app's persistence for the budget and a kept identity. */
+    public static void setPlaybackIdentityStore(
+            @Nullable com.liskovsoft.youtubeapi.app.PlaybackIdentityBook.Store store) {
+        com.liskovsoft.youtubeapi.app.PlaybackIdentity.book().setStore(store);
+    }
+
+    /**
+     * NEWTUBE(playback-identity): debug and benchmark builds, debug.arc.poison_wall_s - the app's
+     * shaper walls the web-session sources' media past that point for every visitor but a re-rolled
+     * one (see DebugPlaybackWall).
+     */
+    public static void setDebugPlaybackWall(boolean enabled) {
+        DebugPlaybackWall.setEnabled(enabled);
+    }
+
+    // NEWTUBE(wall-memory): see setWallMemoryEnabled.
+    private static volatile boolean sWallMemory;
+    private static final PlaybackWallMemory sWallMemoryBook = new PlaybackWallMemory();
+
+    /**
+     * NEWTUBE(wall-memory): the recovery from the one-minute wall stops alternating walled sources.
+     * r11, MeJVWBSsPAY on a walled visitor (embedding disabled): VISIONOS walled at 60.0 s, the
+     * recovery asked WEB_EMBED (refused), then ANDROID_VR (walled), then VISIONOS again - only the
+     * latest suspect went last - until the reload cap stopped it: "Unknown source error". With this
+     * on, (1) every source whose media 403'd on a video is asked after every other one for the rest
+     * of that video's recovery ({@link #VIDEO_403_TTL_MS}), and (2) a 403 where the media stopped at
+     * the wall records (visitor, source) in PlaybackWallMemory (persisted, 6 h): that source goes
+     * last for that visitor in every later walk too. Off in the library; the phone turns it on,
+     * rollback debug.arc.wall_memory=0.
+     */
+    public static void setWallMemoryEnabled(boolean enabled) {
+        sWallMemory = enabled;
+    }
+
+    /** NEWTUBE(wall-memory): the phone app's persistence for the walls. */
+    public static void setWallMemoryStore(@Nullable PlaybackWallMemory.Store store) {
+        sWallMemoryBook.setStore(store);
+    }
+
+    /** NEWTUBE(wall-memory): how long a wall is remembered (debug.arc.wall_memory_ttl_min). */
+    public static void setWallMemoryTtlMs(long ttlMs) {
+        sWallMemoryBook.setTtlMs(ttlMs);
+    }
+
+    /** The recovery of one video: its walled sources are benched this long after the last wall. */
+    static final long VIDEO_403_TTL_MS = 30 * 60 * 1000L;
+
+    /**
+     * NEWTUBE(wall-memory): one video's recovery - the sources whose media was refused past the wall
+     * on it (with the visitor each had sent), those refusals nothing confirmed yet, and when the
+     * last was.
+     */
+    private static final class Video403 {
+        final java.util.Map<AppClient, String> clients = new java.util.EnumMap<>(AppClient.class);
+        final java.util.Map<AppClient, String> pastWallUnconfirmed = new java.util.EnumMap<>(AppClient.class);
+        long lastAtMs;
+    }
+
+    // NEWTUBE(wall-memory): per video (see setWallMemoryEnabled), and the visitor each video's
+    // playable answer was given. Static: the service is a singleton (and tests build it without
+    // field initializers).
+    private static final java.util.Map<String, Video403> sVideo403 = boundedMap(16);
+    private static final java.util.Map<String, String> sWinnerVisitors = boundedMap(16);
+
+    // NEWTUBE(playback-identity): videos whose wall re-rolled the identity (once per video, per
+    // process), and those whose next answer is still to be logged.
+    private static final java.util.Set<String> sPlaybackRerolled = java.util.Collections.newSetFromMap(
+            VideoInfoService.<Boolean>boundedMap(32));
+    private static final java.util.Set<String> sPlaybackServedPending =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
+    private static <V> java.util.Map<String, V> boundedMap(final int capacity) {
+        return java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<String, V>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(java.util.Map.Entry<String, V> eldest) {
+                return size() > capacity;
+            }
+        });
+    }
+
+    /** NEWTUBE(playback-identity): the client whose answer {@code videoId} is playing, or null. */
+    @Nullable
+    public AppClient servedClient(@Nullable String videoId) {
+        return videoId != null && mVideoWinners != null ? mVideoWinners.get(videoId) : null;
+    }
+
+    /**
+     * NEWTUBE(wall-memory): the player's media for {@code videoId} got a 403. The engine reports this
+     * open's media requests: the start (ms of stream) of the refused one, and the lowest and highest
+     * start of those served (-1: none/unknown); PlaybackWallMemory.classify reads the wall's
+     * signature from them. Called before the recovery reload is planned.
+     *
+     * <p>The source that served the video is benched for its recovery (with the visitor it sent). A
+     * wall - or a refusal past it with nothing before it served (a resume or seek past 60 s) that
+     * the pair is already remembered for, or that a second 403 past the wall on this video (a
+     * reload, another source) confirms - records (visitor, source) in PlaybackWallMemory, drops a
+     * kept playback identity that walled too, and re-rolls the playback identity (see
+     * setPlaybackRerollEnabled). One playback-wall line per wall, one playback-wall-unconfirmed per
+     * ambiguous refusal.
+     */
+    public void notePlaybackMedia403(@Nullable String videoId, long forbiddenStartMs,
+            long lowestServedStartMs, long highestServedStartMs) {
+        AppClient client = videoId != null && mVideoWinners != null ? mVideoWinners.get(videoId) : null;
+        if (client == null) {
+            return; // an answer from an older process: nothing to blame
+        }
+        final long nowMs = System.currentTimeMillis();
+        final String visitor = sWinnerVisitors.get(videoId);
+        final String fingerprint = fingerprint(visitor);
+        final PlaybackWallMemory.Signature signature = PlaybackWallMemory.classify(
+                forbiddenStartMs, lowestServedStartMs, highestServedStartMs);
+        // Every media 403 with the engine's inputs, so a walk replay can feed them back exactly.
+        android.util.Log.d("NetPath", "playback-media403 video=" + videoId + " client=" + client
+                + " forbiddenStartMs=" + forbiddenStartMs
+                + " servedStartMs=" + lowestServedStartMs + ".." + highestServedStartMs
+                + " signature=" + signature.name().toLowerCase(java.util.Locale.US));
+        String how = null;
+        java.util.Map<AppClient, String> confirmed = java.util.Collections.emptyMap();
+        synchronized (sVideo403) {
+            Video403 video = sVideo403.get(videoId);
+            if (video == null || nowMs - video.lastAtMs > VIDEO_403_TTL_MS) {
+                video = new Video403();
+                sVideo403.put(videoId, video);
+            }
+            if (signature != PlaybackWallMemory.Signature.NONE) {
+                // Only past the wall: an ordinary 403 (the first links refused at 0 s, a stale link
+                // minutes in) is answered by fresh links from the same source - re-asked after the
+                // others (the suspect rule). Benching it would push a kids video's WEB_EMBED, one of
+                // its two servers, behind six that never serve it (replay emu-kids-recovery).
+                video.clients.put(client, visitor);
+                video.lastAtMs = nowMs;
+            }
+            if (signature == PlaybackWallMemory.Signature.WALL) {
+                how = "served-below";
+            } else if (signature == PlaybackWallMemory.Signature.AMBIGUOUS) {
+                if (sWallMemory && sWallMemoryBook.isWalled(fingerprint, client, nowMs)) {
+                    how = "known";
+                } else if (!video.pastWallUnconfirmed.isEmpty()) {
+                    how = "confirmed"; // a reload or another source refused past the wall too
+                } else {
+                    video.pastWallUnconfirmed.put(client, visitor);
+                }
+            }
+            if (how != null && !video.pastWallUnconfirmed.isEmpty()) {
+                confirmed = new java.util.EnumMap<>(video.pastWallUnconfirmed);
+                video.pastWallUnconfirmed.clear();
+            }
+        }
+        if (signature == PlaybackWallMemory.Signature.NONE) {
+            return;
+        }
+        if (how == null) {
+            android.util.Log.d("NetPath", "playback-wall-unconfirmed video=" + videoId + " client=" + client
+                    + " visitor=" + orUnknown(fingerprint) + " forbiddenStartMs=" + forbiddenStartMs
+                    + " servedStartMs=" + lowestServedStartMs + ".." + highestServedStartMs);
+            return;
+        }
+        // This source, and those an earlier refusal past the wall of this video left unconfirmed.
+        java.util.Map<AppClient, String> walls = new java.util.EnumMap<>(AppClient.class);
+        walls.putAll(confirmed);
+        walls.put(client, visitor);
+        String rerollVisitor = null;
+        boolean rerollWanted = false;
+        StringBuilder keptDropped = new StringBuilder();
+        for (java.util.Map.Entry<AppClient, String> wall : walls.entrySet()) {
+            AppClient walledClient = wall.getKey();
+            boolean accountRoute = walledClient == BotWallBook.ACCOUNT_ROUTE && hasAuthentication();
+            if (sWallMemory && !accountRoute) { // the account route's 403 is BotWallBook's
+                sWallMemoryBook.record(fingerprint(wall.getValue()), walledClient, nowMs);
+            }
+            if (PlayerSourceCatalog.defaultFor(walledClient).identity == PlayerSource.Identity.WEB_SESSION) {
+                // A kept re-rolled identity that walled too is no better than the app's: drop it.
+                String kept = com.liskovsoft.youtubeapi.app.PlaybackIdentity.keptVisitor();
+                if (kept != null && kept.equals(wall.getValue())
+                        && com.liskovsoft.youtubeapi.app.PlaybackIdentity.dropKept()) {
+                    keptDropped.append(" keptDropped=y");
+                }
+                if (!rerollWanted) {
+                    rerollWanted = true;
+                    rerollVisitor = wall.getValue();
+                }
+            }
+        }
+        android.util.Log.d("NetPath", "playback-wall video=" + videoId + " client=" + client
+                + " visitor=" + orUnknown(fingerprint) + " how=" + how
+                + " forbiddenStartMs=" + forbiddenStartMs
+                + " servedStartMs=" + lowestServedStartMs + ".." + highestServedStartMs
+                + (confirmed.isEmpty() ? "" : " confirms=" + confirmed.keySet())
+                + " memory=" + (sWallMemory ? "y" : "n") + keptDropped);
+        if (rerollWanted) {
+            rerollPlaybackIdentityOnWall(videoId, rerollVisitor, forbiddenStartMs);
+        }
+    }
+
+    @Nullable
+    private static String fingerprint(@Nullable String visitor) {
+        return visitor != null ? com.liskovsoft.googlecommon.common.helpers.VisitorFingerprint.of(visitor) : null;
+    }
+
+    private static String orUnknown(@Nullable String value) {
+        return value != null ? value : "?";
+    }
+
+    /**
+     * NEWTUBE(playback-identity): see setPlaybackRerollEnabled. False, with a reroll-skip line, when
+     * nothing was armed: off, signed in (unless enabled there), already re-rolled for this video,
+     * no web session, this wall's visitor is no longer the session's (a re-roll already left it),
+     * budget spent.
+     */
+    boolean rerollPlaybackIdentityOnWall(String videoId, @Nullable String wallVisitor, long pointMs) {
+        if (!sPlaybackReroll) {
+            return false;
+        }
+        String skip = null;
+        int budgetLeft = -1;
+        long nowMs = System.currentTimeMillis();
+        if (hasAuthentication() && !sPlaybackRerollSignedIn) {
+            skip = "signed-in";
+        } else if (sPlaybackRerolled.contains(videoId)) {
+            skip = "once-per-video";
+        } else if (!PoTokenGate.isWebPotSupported()) {
+            skip = "no-web-session"; // no WebView: no web session to re-roll, no budget spent
+        } else if (wallVisitor != null && !wallVisitor.equals(PoTokenGate.peekPlaybackVisitorData())) {
+            skip = "visitor-left"; // a re-roll is pending or done: its visitor has not walled
+        } else if (!com.liskovsoft.youtubeapi.app.PlaybackIdentity.book().spend(nowMs)) {
+            skip = "budget";
+        } else {
+            budgetLeft = com.liskovsoft.youtubeapi.app.PlaybackIdentity.book().budgetLeft(nowMs);
+            if (!PoTokenGate.rerollPlaybackIdentity(videoId, budgetLeft)) {
+                skip = "no-web-session";
+            }
+        }
+        if (skip != null) {
+            android.util.Log.d("NetPath", "playback-identity reroll-skip reason=" + skip
+                    + " video=" + videoId + " pos=" + pointMs);
+            return false;
+        }
+        sPlaybackRerolled.add(videoId);
+        sPlaybackServedPending.add(videoId);
+        android.util.Log.d("NetPath", "playback-identity reroll-armed video=" + videoId
+                + " pos=" + pointMs + " budgetLeft=" + budgetLeft
+                + " lane=" + (hasAuthentication() ? "signed-in" : "signed-out"));
+        return true;
+    }
+
+    /**
+     * NEWTUBE(wall-memory): what this walk does with the sources the wall found. {@code benched}
+     * (asked last): walled for the visitor each would send (PlaybackWallMemory), plus, in
+     * {@code videoId}'s recovery, those whose media 403'd on it while they would still send the
+     * visitor they sent then. {@code refreshed}: a web-session source that 403'd in this recovery
+     * but whose visitor has since been re-rolled - asked after WEB_EMBED and TV_TIZEN, before
+     * ANDROID_REEL's 360p (PhoneSourcePlanner.Context). Resolves visitors only when there is
+     * something to resolve. WEB_EMBED's embed identity is not looked up: its 403 drops that
+     * identity already (PoTokenGate.resetCache(WEB_EMBED)).
+     */
+    private void wallPlan(@Nullable String videoId, boolean recoveryWalk, boolean authenticated,
+            long nowMs, java.util.Set<AppClient> benched, java.util.Set<AppClient> refreshed,
+            StringBuilder why) {
+        if (!sWallMemory) {
+            return;
+        }
+        java.util.Map<AppClient, String> video403 = null;
+        if (recoveryWalk && videoId != null) {
+            synchronized (sVideo403) {
+                Video403 video = sVideo403.get(videoId);
+                if (video != null && nowMs - video.lastAtMs <= VIDEO_403_TTL_MS && !video.clients.isEmpty()) {
+                    video403 = new java.util.EnumMap<>(video.clients);
+                }
+            }
+        }
+        boolean walls = !sWallMemoryBook.isEmpty(nowMs);
+        if (video403 == null && !walls) {
+            return;
+        }
+        String web = PoTokenGate.peekPlaybackVisitorData();
+        String app = appVisitorData();
+        if (video403 != null) {
+            for (java.util.Map.Entry<AppClient, String> entry : video403.entrySet()) {
+                AppClient client = entry.getKey();
+                PlayerSource.Identity identity = PlayerSourceCatalog.defaultFor(client).identity;
+                String now = identity == PlayerSource.Identity.WEB_SESSION ? web
+                        : identity == PlayerSource.Identity.APP_VISITOR ? app : entry.getValue();
+                if (identity == PlayerSource.Identity.WEB_SESSION && entry.getValue() != null
+                        && !entry.getValue().equals(now)) {
+                    refreshed.add(client);
+                } else {
+                    benched.add(client);
+                }
+            }
+            why.append(" walled-here=").append(video403.keySet());
+            if (!refreshed.isEmpty()) {
+                why.append(" refreshed=").append(refreshed);
+            }
+        }
+        if (walls) {
+            java.util.Set<AppClient> walled = java.util.EnumSet.noneOf(AppClient.class);
+            for (AppClient client : sWallMemoryBook.walledFor(fingerprint(web), nowMs)) {
+                if (PlayerSourceCatalog.defaultFor(client).identity == PlayerSource.Identity.WEB_SESSION) {
+                    walled.add(client);
+                }
+            }
+            for (AppClient client : sWallMemoryBook.walledFor(fingerprint(app), nowMs)) {
+                if (PlayerSourceCatalog.defaultFor(client).identity == PlayerSource.Identity.APP_VISITOR
+                        && !(authenticated && client == BotWallBook.ACCOUNT_ROUTE)) {
+                    walled.add(client);
+                }
+            }
+            if (!walled.isEmpty()) {
+                benched.addAll(walled);
+                refreshed.removeAll(walled);
+                why.append(" walled=").append(walled);
+            }
+        }
+    }
+
+    /** The app's persistent visitor, which the APP_VISITOR sources send (a seam for tests). */
+    @Nullable
+    static String appVisitorData() {
+        return AppService.instance().getVisitorData();
+    }
+
+    /** Test hook: a new process - what lives in memory only (not the persisted walls). */
+    static void resetPlaybackProcessStateForTest() {
+        sPlaybackRerolled.clear();
+        sPlaybackServedPending.clear();
+        sVideo403.clear();
+        sWinnerVisitors.clear();
+    }
+
+    /** Test hook: forget the re-rolls, the per-video 403s and the walls. */
+    static void resetPlaybackRerollForTest() {
+        sPlaybackRerolled.clear();
+        sPlaybackServedPending.clear();
+        sVideo403.clear();
+        sWinnerVisitors.clear();
+        sWallMemoryBook.resetForTest();
+    }
+
+    /**
+     * Test hook: this class's wall clock. Robolectric's instrumented System.currentTimeMillis (the
+     * sandbox's clock) is not the test class's own.
+     */
+    static long nowForTest() {
+        return System.currentTimeMillis();
+    }
+
+    /** Test hook: the wall memory. */
+    static PlaybackWallMemory wallMemoryForTest() {
+        return sWallMemoryBook;
+    }
+
+    /** Whether {@code videoId}'s wall already re-rolled the playback identity. */
+    public boolean isPlaybackRerolled(@Nullable String videoId) {
+        return videoId != null && sPlaybackRerolled.contains(videoId);
     }
 
     // NEWTUBE(embed-reroll): see setEmbedRerollEnabled.
@@ -1247,6 +1670,14 @@ public class VideoInfoService extends VideoInfoServiceBase {
         if (abortCanceledRequest(videoId, "post-player", cancellationSignal)) {
             return null;
         }
+        // NEWTUBE(playback-identity): the first answer after a re-roll, and the visitor it carried.
+        if (result != null && sPlaybackServedPending.remove(videoId)) {
+            android.util.Log.d("NetPath", "playback-identity served video=" + videoId
+                    + " client=" + result.getClient()
+                    + " playable=" + (result.isUnplayable() ? "n" : "y")
+                    + " visitor=" + com.liskovsoft.googlecommon.common.helpers.VisitorFingerprint.of(
+                            result.getRequestVisitorData()));
+        }
 
         // An error cursor is one-shot on mobile. Leaving it set after a successful failover made
         // every later open start from stale routing state. TV keeps its historical behavior. A
@@ -1434,6 +1865,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // answer to a video that turned out not to be live, set aside (see setLiveCardHintEnabled).
         boolean liveCardHinted = false;
         VideoInfo staleLive = null;
+        // NEWTUBE(wall-memory): the sources this walk asks last (see wallPlan), and whether it takes
+        // the VOD order that asks ANDROID_VR late (see setVodVrLateEnabled).
+        java.util.Set<AppClient> walkBenched = java.util.Collections.emptySet();
+        boolean vodVrLate = false;
         boolean canceled = false;
         if (sDebugForcedClient != null) {
             visitOrder = java.util.Collections.singletonList(sDebugForcedClient);
@@ -1465,7 +1900,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 kidsHint = sKidsChannels.hintFor(lane, kidsChannel);
             }
             // Signed out, the same record benches the anonymous ask a hint would lead with.
-            final boolean accountRouteBenched = (authenticated || kidsHint == KidsChannelMemory.Hint.FIRST)
+            final boolean accountRouteBenched = (authenticated || kidsHint == KidsChannelMemory.Hint.FIRST
+                    || sVodVrLate)
                     && mBotWall.hasRouteRecords()
                     && mBotWall.isRouteFailed(wallKeys.network(), noMediaVideoKey(videoId), walkStartMs);
             // Signed out, a bot-wall suspicion (a platform challenge in the last minutes, or a wall
@@ -1482,17 +1918,28 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 recoveryKids = sRecoveryKidsOrder && PhoneSourcePlanner.servesMadeForKids(lastWinner)
                         && recentRefusals().hasMadeForKids(videoId, walkStartMs);
             }
+            // NEWTUBE(wall-memory): sources walled for their visitor, and this video's 403s.
+            final StringBuilder benchedWhy = new StringBuilder();
+            walkBenched = java.util.EnumSet.noneOf(AppClient.class);
+            final java.util.Set<AppClient> walkRefreshed = java.util.EnumSet.noneOf(AppClient.class);
+            wallPlan(videoId, recoveryWalk, authenticated, System.currentTimeMillis(), walkBenched,
+                    walkRefreshed, benchedWhy);
+            // NEWTUBE(vod-vr-late): the recovery order, and a walled visitor's opens; a first open
+            // with nothing walled keeps the lane's order (the device replays of every refusal).
+            vodVrLate = sVodVrLate && !liveCardHinted && (recoveryWalk || !walkBenched.isEmpty());
             visitOrder = PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(
                     lane, recoveryWalk ? lastWinner : null, anonChallenged, accountRouteBenched,
                     sAccountRouteFirst, kidsHinted, recoveryRefused.keySet(), recoveryKids,
-                    liveCardHinted));
+                    liveCardHinted, vodVrLate, walkBenched, walkRefreshed));
             android.util.Log.d("NetPath", "player-ring plan video=" + videoId
                     + " lane=" + (authenticated ? "signed-in" : "signed-out")
                     + (recoveryWalk ? " suspect=" + lastWinner : "")
                     + (recoveryKids ? " made-for-kids" : "")
                     + (liveCardHinted ? " live-card" : "")
+                    + (vodVrLate ? " vod-vr-late" : "")
                     + (anonChallenged ? " anon-challenged" : "")
                     + (accountRouteBenched ? " account-route=benched" : "")
+                    + benchedWhy
                     + " order=" + visitOrder);
             if (!recoveryRefused.isEmpty()) {
                 android.util.Log.d("NetPath", "player-ring recovery-refused video=" + videoId
@@ -1565,7 +2012,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // NEWTUBE(planner): TV_TIZEN was put next by the anonymous-refusal rule, not by a wall plan.
         // NEWTUBE(kids-channel): or first by a channel hint, signed out: the same speculative ask,
         // with the same short budget.
-        boolean anonTizenSpeculative = kidsHinted && !authenticated;
+        // NEWTUBE(vod-vr-late): or planned third, signed out: anonymous all the same.
+        boolean anonTizenSpeculative = (kidsHinted || vodVrLate)
+                && !authenticated;
         // NEWTUBE(kids-channel): this walk's first anonymous content refusal from VISIONOS or
         // ANDROID_VR; followed by a serve from the account route, it is the proof KidsChannelMemory keeps.
         VideoInfo kidsRefusal = null;
@@ -1759,6 +2208,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     && !(recoveryWalk && lastWinner == BotWallBook.ACCOUNT_ROUTE)
                     // NEWTUBE(recovery-refusals): nor one that refused this video moments ago.
                     && !recoveryRefused.containsKey(BotWallBook.ACCOUNT_ROUTE)
+                    // NEWTUBE(wall-memory): nor one benched (walled, or 403'd on this video).
+                    && !walkBenched.contains(BotWallBook.ACCOUNT_ROUTE)
                     && (visitIndex + 1 >= visitOrder.size()
                             || visitOrder.get(visitIndex + 1) != BotWallBook.ACCOUNT_ROUTE)
                     && !mBotWall.isRouteFailed(wallKeys.network(), noMediaVideoKey(videoId),
@@ -2504,6 +2955,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private void rememberVideoWinner(String videoId, @Nullable VideoInfo result) {
         if (videoId != null && result != null && !result.isUnplayable() && result.getClient() != null) {
             mVideoWinners.put(videoId, result.getClient());
+            // NEWTUBE(wall-memory): the visitor this answer was given (see notePlaybackMedia403).
+            String visitor = result.getRequestVisitorData();
+            if (visitor != null) {
+                sWinnerVisitors.put(videoId, visitor);
+            } else {
+                sWinnerVisitors.remove(videoId);
+            }
         }
     }
 
@@ -3847,6 +4305,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 // NEWTUBE(embed-reroll): which visitor this answer was given to (see
                 // YtCfgService.rerollEmbedIdentity).
                 result.setRequestVisitorData(request.visitorData);
+                DebugPlaybackWall.noteAnswer(client, result); // debug builds only: the synthetic wall
             }
         }
 

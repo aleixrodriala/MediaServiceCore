@@ -103,6 +103,9 @@ public final class PhoneSourcePlanner {
         final Set<AppClient> recoveryRefused;
         final boolean recoveryKidsRefused;
         final boolean liveCardHinted;
+        final boolean vodVrLate;
+        final Set<AppClient> benched;
+        final Set<AppClient> refreshed;
 
         /**
          * @param recoverySuspect     the source that served the watched video when its media
@@ -163,6 +166,55 @@ public final class PhoneSourcePlanner {
         public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
                 boolean accountRouteBenched, boolean accountRouteFirst, boolean accountRouteHinted,
                 Set<AppClient> recoveryRefused, boolean recoveryKidsRefused, boolean liveCardHinted) {
+            this(lane, recoverySuspect, anonChallenged, accountRouteBenched, accountRouteFirst,
+                    accountRouteHinted, recoveryRefused, recoveryKidsRefused, liveCardHinted, false);
+        }
+
+        /**
+         * @param vodVrLate NEWTUBE(vod-vr-late): ANDROID_VR, whose VOD media googlevideo cuts at
+         *                  60.0 s for a walled visitor (6 of 6 at home, r11), goes after the VOD
+         *                  sources that survive it: TV_TIZEN (planned third signed out, anonymously,
+         *                  unless benched) and ANDROID_REEL. Not with a live card (ANDROID_VR is the
+         *                  live winner; a live walk skips to it for free anyway)
+         */
+        public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
+                boolean accountRouteBenched, boolean accountRouteFirst, boolean accountRouteHinted,
+                Set<AppClient> recoveryRefused, boolean recoveryKidsRefused, boolean liveCardHinted,
+                boolean vodVrLate) {
+            this(lane, recoverySuspect, anonChallenged, accountRouteBenched, accountRouteFirst,
+                    accountRouteHinted, recoveryRefused, recoveryKidsRefused, liveCardHinted, vodVrLate,
+                    Collections.<AppClient>emptySet(), Collections.<AppClient>emptySet());
+        }
+
+        /**
+         * @param benched NEWTUBE(wall-memory): sources asked after everything else, the suspect and
+         *                the recent refusals included: those whose media met the one-minute wall
+         *                for the visitor they would send (PlaybackWallMemory), and in this video's
+         *                recovery every source whose media 403'd on it. Kept, not dropped: a live
+         *                video may need ANDROID_VR, and a video only a walled source serves still
+         *                gets its first minute. A benched account route stays out
+         */
+        public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
+                boolean accountRouteBenched, boolean accountRouteFirst, boolean accountRouteHinted,
+                Set<AppClient> recoveryRefused, boolean recoveryKidsRefused, boolean liveCardHinted,
+                boolean vodVrLate, Set<AppClient> benched) {
+            this(lane, recoverySuspect, anonChallenged, accountRouteBenched, accountRouteFirst,
+                    accountRouteHinted, recoveryRefused, recoveryKidsRefused, liveCardHinted, vodVrLate,
+                    benched, Collections.<AppClient>emptySet());
+        }
+
+        /**
+         * @param refreshed NEWTUBE(playback-identity): a recovery walk's web-session sources whose
+         *                  media 403'd on this video (the wall) but whose visitor has since been
+         *                  re-rolled: asked right after WEB_EMBED and TV_TIZEN - which serve the old
+         *                  visitor past the wall at no extra cost - and before ANDROID_REEL (360p
+         *                  progressive on a walled visitor, r11) and ANDROID_VR. A fresh visitor
+         *                  costs the web session's rebuild, and walls 3 in 14 at home
+         */
+        public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
+                boolean accountRouteBenched, boolean accountRouteFirst, boolean accountRouteHinted,
+                Set<AppClient> recoveryRefused, boolean recoveryKidsRefused, boolean liveCardHinted,
+                boolean vodVrLate, Set<AppClient> benched, Set<AppClient> refreshed) {
             this.lane = lane;
             this.recoverySuspect = recoverySuspect;
             this.anonChallenged = anonChallenged;
@@ -173,6 +225,11 @@ public final class PhoneSourcePlanner {
                     ? Collections.<AppClient>emptySet() : EnumSet.copyOf(recoveryRefused);
             this.recoveryKidsRefused = recoveryKidsRefused;
             this.liveCardHinted = liveCardHinted;
+            this.vodVrLate = vodVrLate;
+            this.benched = benched.isEmpty()
+                    ? Collections.<AppClient>emptySet() : EnumSet.copyOf(benched);
+            this.refreshed = refreshed.isEmpty()
+                    ? Collections.<AppClient>emptySet() : EnumSet.copyOf(refreshed);
         }
     }
 
@@ -193,6 +250,31 @@ public final class PhoneSourcePlanner {
             // history credited without a second request), at the cost of its signature solve.
             order.remove(ACCOUNT_ROUTE);
             order.add(0, ACCOUNT_ROUTE);
+        }
+
+        // NEWTUBE(vod-vr-late): for VOD, ANDROID_VR is the one planned source whose media dies at the
+        // one-minute wall (r11 at home, forced client, fresh visitors, 120 s: ANDROID_VR walled at
+        // 60.0 s 6 of 6, same-client reloads never passed; VISIONOS, TV_TIZEN anonymous and
+        // WEB_EMBED survived). So it goes after TV_TIZEN and ANDROID_REEL. Signed out TV_TIZEN is then
+        // planned third, anonymously - after WEB_EMBED, which settles an age gate before it (it
+        // refuses every one), and only reached when VISIONOS and WEB_EMBED did not serve.
+        if (context.vodVrLate && !context.liveCardHinted) {
+            if (context.lane == Lane.SIGNED_OUT && !context.accountRouteBenched && !order.contains(ACCOUNT_ROUTE)) {
+                int embed = order.indexOf(AppClient.WEB_EMBED);
+                order.add(embed >= 0 ? embed + 1 : order.size(), ACCOUNT_ROUTE);
+            }
+            // Then ANDROID_REEL, then ANDROID_VR, right after the later of WEB_EMBED and TV_TIZEN;
+            // IOS (no URLs at home) and the Web family stay after them.
+            boolean reel = order.remove(AppClient.ANDROID_REEL);
+            boolean vr = order.remove(LIVE_SOURCE);
+            int anchor = Math.max(order.indexOf(AppClient.WEB_EMBED), order.indexOf(ACCOUNT_ROUTE));
+            int at = anchor >= 0 ? anchor + 1 : order.size();
+            if (vr) {
+                order.add(at, LIVE_SOURCE);
+            }
+            if (reel) {
+                order.add(at, AppClient.ANDROID_REEL);
+            }
         }
 
         // NEWTUBE(kids-channel): a video of this channel was refused by VISIONOS and served by the
@@ -279,6 +361,48 @@ public final class PhoneSourcePlanner {
                 }
             }
             order.addAll(refused);
+        }
+
+        // NEWTUBE(playback-identity): a source this recovery found walled, asked again only with the
+        // re-rolled visitor: after WEB_EMBED and TV_TIZEN (full quality on the old visitor, no
+        // session rebuild), before ANDROID_REEL's 360p and ANDROID_VR.
+        if (suspect != null && !context.refreshed.isEmpty()) {
+            List<AppClient> again = new ArrayList<>();
+            for (AppClient client : ORDER) {
+                if (context.refreshed.contains(client) && !context.benched.contains(client)
+                        && order.remove(client)) {
+                    again.add(client);
+                }
+            }
+            // before the first of the sources behind WEB_EMBED and TV_TIZEN still in their place
+            int at = order.size();
+            for (AppClient behind : java.util.Arrays.asList(AppClient.ANDROID_REEL, LIVE_SOURCE, AppClient.IOS)) {
+                int index = order.indexOf(behind);
+                if (index >= 0 && index < at) {
+                    at = index;
+                }
+            }
+            order.addAll(at, again);
+        }
+
+        // NEWTUBE(wall-memory): last of all, the sources that walled for this visitor or whose media
+        // 403'd on this video (r11, MeJVWBSsPAY on a walled visitor: the recovery alternated
+        // VISIONOS and ANDROID_VR - each walled at 60.0 s - because only the latest suspect went
+        // last, and hit the reload cap; TV_TIZEN, never asked, plays that visitor past the wall).
+        // An anonymous TV_TIZEN in the order goes here too; one the order does not hold is not added.
+        if (!context.benched.isEmpty()) {
+            List<AppClient> last = new ArrayList<>();
+            for (AppClient client : ORDER) {
+                if (!context.benched.contains(client)
+                        // the wall is a VOD one: a live card keeps its live source first
+                        || (client == LIVE_SOURCE && context.liveCardHinted && suspect == null)) {
+                    continue;
+                }
+                if (order.remove(client)) { // never adds one the walk would not ask
+                    last.add(client);
+                }
+            }
+            order.addAll(last);
         }
         return order;
     }

@@ -3005,7 +3005,13 @@
        "type": "media-failure",
        "atMs": 455,
        "video": "dQw4w9WgXcQ",
-       "http403": true
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 0,
+        "lowestServedStartMs": -1,
+        "highestServedStartMs": -1,
+        "exact": false
+       }
       },
       {
        "type": "walk",
@@ -3167,7 +3173,13 @@
        "type": "media-failure",
        "atMs": 93351,
        "video": "_WB5hh7WOb4",
-       "http403": true
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 0,
+        "lowestServedStartMs": -1,
+        "highestServedStartMs": -1,
+        "exact": false
+       }
       },
       {
        "type": "walk",
@@ -3332,7 +3344,13 @@
        "type": "media-failure",
        "atMs": 185558,
        "video": "dQw4w9WgXcQ",
-       "http403": true
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 0,
+        "lowestServedStartMs": -1,
+        "highestServedStartMs": -1,
+        "exact": false
+       }
       },
       {
        "type": "walk",
@@ -3688,7 +3706,13 @@
        "type": "media-failure",
        "atMs": 3814,
        "video": "_WB5hh7WOb4",
-       "http403": true
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 0,
+        "lowestServedStartMs": -1,
+        "highestServedStartMs": -1,
+        "exact": false
+       }
       },
       {
        "type": "walk",
@@ -3826,7 +3850,13 @@
        "type": "media-failure",
        "atMs": 34942,
        "video": "dQw4w9WgXcQ",
-       "http403": true
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 0,
+        "lowestServedStartMs": -1,
+        "highestServedStartMs": -1,
+        "exact": false
+       }
       },
       {
        "type": "walk",
@@ -3990,7 +4020,13 @@
        "type": "media-failure",
        "atMs": 68756,
        "video": "_WB5hh7WOb4",
-       "http403": true
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 0,
+        "lowestServedStartMs": -1,
+        "highestServedStartMs": -1,
+        "exact": false
+       }
       },
       {
        "type": "walk",
@@ -4814,6 +4850,757 @@
       }
      ],
      "props": {}
+    }
+   ]
+  },
+  {
+   "name": "walled-visitor-no-embed",
+   "build": "v22",
+   "note": "A real one-minute wall (r11, emulator-5592, visitor 5b2b1c91eb walled since 16:56), v22 installed over v19p with its data: MeJVWBSsPAY (embedding disabled). VISIONOS served and walled at 60 s (playback-media403 signature=wall), the recovery asked WEB_EMBED (refused: embed disabled) and TV_TIZEN anonymously on the same visitor, which served it past the wall; the playback identity re-roll was armed.",
+   "exclude": null,
+   "priorState": null,
+   "opens": [
+    {
+     "log": "v22-real-5592.RING.MeJVWBSsPAY.t1.log",
+     "run": "v22-real-5592",
+     "build": "v22",
+     "video": "MeJVWBSsPAY",
+     "trial": 1,
+     "network": "wifi",
+     "lane": "signed-out",
+     "newProcess": true,
+     "restoredRecords": null,
+     "atMs": 0,
+     "markers": [],
+     "droppedWalks": [],
+     "steps": [
+      {
+       "type": "walk",
+       "atMs": 151,
+       "video": "MeJVWBSsPAY",
+       "role": "active",
+       "lane": "signed-out",
+       "suspect": null,
+       "walled": false,
+       "plan": [
+        "VISIONOS",
+        "WEB_EMBED",
+        "ANDROID_VR",
+        "IOS",
+        "ANDROID_REEL",
+        "MWEB",
+        "WEB",
+        "WEB_SAFARI"
+       ],
+       "answers": [
+        {
+         "client": "VISIONOS",
+         "atMs": 1486,
+         "parsed": true,
+         "status": "OK",
+         "reason": null,
+         "reasonCut": false,
+         "playable": true,
+         "auth": false,
+         "srvAuth": null,
+         "adaptive": 14,
+         "regular": 0,
+         "usableAdaptive": 14,
+         "dash": false,
+         "hls": true,
+         "sabr": true,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": null,
+         "exactSubreason": null
+        }
+       ],
+       "expect": {
+        "asked": [
+         "VISIONOS"
+        ],
+        "result": "playable",
+        "client": "VISIONOS",
+        "botCheckTrip": false,
+        "markers": []
+       }
+      },
+      {
+       "type": "media-failure",
+       "atMs": 60371,
+       "video": "MeJVWBSsPAY",
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 60001,
+        "lowestServedStartMs": 0,
+        "highestServedStartMs": 54054,
+        "exact": true
+       }
+      },
+      {
+       "type": "walk",
+       "atMs": 62638,
+       "video": "MeJVWBSsPAY",
+       "role": "active",
+       "lane": "signed-out",
+       "suspect": "VISIONOS",
+       "walled": false,
+       "plan": [
+        "WEB_EMBED",
+        "TV_TIZEN",
+        "VISIONOS",
+        "ANDROID_REEL",
+        "ANDROID_VR",
+        "IOS",
+        "MWEB",
+        "WEB",
+        "WEB_SAFARI"
+       ],
+       "answers": [
+        {
+         "client": "WEB_EMBED",
+         "atMs": 64368,
+         "parsed": true,
+         "status": "UNPLAYABLE",
+         "reason": "Video unavailable • Playback on other websites has been disabled by the video owner",
+         "reasonCut": false,
+         "playable": false,
+         "auth": false,
+         "srvAuth": false,
+         "adaptive": 0,
+         "regular": 0,
+         "usableAdaptive": 0,
+         "dash": false,
+         "hls": false,
+         "sabr": false,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": "Video unavailable",
+         "exactSubreason": "Playback on other websites has been disabled by the video owner"
+        },
+        {
+         "client": "TV_TIZEN",
+         "atMs": 65110,
+         "parsed": true,
+         "status": "OK",
+         "reason": null,
+         "reasonCut": false,
+         "playable": true,
+         "auth": false,
+         "srvAuth": false,
+         "adaptive": 13,
+         "regular": 1,
+         "usableAdaptive": 13,
+         "dash": false,
+         "hls": false,
+         "sabr": false,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": null,
+         "exactSubreason": null
+        }
+       ],
+       "expect": {
+        "asked": [
+         "WEB_EMBED",
+         "TV_TIZEN"
+        ],
+        "result": "playable",
+        "client": "TV_TIZEN",
+        "botCheckTrip": false,
+        "markers": []
+       }
+      }
+     ],
+     "props": {}
+    }
+   ]
+  },
+  {
+   "name": "walled-visitor-no-embed-v19p",
+   "build": "unknown",
+   "note": "The same video on the same walled visitor with v19p, an hour earlier: VISIONOS walled, the recovery alternated WEB_EMBED (refused) + ANDROID_VR (walled) and VISIONOS until the reload cap (Unknown source error).",
+   "exclude": "Changed on purpose (router v22, the one-minute wall): VISIONOS's wall benches it for the recovery and the recovery order asks WEB_EMBED then TV_TIZEN (anonymous) before ANDROID_VR, so the first recovery asks TV_TIZEN, which this v19p log never asked (no device answer to replay). v22's own run of this video on this visitor is the case walled-visitor-no-embed.",
+   "priorState": null,
+   "opens": [
+    {
+     "log": "r11-emu-home-w5592-wall-a-ring.RING.MeJVWBSsPAY.t1.log",
+     "run": "r11-emu-home-w5592-wall-a-ring",
+     "build": "unknown",
+     "video": "MeJVWBSsPAY",
+     "trial": 1,
+     "network": "wifi-emu",
+     "lane": "signed-out",
+     "newProcess": true,
+     "restoredRecords": null,
+     "atMs": 0,
+     "markers": [],
+     "droppedWalks": [],
+     "steps": [
+      {
+       "type": "walk",
+       "atMs": 181,
+       "video": "MeJVWBSsPAY",
+       "role": "active",
+       "lane": "signed-out",
+       "suspect": null,
+       "walled": false,
+       "plan": [
+        "VISIONOS",
+        "WEB_EMBED",
+        "ANDROID_VR",
+        "IOS",
+        "ANDROID_REEL",
+        "MWEB",
+        "WEB",
+        "WEB_SAFARI"
+       ],
+       "answers": [
+        {
+         "client": "VISIONOS",
+         "atMs": 1139,
+         "parsed": true,
+         "status": "OK",
+         "reason": null,
+         "reasonCut": false,
+         "playable": true,
+         "auth": false,
+         "srvAuth": null,
+         "adaptive": 14,
+         "regular": 0,
+         "usableAdaptive": 14,
+         "dash": false,
+         "hls": true,
+         "sabr": true,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": null,
+         "exactSubreason": null
+        }
+       ],
+       "expect": {
+        "asked": [
+         "VISIONOS"
+        ],
+        "result": "playable",
+        "client": "VISIONOS",
+        "botCheckTrip": false,
+        "markers": []
+       }
+      },
+      {
+       "type": "media-failure",
+       "atMs": 63526,
+       "video": "MeJVWBSsPAY",
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 59964,
+        "lowestServedStartMs": 0,
+        "highestServedStartMs": 10001,
+        "exact": false
+       }
+      },
+      {
+       "type": "walk",
+       "atMs": 63629,
+       "video": "MeJVWBSsPAY",
+       "role": "active",
+       "lane": "signed-out",
+       "suspect": "VISIONOS",
+       "walled": false,
+       "plan": [
+        "WEB_EMBED",
+        "ANDROID_VR",
+        "IOS",
+        "ANDROID_REEL",
+        "MWEB",
+        "WEB",
+        "WEB_SAFARI",
+        "VISIONOS"
+       ],
+       "answers": [
+        {
+         "client": "WEB_EMBED",
+         "atMs": 63787,
+         "parsed": true,
+         "status": "UNPLAYABLE",
+         "reason": "Video unavailable • Playback on other websites has been disabled by the video owner",
+         "reasonCut": false,
+         "playable": false,
+         "auth": false,
+         "srvAuth": false,
+         "adaptive": 0,
+         "regular": 0,
+         "usableAdaptive": 0,
+         "dash": false,
+         "hls": false,
+         "sabr": false,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": "Video unavailable",
+         "exactSubreason": "Playback on other websites has been disabled by the video owner"
+        },
+        {
+         "client": "ANDROID_VR",
+         "atMs": 63918,
+         "parsed": true,
+         "status": "OK",
+         "reason": null,
+         "reasonCut": false,
+         "playable": true,
+         "auth": false,
+         "srvAuth": null,
+         "adaptive": 13,
+         "regular": 1,
+         "usableAdaptive": 13,
+         "dash": false,
+         "hls": false,
+         "sabr": true,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": null,
+         "exactSubreason": null
+        }
+       ],
+       "expect": {
+        "asked": [
+         "WEB_EMBED",
+         "ANDROID_VR"
+        ],
+        "result": "playable",
+        "client": "ANDROID_VR",
+        "botCheckTrip": false,
+        "markers": []
+       }
+      },
+      {
+       "type": "media-failure",
+       "atMs": 64554,
+       "video": "MeJVWBSsPAY",
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 60001,
+        "lowestServedStartMs": 50001,
+        "highestServedStartMs": 50001,
+        "exact": false
+       }
+      },
+      {
+       "type": "walk",
+       "atMs": 64670,
+       "video": "MeJVWBSsPAY",
+       "role": "active",
+       "lane": "signed-out",
+       "suspect": "ANDROID_VR",
+       "walled": false,
+       "plan": [
+        "VISIONOS",
+        "WEB_EMBED",
+        "IOS",
+        "ANDROID_REEL",
+        "MWEB",
+        "WEB",
+        "WEB_SAFARI",
+        "ANDROID_VR"
+       ],
+       "answers": [
+        {
+         "client": "VISIONOS",
+         "atMs": 64874,
+         "parsed": true,
+         "status": "OK",
+         "reason": null,
+         "reasonCut": false,
+         "playable": true,
+         "auth": false,
+         "srvAuth": null,
+         "adaptive": 14,
+         "regular": 0,
+         "usableAdaptive": 14,
+         "dash": false,
+         "hls": true,
+         "sabr": true,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": null,
+         "exactSubreason": null
+        }
+       ],
+       "expect": {
+        "asked": [
+         "VISIONOS"
+        ],
+        "result": "playable",
+        "client": "VISIONOS",
+        "botCheckTrip": false,
+        "markers": []
+       }
+      },
+      {
+       "type": "media-failure",
+       "atMs": 65504,
+       "video": "MeJVWBSsPAY",
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 60001,
+        "lowestServedStartMs": 50001,
+        "highestServedStartMs": 54054,
+        "exact": false
+       }
+      },
+      {
+       "type": "walk",
+       "atMs": 65511,
+       "video": "MeJVWBSsPAY",
+       "role": "active",
+       "lane": "signed-out",
+       "suspect": "VISIONOS",
+       "walled": false,
+       "plan": [
+        "WEB_EMBED",
+        "ANDROID_VR",
+        "IOS",
+        "ANDROID_REEL",
+        "MWEB",
+        "WEB",
+        "WEB_SAFARI",
+        "VISIONOS"
+       ],
+       "answers": [
+        {
+         "client": "WEB_EMBED",
+         "atMs": 65656,
+         "parsed": true,
+         "status": "UNPLAYABLE",
+         "reason": "Video unavailable • Playback on other websites has been disabled by the video owner",
+         "reasonCut": false,
+         "playable": false,
+         "auth": false,
+         "srvAuth": false,
+         "adaptive": 0,
+         "regular": 0,
+         "usableAdaptive": 0,
+         "dash": false,
+         "hls": false,
+         "sabr": false,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": "Video unavailable",
+         "exactSubreason": "Playback on other websites has been disabled by the video owner"
+        },
+        {
+         "client": "ANDROID_VR",
+         "atMs": 65857,
+         "parsed": true,
+         "status": "OK",
+         "reason": null,
+         "reasonCut": false,
+         "playable": true,
+         "auth": false,
+         "srvAuth": null,
+         "adaptive": 13,
+         "regular": 1,
+         "usableAdaptive": 13,
+         "dash": false,
+         "hls": false,
+         "sabr": true,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": null,
+         "exactSubreason": null
+        }
+       ],
+       "expect": {
+        "asked": [
+         "WEB_EMBED",
+         "ANDROID_VR"
+        ],
+        "result": "playable",
+        "client": "ANDROID_VR",
+        "botCheckTrip": false,
+        "markers": []
+       }
+      },
+      {
+       "type": "media-failure",
+       "atMs": 72432,
+       "video": "MeJVWBSsPAY",
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 60001,
+        "lowestServedStartMs": 50001,
+        "highestServedStartMs": 54054,
+        "exact": false
+       }
+      },
+      {
+       "type": "walk",
+       "atMs": 72535,
+       "video": "MeJVWBSsPAY",
+       "role": "active",
+       "lane": "signed-out",
+       "suspect": "ANDROID_VR",
+       "walled": false,
+       "plan": [
+        "VISIONOS",
+        "WEB_EMBED",
+        "IOS",
+        "ANDROID_REEL",
+        "MWEB",
+        "WEB",
+        "WEB_SAFARI",
+        "ANDROID_VR"
+       ],
+       "answers": [
+        {
+         "client": "VISIONOS",
+         "atMs": 72703,
+         "parsed": true,
+         "status": "OK",
+         "reason": null,
+         "reasonCut": false,
+         "playable": true,
+         "auth": false,
+         "srvAuth": null,
+         "adaptive": 14,
+         "regular": 0,
+         "usableAdaptive": 14,
+         "dash": false,
+         "hls": true,
+         "sabr": true,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": null,
+         "exactSubreason": null
+        }
+       ],
+       "expect": {
+        "asked": [
+         "VISIONOS"
+        ],
+        "result": "playable",
+        "client": "VISIONOS",
+        "botCheckTrip": false,
+        "markers": []
+       }
+      },
+      {
+       "type": "media-failure",
+       "atMs": 79167,
+       "video": "MeJVWBSsPAY",
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 60001,
+        "lowestServedStartMs": 50001,
+        "highestServedStartMs": 54054,
+        "exact": false
+       }
+      },
+      {
+       "type": "walk",
+       "atMs": 79274,
+       "video": "MeJVWBSsPAY",
+       "role": "active",
+       "lane": "signed-out",
+       "suspect": "VISIONOS",
+       "walled": false,
+       "plan": [
+        "WEB_EMBED",
+        "ANDROID_VR",
+        "IOS",
+        "ANDROID_REEL",
+        "MWEB",
+        "WEB",
+        "WEB_SAFARI",
+        "VISIONOS"
+       ],
+       "answers": [
+        {
+         "client": "WEB_EMBED",
+         "atMs": 79404,
+         "parsed": true,
+         "status": "UNPLAYABLE",
+         "reason": "Video unavailable • Playback on other websites has been disabled by the video owner",
+         "reasonCut": false,
+         "playable": false,
+         "auth": false,
+         "srvAuth": false,
+         "adaptive": 0,
+         "regular": 0,
+         "usableAdaptive": 0,
+         "dash": false,
+         "hls": false,
+         "sabr": false,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": "Video unavailable",
+         "exactSubreason": "Playback on other websites has been disabled by the video owner"
+        },
+        {
+         "client": "ANDROID_VR",
+         "atMs": 79534,
+         "parsed": true,
+         "status": "OK",
+         "reason": null,
+         "reasonCut": false,
+         "playable": true,
+         "auth": false,
+         "srvAuth": null,
+         "adaptive": 13,
+         "regular": 1,
+         "usableAdaptive": 13,
+         "dash": false,
+         "hls": false,
+         "sabr": true,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": null,
+         "exactSubreason": null
+        }
+       ],
+       "expect": {
+        "asked": [
+         "WEB_EMBED",
+         "ANDROID_VR"
+        ],
+        "result": "playable",
+        "client": "ANDROID_VR",
+        "botCheckTrip": false,
+        "markers": []
+       }
+      },
+      {
+       "type": "media-failure",
+       "atMs": 86295,
+       "video": "MeJVWBSsPAY",
+       "http403": true,
+       "media403": {
+        "forbiddenStartMs": 60001,
+        "lowestServedStartMs": 50001,
+        "highestServedStartMs": 54054,
+        "exact": false
+       }
+      },
+      {
+       "type": "walk",
+       "atMs": 86315,
+       "video": "MeJVWBSsPAY",
+       "role": "active",
+       "lane": "signed-out",
+       "suspect": "ANDROID_VR",
+       "walled": false,
+       "plan": [
+        "VISIONOS",
+        "WEB_EMBED",
+        "IOS",
+        "ANDROID_REEL",
+        "MWEB",
+        "WEB",
+        "WEB_SAFARI",
+        "ANDROID_VR"
+       ],
+       "answers": [
+        {
+         "client": "VISIONOS",
+         "atMs": 86435,
+         "parsed": true,
+         "status": "OK",
+         "reason": null,
+         "reasonCut": false,
+         "playable": true,
+         "auth": false,
+         "srvAuth": null,
+         "adaptive": 14,
+         "regular": 0,
+         "usableAdaptive": 14,
+         "dash": false,
+         "hls": true,
+         "sabr": true,
+         "live": false,
+         "liveContent": false,
+         "liveStart": false,
+         "trailer": false,
+         "ageGate": false,
+         "ageGateFrom": "logged",
+         "exact": true,
+         "exactReason": null,
+         "exactSubreason": null
+        }
+       ],
+       "expect": {
+        "asked": [
+         "VISIONOS"
+        ],
+        "result": "playable",
+        "client": "VISIONOS",
+        "botCheckTrip": false,
+        "markers": []
+       }
+      }
+     ],
+     "props": {
+      "debug.arc.anon_pings": "1"
+     }
     }
    ]
   }

@@ -287,6 +287,41 @@ internal object PoTokenGate {
         return mWebPoToken?.visitorData
     }
 
+    /**
+     * NEWTUBE(wall-memory): the visitor the next web-session /player request (VISIONOS, ANDROID_VR,
+     * the Web family) will carry, WITHOUT building anything: the current session's, else the one it
+     * is about to adopt, else null (a re-roll is armed: the next one is a fresh visitor). Without a
+     * WebView the app's visitor stands in (the cloud-token path presents it).
+     */
+    @JvmStatic
+    fun peekPlaybackVisitorData(): String? {
+        mWebPoToken?.visitorData?.let { return it }
+        return if (PoTokenProviderImpl.isWebPotSupported) PoTokenProviderImpl.peekSessionVisitorData()
+        else AppService.instance().visitorData
+    }
+
+    /**
+     * NEWTUBE(playback-identity): re-rolls the PLAYBACK identity for [videoId] after the one-minute
+     * wall (VideoInfoService.rerollPlaybackIdentityOnWall decides when). The
+     * next web-pot session build mints a fresh visitor and rebuilds BotGuard around it; the app's
+     * persistent visitor (browse, Home, the APP_VISITOR sources) is not touched. Unlike
+     * [rotateWebVisitor] it has no rate limit of its own: PlaybackIdentityBook's persisted budget
+     * governs it. False (nothing armed) without a working WebView: no web session to re-roll.
+     */
+    @JvmStatic
+    fun rerollPlaybackIdentity(videoId: String, budgetLeft: Int): Boolean {
+        if (!PoTokenProviderImpl.isWebPotSupported) {
+            return false
+        }
+        val from = mWebPoToken?.visitorData ?: PoTokenProviderImpl.peekSessionVisitorData()
+        PlaybackIdentity.arm(videoId, from, budgetLeft)
+        PoTokenProviderImpl.requestFreshVisitor()
+        mWebPoToken = null
+        mWebPoTokenCreatedAtMs = -1
+        PoTokenProviderImpl.resetCache()
+        return true
+    }
+
     private fun resetWebCache(): Boolean {
         val currentTimeMs = System.currentTimeMillis()
         if (currentTimeMs < mCacheResetTimeMs)

@@ -12,6 +12,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.youtubeapi.videoinfo.V2.VideoInfoService.WalkRole;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSource;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSourceCatalog;
 import com.liskovsoft.youtubeapi.videoinfo.models.VideoInfo;
 import com.liskovsoft.youtubeapi.videoinfo.models.VodDelivery;
 
@@ -141,7 +143,10 @@ public class VideoInfoReplayTest {
                     // none); the token warm-up's timing, the HLS challenge fold and the embed
                     // identity's re-roll change no answer a replay feeds the walk.
                     "debug.arc.live_card", "debug.arc.token_warmup", "debug.arc.hls_n_fold",
-                    "debug.arc.embed_reroll"));
+                    "debug.arc.embed_reroll",
+                    // The benchmark's playback pings, the synthetic wall (media-side: its 403 is a
+                    // step) and keeping a re-rolled identity (a request identity, not a walk rule).
+                    "debug.arc.anon_pings", "debug.arc.poison_wall_s", "debug.arc.playback_keep"));
 
     /** Case name and its JSON: plain strings, so nothing crosses into the sandbox's class loader. */
     @ParameterizedRobolectricTestRunner.Parameters(name = "{0}")
@@ -172,6 +177,13 @@ public class VideoInfoReplayTest {
         VideoInfoService.setSkipLiveDashInfoWithManifest(true);
         VideoInfoService.setSkipStoryboardEnrichment(true);
         VodDelivery.setHlsEnabled(true);
+        // v22 (the one-minute wall): wall memory, the VOD order, the playback identity re-roll.
+        VideoInfoService.resetPlaybackRerollForTest();
+        com.liskovsoft.youtubeapi.app.PlaybackIdentity.resetForTest();
+        VideoInfoBotWallTest.ShadowTokenGate.webVisitor = "web-visitor";
+        VideoInfoBotWallTest.ShadowWalk.appVisitor = "app-visitor";
+        VideoInfoBotWallTest.ShadowTokenGate.rerolls.clear();
+        VideoInfoBotWallTest.ShadowTokenGate.rerollSupported = true;
     }
 
     @After
@@ -182,6 +194,13 @@ public class VideoInfoReplayTest {
         VideoInfoService.setSkipLiveDashInfoWithManifest(false);
         VideoInfoService.setSkipStoryboardEnrichment(false);
         VodDelivery.setHlsEnabled(false);
+        VideoInfoService.setWallMemoryEnabled(false);
+        VideoInfoService.setVodVrLateEnabled(false);
+        VideoInfoService.setPlaybackRerollEnabled(false);
+        VideoInfoService.resetPlaybackRerollForTest();
+        com.liskovsoft.youtubeapi.app.PlaybackIdentity.resetForTest();
+        VideoInfoBotWallTest.ShadowTokenGate.webVisitor = "web-visitor";
+        VideoInfoBotWallTest.ShadowWalk.appVisitor = "app-visitor";
     }
 
     @Test
@@ -232,6 +251,11 @@ public class VideoInfoReplayTest {
                             mService.anchorRouteToVideo(text(step, "video"));
                             if (flag(step, "http403")) {
                                 mService.markCurrentPlaybackRouteForbidden();
+                                JsonObject media = step.has("media403") ? step.getAsJsonObject("media403") : null;
+                                mService.notePlaybackMedia403(text(step, "video"),
+                                        media != null ? number(media, "forbiddenStartMs") : -1,
+                                        media != null ? number(media, "lowestServedStartMs") : -1,
+                                        media != null ? number(media, "highestServedStartMs") : -1);
                             }
                             mService.switchNextFormat();
                             break;
@@ -258,6 +282,10 @@ public class VideoInfoReplayTest {
         private void startSwitches(JsonObject open) {
             VideoInfoService.setAccountRouteFirst(false);
             VodDelivery.setHlsEnabled(true);
+            // v22's defaults (MobileMainApplication), then the run's own switches.
+            VideoInfoService.setWallMemoryEnabled(true);
+            VideoInfoService.setVodVrLateEnabled(true);
+            VideoInfoService.setPlaybackRerollEnabled(true);
             JsonObject props = open.has("props") ? open.getAsJsonObject("props") : new JsonObject();
             for (Map.Entry<String, JsonElement> prop : props.entrySet()) {
                 String key = prop.getKey();
@@ -266,6 +294,13 @@ public class VideoInfoReplayTest {
                     VideoInfoService.setAccountRouteFirst("1".equals(value));
                 } else if ("debug.arc.hls_vod".equals(key)) {
                     VodDelivery.setHlsEnabled(!"0".equals(value));
+                } else if ("debug.arc.wall_memory".equals(key)) {
+                    VideoInfoService.setWallMemoryEnabled("1".equals(value));
+                } else if ("debug.arc.vod_vr_late".equals(key)) {
+                    VideoInfoService.setVodVrLateEnabled("1".equals(value));
+                } else if ("debug.arc.playback_reroll".equals(key)) {
+                    VideoInfoService.setPlaybackRerollEnabled(!"0".equals(value));
+                    VideoInfoService.setPlaybackRerollSignedIn("all".equals(value));
                 } else if (!WALK_NEUTRAL_SWITCHES.contains(key)) {
                     fail(mCase + " / " + text(open, "log") + ": the device ran with " + key + "=" + value
                             + ", which the replay does not model: add it to VideoInfoReplayTest"
@@ -284,6 +319,8 @@ public class VideoInfoReplayTest {
             if (device == 0) {
                 mStore.value = null;
             }
+            // What a process keeps in memory only (the persisted walls and budget survive it).
+            VideoInfoService.resetPlaybackProcessStateForTest();
             mService = ReflectionHelpers.callConstructor(VideoInfoService.class);
             // The shadowed constructor skips field initializers; give the instance what the walk uses.
             ReflectionHelpers.setField(mService, "mAuthRouteQuarantine", new AuthRouteQuarantineBook());
@@ -348,7 +385,14 @@ public class VideoInfoReplayTest {
                             + " the account, the replay asks " + (auth ? "with" : "without") + " it");
                 }
                 if (flag(answer, "parsed")) {
-                    return Answers.rebuild(answer, video, client, auth, where);
+                    VideoInfo info = Answers.rebuild(answer, video, client, auth, where);
+                    // The visitor the source sends (wall memory is keyed on it).
+                    PlayerSource.Identity identity = PlayerSourceCatalog.defaultFor(client).identity;
+                    info.setRequestVisitorData(identity == PlayerSource.Identity.WEB_SESSION
+                            ? VideoInfoBotWallTest.ShadowTokenGate.webVisitor
+                            : identity == PlayerSource.Identity.APP_VISITOR
+                                    ? VideoInfoBotWallTest.ShadowWalk.appVisitor : "embed-visitor");
+                    return info;
                 }
                 if (flag(answer, "noResponse")) {
                     VideoInfoBotWallTest.ShadowWalk.silent.add(client); // a timeout, not an error

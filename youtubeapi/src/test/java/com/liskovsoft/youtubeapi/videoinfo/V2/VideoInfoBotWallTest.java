@@ -767,6 +767,7 @@ public class VideoInfoBotWallTest {
 
         @Implementation
         protected static void resetCache() {
+            tokenResets++;
         }
 
         /**
@@ -782,6 +783,33 @@ public class VideoInfoBotWallTest {
         @Implementation
         protected static String getPoToken(AppClient client, String videoId) {
             return null;
+        }
+
+        /** NEWTUBE(playback-identity): the re-rolls asked for, and whether a web session exists. */
+        static final List<String> rerolls = new ArrayList<>();
+        static volatile boolean rerollSupported = true;
+        static int tokenResets;
+
+        @Implementation
+        protected static boolean isWebPotSupported() {
+            return rerollSupported;
+        }
+
+        @Implementation
+        protected static boolean rerollPlaybackIdentity(String videoId, int budgetLeft) {
+            rerolls.add(videoId + "/" + budgetLeft);
+            if (rerollSupported) {
+                webVisitor = "rerolled-" + rerolls.size(); // the next session mints a fresh visitor
+            }
+            return rerollSupported;
+        }
+
+        /** NEWTUBE(wall-memory): the visitor the next web-session request carries (null: fresh). */
+        static volatile String webVisitor = "web-visitor";
+
+        @Implementation
+        protected static String peekPlaybackVisitorData() {
+            return webVisitor;
         }
 
         /** NEWTUBE(token-warmup): whether the BotGuard session is minted (tests set it). */
@@ -825,6 +853,14 @@ public class VideoInfoBotWallTest {
         @Implementation
         protected static boolean hasAuthentication() {
             return signedIn;
+        }
+
+        /** NEWTUBE(wall-memory): the app's persistent visitor (APP_VISITOR sources). */
+        static volatile String appVisitor = "app-visitor";
+
+        @Implementation
+        protected static String appVisitorData() {
+            return appVisitor;
         }
 
         /** A full getVideoInfo stops after the walk: no subtitle or storyboard enrichment. */

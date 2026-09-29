@@ -434,6 +434,51 @@ public class VideoInfoPlannerTest {
                         + " \"mimeType\": \"video/mp4\"}]}}", false)));
     }
 
+    /**
+     * NEWTUBE(vod-vr-late): a first open with nothing walled keeps the lane's order (VISIONOS alone
+     * for an ordinary video; a refusal walk as the device replays hold it); the recovery asks
+     * TV_TIZEN (anonymous) and ANDROID_REEL before ANDROID_VR; live still reaches ANDROID_VR at the
+     * second request, and a benched account route is not planned.
+     */
+    @Test
+    public void vodVrLateIsTheRecoveryOrder() {
+        VideoInfoService.setVodVrLateEnabled(true);
+        try {
+            open("ordinary");
+            assertEquals(Arrays.asList("VISIONOS"), calls());
+
+            VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.TV_TIZEN
+                    || client == AppClient.ANDROID_VR ? playable(auth)
+                    : parse("{\"playabilityStatus\": {\"status\": \"LOGIN_REQUIRED\","
+                            + " \"reason\": \"Sign in " + client + "\"}}", auth);
+            assertEquals(AppClient.ANDROID_VR, open("first").getClient());
+            assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED", "ANDROID_VR"), calls());
+
+            // (VISIONOS and WEB_EMBED refused it moments ago: RecentRefusals asks them after.)
+            recoverFrom(AppClient.ANDROID_VR);
+            assertEquals(AppClient.TV_TIZEN, open("first").getClient());
+            assertEquals(Arrays.asList("TV_TIZEN"), calls());
+
+            VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> liveAnswer(client, auth);
+            assertEquals(AppClient.ANDROID_VR, open("live").getClient());
+            assertEquals(Arrays.asList("VISIONOS", "ANDROID_VR"), calls());
+
+            // TV_TIZEN benched for the video (its media 403'd): not planned; ANDROID_REEL, then VR.
+            BotWallBook book = ReflectionHelpers.getField(service, "mBotWall");
+            book.noteRouteFailed("wifi:100", VideoInfoService.noMediaVideoKey("benched"), "media-403",
+                    android.os.SystemClock.elapsedRealtime());
+            VideoInfoBotWallTest.ShadowWalk.script = (client, auth) ->
+                    client == AppClient.TV_TIZEN || client == AppClient.ANDROID_VR
+                            ? playable(auth) : parse("{\"playabilityStatus\": {\"status\": \"LOGIN_REQUIRED\","
+                                    + " \"reason\": \"Sign in " + client + "\"}}", auth);
+            recoverFrom(AppClient.WEB);
+            assertEquals(AppClient.ANDROID_VR, open("benched").getClient());
+            assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED", "ANDROID_REEL", "ANDROID_VR"), calls());
+        } finally {
+            VideoInfoService.setVodVrLateEnabled(false);
+        }
+    }
+
     /** NEWTUBE(live-card): the item said live: ANDROID_VR's DASH answer at the first request. */
     @Test
     public void aLiveCardIsServedAtTheFirstRequest() {

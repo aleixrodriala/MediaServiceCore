@@ -230,6 +230,80 @@ public class PhoneSourcePlannerTest {
         }
     }
 
+    /**
+     * NEWTUBE(vod-vr-late): ANDROID_VR after the VOD sources that survive the one-minute wall;
+     * signed out TV_TIZEN planned third (anonymously). A live card keeps ANDROID_VR first.
+     */
+    @Test
+    public void vodVrLateMovesAndroidVrBehindTheWallSurvivors() {
+        assertEquals("VISIONOS WEB_EMBED TV_TIZEN ANDROID_REEL ANDROID_VR IOS MWEB WEB WEB_SAFARI",
+                join(vrLate(SIGNED_OUT, null, false, false, EnumSet.noneOf(AppClient.class), false)));
+        assertEquals("benched: no anonymous TV_TIZEN",
+                "VISIONOS WEB_EMBED ANDROID_REEL ANDROID_VR IOS MWEB WEB WEB_SAFARI",
+                join(vrLate(SIGNED_OUT, null, true, false, EnumSet.noneOf(AppClient.class), false)));
+        assertEquals("VISIONOS TV_TIZEN WEB_EMBED ANDROID_REEL ANDROID_VR IOS MWEB WEB WEB_SAFARI",
+                join(vrLate(SIGNED_IN, null, false, false, EnumSet.noneOf(AppClient.class), false)));
+        // A walled VISIONOS's recovery: WEB_EMBED, then TV_TIZEN, ANDROID_VR only after ANDROID_REEL.
+        assertEquals("WEB_EMBED TV_TIZEN ANDROID_REEL ANDROID_VR IOS MWEB WEB WEB_SAFARI VISIONOS",
+                join(vrLate(SIGNED_OUT, AppClient.VISIONOS, false, false, EnumSet.noneOf(AppClient.class), false)));
+        // A kids recovery with TV_TIZEN benched, WEB_EMBED the suspect, VISIONOS refused.
+        assertEquals("WEB_EMBED ANDROID_REEL ANDROID_VR IOS MWEB WEB WEB_SAFARI VISIONOS",
+                join(vrLate(SIGNED_OUT, AppClient.WEB_EMBED, true, true, EnumSet.of(AppClient.VISIONOS), false)));
+        // The live card: unchanged.
+        assertEquals("ANDROID_VR VISIONOS WEB_EMBED IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(vrLate(SIGNED_OUT, null, false, false, EnumSet.noneOf(AppClient.class), true)));
+    }
+
+    /**
+     * NEWTUBE(wall-memory): walled sources go last of all (after the suspect and the refusals);
+     * MeJVWBSsPAY's second recovery on a walled visitor never goes back to VISIONOS or ANDROID_VR.
+     */
+    @Test
+    public void walledSourcesGoLastOfAll() {
+        EnumSet<AppClient> walled = EnumSet.of(AppClient.VISIONOS, AppClient.ANDROID_VR);
+        assertEquals("a walled visitor's first open",
+                "WEB_EMBED TV_TIZEN ANDROID_REEL IOS MWEB WEB WEB_SAFARI VISIONOS ANDROID_VR",
+                join(walls(null, EnumSet.noneOf(AppClient.class), walled, EnumSet.noneOf(AppClient.class), false)));
+        assertEquals("the recovery from TV_TIZEN, WEB_EMBED refused moments ago",
+                "ANDROID_REEL IOS MWEB WEB WEB_SAFARI TV_TIZEN WEB_EMBED VISIONOS ANDROID_VR",
+                join(walls(AppClient.TV_TIZEN, EnumSet.of(AppClient.WEB_EMBED), walled,
+                        EnumSet.noneOf(AppClient.class), false)));
+        assertEquals("a live card keeps its source first",
+                "ANDROID_VR WEB_EMBED IOS ANDROID_REEL MWEB WEB WEB_SAFARI VISIONOS",
+                join(walls(null, EnumSet.noneOf(AppClient.class), walled, EnumSet.noneOf(AppClient.class), true)));
+    }
+
+    /**
+     * NEWTUBE(playback-identity): VISIONOS walled in this recovery but re-rolled since: after
+     * WEB_EMBED and TV_TIZEN, before ANDROID_REEL's 360p.
+     */
+    @Test
+    public void aReRolledSourceComesBackBeforeReel() {
+        assertEquals("WEB_EMBED TV_TIZEN VISIONOS ANDROID_REEL ANDROID_VR IOS MWEB WEB WEB_SAFARI",
+                join(walls(AppClient.VISIONOS, EnumSet.noneOf(AppClient.class), EnumSet.noneOf(AppClient.class),
+                        EnumSet.of(AppClient.VISIONOS), false)));
+        assertEquals("WEB_EMBED refused moments ago",
+                "TV_TIZEN VISIONOS ANDROID_REEL ANDROID_VR IOS MWEB WEB WEB_SAFARI WEB_EMBED",
+                join(walls(AppClient.VISIONOS, EnumSet.of(AppClient.WEB_EMBED), EnumSet.noneOf(AppClient.class),
+                        EnumSet.of(AppClient.VISIONOS), false)));
+        assertEquals("not in a first walk",
+                "VISIONOS WEB_EMBED TV_TIZEN ANDROID_REEL ANDROID_VR IOS MWEB WEB WEB_SAFARI",
+                join(walls(null, EnumSet.noneOf(AppClient.class), EnumSet.noneOf(AppClient.class),
+                        EnumSet.of(AppClient.VISIONOS), false)));
+    }
+
+    private static List<AppClient> walls(AppClient suspect, EnumSet<AppClient> refused, EnumSet<AppClient> benched,
+            EnumSet<AppClient> refreshed, boolean liveCard) {
+        return PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(SIGNED_OUT, suspect, false, false,
+                false, false, refused, false, liveCard, true, benched, refreshed));
+    }
+
+    private static List<AppClient> vrLate(PhoneSourcePlanner.Lane lane, AppClient suspect, boolean benched,
+            boolean kids, EnumSet<AppClient> refused, boolean liveCard) {
+        return PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(lane, suspect, false, benched,
+                false, false, refused, kids, liveCard, true));
+    }
+
     private static List<AppClient> kidsRecovery(PhoneSourcePlanner.Lane lane, AppClient suspect,
             boolean benched, EnumSet<AppClient> refused) {
         return PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(lane, suspect, false, benched,
