@@ -60,6 +60,9 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
     private boolean mContainsAdaptiveVideoFormats;
     private boolean mIsAuth;
     private boolean mIsSynced;
+    /** See sync(). */
+    static final int MAX_SYNC_ATTEMPTS = 3;
+    private int mSyncAttempts;
     private boolean mIsUnknownError;
     private boolean mIsBotCheckRequired;
     private String mPaidContentText;
@@ -521,11 +524,18 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
      */
     @Override
     public void sync(MediaItemFormatInfo formatInfo) {
-        mIsSynced = true;
+        // NEWTUBE(history): a fetch that brought no tracking data is not a sync. Marking it synced
+        // anyway meant one failed TV answer lost the video's history for good: every later ping
+        // threw "should be synced first" and none retried. A few tries per video, then the same
+        // give-up as before.
+        mSyncAttempts++;
 
         if (formatInfo == null || Helpers.anyNull(formatInfo.getEventId(), formatInfo.getVisitorMonitoringData(), formatInfo.getOfParam())) {
+            mIsSynced = mSyncAttempts >= MAX_SYNC_ATTEMPTS;
             return;
         }
+
+        mIsSynced = true;
 
         // Intended to merge signed and unsigned infos (no-playback fix)
         mEventId = formatInfo.getEventId();

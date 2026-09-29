@@ -544,9 +544,6 @@ public class YouTubeMediaItemService implements MediaItemService {
 
     @Override
     public void updateHistoryPosition(String videoId, float positionSec) {
-        if (AccountWrites.blocked("history-position")) {
-            return;
-        }
         checkSigned();
 
         MediaItemFormatInfo formatInfo = getTrackingFormatInfo(videoId);
@@ -562,6 +559,18 @@ public class YouTubeMediaItemService implements MediaItemService {
 
         // Improve the performance by fetching the history data on the second run
         syncWithAuthFormatIfNeeded(formatInfo);
+
+        // NEWTUBE(bench): blocked after the reads, not before them, so a benchmark on the account
+        // still sees whether the ping would carry the account's tracking data: an anonymous winner
+        // (VISIONOS, most signed-in opens) is credited through the TV answer fetched just above.
+        if (AccountWrites.blocked("history-position")) {
+            boolean complete = !shouldBeSynced(formatInfo) && !Helpers.anyNull(formatInfo.getEventId(),
+                    formatInfo.getVisitorMonitoringData(), formatInfo.getOfParam());
+            android.util.Log.d("NetPath", "history-ping dry-run video=" + videoId
+                    + " auth=" + (formatInfo.isAuth() ? "y" : "n")
+                    + " tracking=" + (complete ? "complete" : "missing"));
+            return;
+        }
 
         if (shouldBeSynced(formatInfo)) {
             throw new IllegalStateException("Update history error: the format should be synced first");
