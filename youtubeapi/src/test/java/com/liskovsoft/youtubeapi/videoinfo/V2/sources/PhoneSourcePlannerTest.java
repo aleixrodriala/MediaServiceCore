@@ -101,6 +101,52 @@ public class PhoneSourcePlannerTest {
         assertFalse(PhoneSourcePlanner.admitsAccountRouteAfter(SIGNED_IN, AppClient.VISIONOS));
     }
 
+    /**
+     * NEWTUBE(kids-channel): a remembered kids channel puts the account route first in either lane
+     * (anonymously signed out: the ask a refusal would have admitted next), then the lane's order,
+     * each source once.
+     */
+    @Test
+    public void aKidsChannelHintLeadsWithTheAccountRoute() {
+        assertEquals("TV_TIZEN VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(hinted(SIGNED_OUT, null, false, false)));
+        assertEquals("TV_TIZEN VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(hinted(SIGNED_IN, null, false, false)));
+        // The challenged web identity still goes last behind it.
+        assertEquals("TV_TIZEN VISIONOS ANDROID_VR IOS ANDROID_REEL WEB_EMBED MWEB WEB WEB_SAFARI",
+                join(hinted(SIGNED_OUT, null, true, false)));
+    }
+
+    /** Health and recovery outrank the hint: a benched route stays out, a suspect stays last. */
+    @Test
+    public void aKidsChannelHintNeverLeadsWithABenchedRouteOrInARecovery() {
+        assertEquals("VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(hinted(SIGNED_OUT, null, false, true)));
+        assertEquals("VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(hinted(SIGNED_IN, null, false, true)));
+        assertEquals("VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI TV_TIZEN",
+                join(hinted(SIGNED_OUT, AppClient.TV_TIZEN, false, false)));
+        assertEquals("TV_TIZEN WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI VISIONOS",
+                join(hinted(SIGNED_IN, AppClient.VISIONOS, false, false)));
+    }
+
+    /** Only the sources measured to refuse every kids video are its witnesses (not IOS, ANDROID_REEL). */
+    @Test
+    public void theKidsWitnessesAreVisionOsAndAndroidVr() {
+        assertTrue(PhoneSourcePlanner.refusesMadeForKids(AppClient.VISIONOS));
+        assertTrue(PhoneSourcePlanner.refusesMadeForKids(AppClient.ANDROID_VR));
+        for (AppClient client : new AppClient[] {AppClient.TV_TIZEN, AppClient.WEB_EMBED, AppClient.IOS,
+                AppClient.ANDROID_REEL, AppClient.MWEB, AppClient.WEB, AppClient.WEB_SAFARI}) {
+            assertFalse(client.toString(), PhoneSourcePlanner.refusesMadeForKids(client));
+        }
+    }
+
+    private static List<AppClient> hinted(PhoneSourcePlanner.Lane lane, AppClient suspect,
+            boolean anonChallenged, boolean benched) {
+        return PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(lane, suspect, anonChallenged,
+                benched, false, true));
+    }
+
     @Test
     public void anAgeGateIsSettledOnceEverySourceThatServesOneAnsweredIt() {
         EnumSet<AppClient> none = EnumSet.noneOf(AppClient.class);

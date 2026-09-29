@@ -15,6 +15,7 @@ import com.liskovsoft.youtubeapi.app.PoTokenGate;
 import com.liskovsoft.youtubeapi.app.nsigsolver.impl.V8ChallengeProvider;
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitHelper;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.KidsChannelMemory;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PhoneSourcePlanner;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSource;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSourceCatalog;
@@ -257,6 +258,62 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setAccountRouteFirst(boolean first) {
         sAccountRouteFirst = first;
+    }
+
+    // NEWTUBE(kids-channel): see setKidsChannelHintEnabled. Process-wide like the switches (the
+    // service is a singleton), so the app can name a channel without building the service.
+    private static volatile boolean sKidsChannelHint = true;
+    private static final KidsChannelMemory sKidsChannels = new KidsChannelMemory();
+
+    /**
+     * NEWTUBE(kids-channel): on the phone, a channel whose video VISIONOS (or ANDROID_VR) refused
+     * on its content and the account route (TV_TIZEN) served is remembered for the process
+     * (KidsChannelMemory), and the next open of a video of that channel - when the app named its
+     * channel, {@link #noteVideoChannel} - asks TV_TIZEN first: anonymously signed out, with the
+     * account signed in. A made-for-kids open is then one request instead of two (~0.25 s of first
+     * frame on the Pixel 9). A benched account route, a recovery walk, a bot wall (signed out, its
+     * suspicion too) and a forced client ignore it; an answer other than a serve from the hinted
+     * TV_TIZEN drops the channel and the walk goes on in the lane's order. On by default; only the phone's planned walk reads
+     * it. false = today's order for every open and nothing remembered: the rollback for debug and
+     * benchmark builds (debug.arc.kids_channel=0).
+     */
+    public static void setKidsChannelHintEnabled(boolean enabled) {
+        sKidsChannelHint = enabled;
+    }
+
+    /**
+     * NEWTUBE(kids-channel): {@code videoId} belongs to {@code channelId}, as the app knows it -
+     * the card tapped or the next video before the open, /next after it. Before the walk it is the
+     * walk's hint; after, it names the channel of a proof whose /player answers carried none. The
+     * app does not name live or upcoming videos (TV_TIZEN is never a live route). No request; any
+     * thread.
+     */
+    public static void noteVideoChannel(@Nullable String videoId, @Nullable String channelId) {
+        if (!sKidsChannelHint || !sPreferNoPotClient || videoId == null || channelId == null
+                || channelId.isEmpty()) {
+            return;
+        }
+        // Once per video and channel: the tap, the player and /next name the same one.
+        boolean named = channelId.equals(sKidsChannels.channelOf(videoId));
+        PhoneSourcePlanner.Lane lane = sKidsChannels.noteVideoChannel(videoId, channelId);
+        if (!named) {
+            android.util.Log.d("NetPath", "kids-channel named video=" + videoId
+                    + " channel=" + KidsChannelMemory.tag(channelId));
+        }
+        if (lane != null) {
+            android.util.Log.d("NetPath", "kids-channel remember channel="
+                    + KidsChannelMemory.tag(channelId) + " video=" + videoId + " lane=" + laneName(lane)
+                    + " src=named-later hintsLeft=" + KidsChannelMemory.HINTS_PER_PROOF);
+        }
+    }
+
+    /** The process's kids-channel memory (tests reset it). */
+    static KidsChannelMemory kidsChannels() {
+        return sKidsChannels;
+    }
+
+    private static String laneName(PhoneSourcePlanner.Lane lane) {
+        return lane == PhoneSourcePlanner.Lane.SIGNED_IN ? "signed-in" : "signed-out";
     }
 
     /**
@@ -1235,6 +1292,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 : BotWallBook.Plan.NONE;
 
         java.util.List<AppClient> visitOrder;
+        // NEWTUBE(kids-channel): this open's channel as the app named it, what the lane remembers
+        // of it, and whether the account route leads because of it (planned walks only).
+        String kidsChannel = null;
+        KidsChannelMemory.Hint kidsHint = KidsChannelMemory.Hint.NONE;
+        boolean kidsHinted = false;
+        final long kidsGeneration = sKidsChannels.generation();
         if (sDebugForcedClient != null) {
             visitOrder = java.util.Collections.singletonList(sDebugForcedClient);
             android.util.Log.d("NetPath", "player-ring forced-client=" + sDebugForcedClient);
@@ -1256,17 +1319,43 @@ public class VideoInfoService extends VideoInfoServiceBase {
         } else if (planned) {
             // Signed in, the account route is planned unless BotWallBook has benched it for this
             // video or this attachment (a media 403, a challenge, a reload-page or SABR-only answer).
-            final boolean accountRouteBenched = authenticated && mBotWall.hasRouteRecords()
+            // NEWTUBE(kids-channel): a recovery walk has its own order; the hint is never read.
+            if (sKidsChannelHint && !recoveryWalk) {
+                kidsChannel = sKidsChannels.channelOf(videoId);
+                kidsHint = sKidsChannels.hintFor(lane, kidsChannel);
+            }
+            // Signed out, the same record benches the anonymous ask a hint would lead with.
+            final boolean accountRouteBenched = (authenticated || kidsHint == KidsChannelMemory.Hint.FIRST)
+                    && mBotWall.hasRouteRecords()
                     && mBotWall.isRouteFailed(wallKeys.network(), noMediaVideoKey(videoId), walkStartMs);
+            // Signed out, a bot-wall suspicion (a platform challenge in the last minutes, or a wall
+            // just lapsed) keeps the anonymous TV_TIZEN from the head: one more challenge on another
+            // video establishes the wall, and it must not come from an ask only a hint added (a
+            // mixed channel's ordinary video). The refusal rule still admits it after VISIONOS.
+            final boolean kidsSuspicion = kidsHint == KidsChannelMemory.Hint.FIRST && !authenticated
+                    && mBotWall.hasSuspicion(walkStartMs);
+            kidsHinted = kidsHint == KidsChannelMemory.Hint.FIRST && !accountRouteBenched
+                    && !kidsSuspicion;
             visitOrder = PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(
                     lane, recoveryWalk ? lastWinner : null, anonChallenged, accountRouteBenched,
-                    sAccountRouteFirst));
+                    sAccountRouteFirst, kidsHinted));
             android.util.Log.d("NetPath", "player-ring plan video=" + videoId
                     + " lane=" + (authenticated ? "signed-in" : "signed-out")
                     + (recoveryWalk ? " suspect=" + lastWinner : "")
                     + (anonChallenged ? " anon-challenged" : "")
                     + (accountRouteBenched ? " account-route=benched" : "")
                     + " order=" + visitOrder);
+            if (kidsHint == KidsChannelMemory.Hint.FIRST) {
+                android.util.Log.d("NetPath", "kids-channel " + (kidsHinted ? "hint"
+                        : "hint-skip reason=" + (accountRouteBenched ? "benched" : "suspicion"))
+                        + " video=" + videoId + " channel=" + KidsChannelMemory.tag(kidsChannel)
+                        + " lane=" + laneName(lane)
+                        + " hintsLeft=" + sKidsChannels.hintsLeft(lane, kidsChannel)
+                        + " order=" + visitOrder);
+            } else if (kidsHint == KidsChannelMemory.Hint.REPROOF) {
+                android.util.Log.d("NetPath", "kids-channel reproof video=" + videoId
+                        + " channel=" + KidsChannelMemory.tag(kidsChannel) + " lane=" + laneName(lane));
+            }
         } else {
             visitOrder = buildRequestVisitOrder(
                     beginType, lastWinner, false,
@@ -1320,7 +1409,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
         final BotWallBook.WalkEvidence wallEvidence = new BotWallBook.WalkEvidence();
         final java.util.Set<AppClient> attempted = java.util.EnumSet.noneOf(AppClient.class);
         // NEWTUBE(planner): TV_TIZEN was put next by the anonymous-refusal rule, not by a wall plan.
-        boolean anonTizenSpeculative = false;
+        // NEWTUBE(kids-channel): or first by a channel hint, signed out: the same speculative ask,
+        // with the same short budget.
+        boolean anonTizenSpeculative = kidsHinted && !authenticated;
+        // NEWTUBE(kids-channel): this walk's first anonymous content refusal from VISIONOS or
+        // ANDROID_VR; followed by a serve from the account route, it is the proof KidsChannelMemory keeps.
+        VideoInfo kidsRefusal = null;
         // NEWTUBE(planner): the first age gate of this walk, and the sources that answered it
         // without serving the video (see PhoneSourcePlanner.isAgeGateSettled).
         VideoInfo firstAgeGate = null;
@@ -1402,6 +1496,40 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
             boolean playable = result != null && !result.isUnplayable();
             logPlayerOutcome(videoId, nextType, attempt, result);
+            // NEWTUBE(kids-channel): the hinted account route's own answer. A serve spends a hint.
+            // Anything else - a refusal, a gate, a challenge, SABR only, no answer - drops the
+            // channel, and the walk goes on in the lane's order, VISIONOS next (never back to
+            // TV_TIZEN: it is attempted). A playable live answer is never the account route's to
+            // play (formats only, no manifest): it is set aside unused, the live sources answer as
+            // they do today (VISIONOS's HLS held, ANDROID_VR's DASH), and the channel is kept. A
+            // refusing live answer (a recording gone, a gate, a challenge) is an answer like any
+            // other: it drops the channel and goes through the walk's bookkeeping below.
+            if (kidsHinted && attempt == 1 && nextType == PhoneSourcePlanner.ACCOUNT_ROUTE) {
+                if (playable && hasLiveSignal(result)) {
+                    android.util.Log.d("NetPath", "kids-channel hint-skip reason=live video=" + videoId
+                            + " channel=" + KidsChannelMemory.tag(kidsChannel));
+                    continue;
+                }
+                if (playable) {
+                    // The card's channel may not be the video's: the answer's own, when it differs.
+                    String answered = channelOf(result);
+                    android.util.Log.d("NetPath", "kids-channel hint-served video=" + videoId
+                            + " channel=" + KidsChannelMemory.tag(kidsChannel) + " client=" + nextType
+                            + " hintsLeft=" + sKidsChannels.spendHint(lane, kidsChannel, kidsGeneration)
+                            + (answered != null && !answered.equals(kidsChannel)
+                                    ? " answerChannel=" + KidsChannelMemory.tag(answered) : ""));
+                } else {
+                    sKidsChannels.drop(lane, kidsChannel, kidsGeneration);
+                    android.util.Log.d("NetPath", "kids-channel drop channel="
+                            + KidsChannelMemory.tag(kidsChannel) + " video=" + videoId
+                            + " lane=" + laneName(lane)
+                            + " reason=" + kidsHintFailure(result, noResponse[0]));
+                }
+            }
+            if (kidsRefusal == null && planned && sKidsChannelHint && result != null
+                    && PhoneSourcePlanner.refusesMadeForKids(nextType) && isContentRefusal(result)) {
+                kidsRefusal = result;
+            }
             if (result != null && !result.isAuth() && result.isUnknownRestricted()
                     && !nextType.isWebPotRequired()) {
                 botCheck.noteContentRefusal();
@@ -1652,6 +1780,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
                                 + " live-no-dash, walking on");
                     }
                 } else {
+                    // NEWTUBE(kids-channel): a hinted walk's serve was counted where it was asked.
+                    if (planned && sKidsChannelHint && !kidsHinted) {
+                        noteKidsChannelServed(videoId, lane, nextType, result, kidsRefusal,
+                                kidsGeneration);
+                    }
                     return result;
                 }
             }
@@ -1846,6 +1979,93 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     + " attempt=" + attempt);
         }
         return order;
+    }
+
+    /**
+     * NEWTUBE(kids-channel): an unhinted walk served {@code videoId} with {@code served}.
+     * <ul>
+     *   <li>The account route served it after VISIONOS or ANDROID_VR refused it on its content
+     *   ({@code refusal}): the proof. The channel is the answer's own, else the refusal's, else the
+     *   one the app named; with none of them it waits for the app to name it (/next).</li>
+     *   <li>VISIONOS or ANDROID_VR served it: whatever this video's channel was remembered for, it
+     *   is not a channel they refuse (a mixed channel, seen by a re-proof or an open the app named
+     *   no channel for).</li>
+     * </ul>
+     */
+    private static void noteKidsChannelServed(String videoId, PhoneSourcePlanner.Lane lane,
+            AppClient client, VideoInfo served, @Nullable VideoInfo refusal, long generation) {
+        if (hasLiveSignal(served)) {
+            return;
+        }
+        if (client == PhoneSourcePlanner.ACCOUNT_ROUTE && refusal != null) {
+            String channel = channelOf(served);
+            String src = "answer";
+            if (channel == null) {
+                channel = channelOf(refusal);
+                src = "refusal";
+            }
+            if (channel == null) {
+                channel = sKidsChannels.channelOf(videoId);
+                src = "named";
+            }
+            if (channel == null) {
+                sKidsChannels.rememberWhenNamed(videoId, lane, generation);
+                android.util.Log.d("NetPath", "kids-channel pending video=" + videoId
+                        + " lane=" + laneName(lane) + " refusedBy=" + refusal.getClient());
+            } else if (sKidsChannels.remember(lane, channel, generation)) {
+                android.util.Log.d("NetPath", "kids-channel remember channel="
+                        + KidsChannelMemory.tag(channel) + " video=" + videoId + " lane=" + laneName(lane)
+                        + " src=" + src + " refusedBy=" + refusal.getClient()
+                        + " hintsLeft=" + KidsChannelMemory.HINTS_PER_PROOF);
+            } else {
+                android.util.Log.d("NetPath", "kids-channel stale channel="
+                        + KidsChannelMemory.tag(channel) + " video=" + videoId + " reason=account-changed");
+            }
+        } else if (PhoneSourcePlanner.refusesMadeForKids(client)) {
+            String channel = channelOf(served);
+            if (channel == null) {
+                channel = sKidsChannels.channelOf(videoId);
+            }
+            if (sKidsChannels.drop(lane, channel, generation)) {
+                android.util.Log.d("NetPath", "kids-channel drop channel=" + KidsChannelMemory.tag(channel)
+                        + " video=" + videoId + " lane=" + laneName(lane) + " reason=served-by-" + client);
+            }
+        }
+    }
+
+    /** NEWTUBE(kids-channel): the answer's channel (videoDetails.channelId), or null. */
+    @Nullable
+    private static String channelOf(@Nullable VideoInfo result) {
+        String channel = result != null && result.getVideoDetails() != null
+                ? result.getVideoDetails().getChannelId() : null;
+        return channel != null && !channel.isEmpty() ? channel : null;
+    }
+
+    /**
+     * NEWTUBE(kids-channel): the refusal a made-for-kids video gets from VISIONOS and ANDROID_VR:
+     * UNPLAYABLE without the account, and none of a bot check, an age gate, a live signal or a
+     * verdict terminal for everyone (the refusal rule's own test, plus the challenge and the gate).
+     */
+    static boolean isContentRefusal(VideoInfo result) {
+        return !result.isAuth() && result.isUnknownRestricted() && !result.isBotCheckRequired()
+                && !result.isAgeGate() && !hasLiveSignal(result)
+                && BotCheckDetector.definitiveUnplayableKey(result.getRawPlayabilityStatus(),
+                        result.getPlayabilityStatus()) == null;
+    }
+
+    /** NEWTUBE(kids-channel): why the hinted account route did not serve, for the drop line. */
+    static String kidsHintFailure(@Nullable VideoInfo result, boolean noResponse) {
+        if (result == null) {
+            return noResponse ? "no-response" : "error";
+        }
+        if (result.isBotCheckRequired()) {
+            return "challenged";
+        }
+        if (result.isAgeGate()) {
+            return "age-gate";
+        }
+        String routeFailure = accountRouteFailure(result);
+        return routeFailure != null ? routeFailure : "refused";
     }
 
     /**
@@ -2614,6 +2834,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // about the anonymous clients on this network and stays).
         if (mBotWall.clearRouteFailures()) {
             android.util.Log.d("NetPath", "player-ring account-route cleared reason=account-change");
+        }
+        // NEWTUBE(kids-channel): the records were the previous account's (or lane's) evidence.
+        int kidsChannels = sKidsChannels.clear();
+        if (kidsChannels > 0) {
+            android.util.Log.d("NetPath", "kids-channel cleared records=" + kidsChannels
+                    + " reason=account-change");
         }
     }
 
