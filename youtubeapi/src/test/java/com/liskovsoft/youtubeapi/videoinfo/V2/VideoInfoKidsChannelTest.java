@@ -87,6 +87,7 @@ public class VideoInfoKidsChannelTest {
         assertTrue(memory.isRemembered(SIGNED_OUT, KIDS));
         assertTrue(logs().toString(), logs().contains("kids-channel remember channel="
                 + KidsChannelMemory.tag(KIDS) + " video=k1 lane=signed-out src=answer refusedBy=VISIONOS"
+                + " answerChannel=" + KidsChannelMemory.tag(KIDS) + " refusalChannel=none"
                 + " hintsLeft=" + KidsChannelMemory.HINTS_PER_PROOF));
 
         VideoInfoService.noteVideoChannel("k2", KIDS);

@@ -19,7 +19,8 @@ import com.liskovsoft.youtubeapi.videoinfo.models.VideoInfo;
  * age gate and live signals from the walk's own lines. Off unless the phone app turns it on: the
  * main repo's MobileMainApplication does, in debug and benchmark builds only (like the other debug
  * hooks here, the build check is the app's), so release builds never log it. Credential-free: the
- * video id is the only id, and a URL inside a reason is logged as {@code <url>}.
+ * video id is the only id in clear (the channel is a hash, {@link #channelTag}), and a URL inside a
+ * reason is logged as {@code <url>}.
  */
 public final class PlayabilityLog {
     private static final int MAX_TEXT = 1000;
@@ -38,7 +39,19 @@ public final class PlayabilityLog {
             return;
         }
         android.util.Log.d("NetPath", "player-playability video=" + videoId + " client=" + client
-                + " attempt=" + attempt + " " + json(result));
+                + " attempt=" + attempt + " " + json(result) + " channel=" + channelTag(result));
+    }
+
+    /**
+     * NEWTUBE(kids-channel): the answer's videoDetails.channelId as its KidsChannelMemory tag (the
+     * first 5 bytes of its SHA-256), or "none". Which answers carry one - refusals too, and from
+     * which sources - is what decides where the kids channel memory's proof gets its channel from
+     * (the host harness: every VISIONOS, ANDROID_VR and TV_TIZEN answer of the kids corpus did).
+     * Outside the JSON, which the walk replay rebuilds its answers from.
+     */
+    static String channelTag(VideoInfo result) {
+        String channel = result.getVideoDetails() != null ? result.getVideoDetails().getChannelId() : null;
+        return com.liskovsoft.youtubeapi.videoinfo.V2.sources.KidsChannelMemory.tag(channel);
     }
 
     /** The compact JSON of the line: fixed keys, strings bounded ("cut" says so), no URLs. */

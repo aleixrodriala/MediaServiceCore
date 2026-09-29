@@ -52,8 +52,24 @@ public class PlayabilityLogTest {
         assertEquals("player-playability video=qkO6iBwcoe4 client=VISIONOS attempt=1 {\"status\":\"LOGIN_REQUIRED\","
                         + "\"reason\":\"Inicia sesión y confirma tu edad\",\"subreason\":\"Puede que este vídeo no sea"
                         + " adecuado para algunos usuarios. <url> \\\"más\\\"\",\"desktopLegacyAgeGateReason\":1,"
-                        + "\"live\":false,\"liveContent\":false,\"liveStart\":false,\"trailer\":false,\"cut\":false}",
+                        + "\"live\":false,\"liveContent\":false,\"liveStart\":false,\"trailer\":false,\"cut\":false}"
+                        + " channel=none",
                 ShadowLog.getLogsForTag("NetPath").get(0).msg);
+    }
+
+    /** NEWTUBE(kids-channel): the answer's channel, as its tag (never in clear), after the JSON. */
+    @Test
+    public void theAnswersChannelAsItsTag() {
+        PlayabilityLog.setEnabled(true);
+        ShadowLog.reset();
+        PlayabilityLog.log("_WB5hh7WOb4", AppClient.VISIONOS, 1, VideoInfoBotWallTest.parse("{\"playabilityStatus\":"
+                + " {\"status\": \"UNPLAYABLE\", \"reason\": \"Este vídeo no está disponible\"}, \"videoDetails\":"
+                + " {\"videoId\": \"_WB5hh7WOb4\", \"channelId\": \"UCB_5Rmp-wUdVxmCLG6fnNkQ\"}}", false));
+        String line = ShadowLog.getLogsForTag("NetPath").get(0).msg;
+        String tag = com.liskovsoft.youtubeapi.videoinfo.V2.sources.KidsChannelMemory.tag("UCB_5Rmp-wUdVxmCLG6fnNkQ");
+        assertTrue(line, line.endsWith("\"cut\":false} channel=" + tag));
+        assertTrue(line, !line.contains("UCB_5Rmp"));
+        assertEquals(10, tag.length());
     }
 
     /** An ended stream whose recording is gone: a refusal that still carries its live signals. */

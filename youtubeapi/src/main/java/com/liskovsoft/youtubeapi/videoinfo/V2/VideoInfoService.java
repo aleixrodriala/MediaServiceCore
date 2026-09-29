@@ -2013,9 +2013,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 android.util.Log.d("NetPath", "kids-channel pending video=" + videoId
                         + " lane=" + laneName(lane) + " refusedBy=" + refusal.getClient());
             } else if (sKidsChannels.remember(lane, channel, generation)) {
+                // Which of the proof's answers named a channel (tags, "none" without one): where
+                // the proof's channel comes from on the device (the harness: both, always).
                 android.util.Log.d("NetPath", "kids-channel remember channel="
                         + KidsChannelMemory.tag(channel) + " video=" + videoId + " lane=" + laneName(lane)
                         + " src=" + src + " refusedBy=" + refusal.getClient()
+                        + " answerChannel=" + KidsChannelMemory.tag(channelOf(served))
+                        + " refusalChannel=" + KidsChannelMemory.tag(channelOf(refusal))
                         + " hintsLeft=" + KidsChannelMemory.HINTS_PER_PROOF);
             } else {
                 android.util.Log.d("NetPath", "kids-channel stale channel="

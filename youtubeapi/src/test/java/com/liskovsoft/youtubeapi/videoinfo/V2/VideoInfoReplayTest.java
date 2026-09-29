@@ -130,7 +130,10 @@ public class VideoInfoReplayTest {
                     "debug.arc.early_preconnect", "debug.arc.player_warmup", "debug.arc.eager_token_warmup",
                     "debug.arc.fresh_app_info", "debug.arc.touch_prefetch_ms", "debug.arc.next_media_preload",
                     "debug.arc.eager_cold", "debug.arc.lazy_home", "debug.arc.home_prefetch",
-                    "debug.arc.bench", "debug.arc.bench_seek", "debug.arc.anon_tizen"));
+                    "debug.arc.bench", "debug.arc.bench_seek", "debug.arc.anon_tizen",
+                    // The kids channel memory hints only a walk whose channel the app named, and a
+                    // replay names none: on or off, its walks are the same.
+                    "debug.arc.kids_channel"));
 
     /** Case name and its JSON: plain strings, so nothing crosses into the sandbox's class loader. */
     @ParameterizedRobolectricTestRunner.Parameters(name = "{0}")
