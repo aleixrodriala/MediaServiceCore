@@ -3,6 +3,7 @@ package com.liskovsoft.youtubeapi.videoinfo.V2.sources;
 import static com.liskovsoft.youtubeapi.videoinfo.V2.sources.PhoneSourcePlanner.Lane.SIGNED_IN;
 import static com.liskovsoft.youtubeapi.videoinfo.V2.sources.PhoneSourcePlanner.Lane.SIGNED_OUT;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
@@ -77,6 +78,19 @@ public class RecentRefusalsTest {
         assertTrue(refusals.recent("v", SIGNED_IN, 1).isEmpty());
         refusals.noteRefused("v", AppClient.TV_TIZEN, true, 0, refusals.generation());
         assertEquals(Collections.singleton(AppClient.TV_TIZEN), refusals.recent("v", SIGNED_IN, 1).keySet());
+    }
+
+    /** NEWTUBE(recovery-kids): a made-for-kids refusal is remembered as such, for its TTL. */
+    @Test
+    public void aMadeForKidsRefusalIsKnownForTheTtl() {
+        refused("v", AppClient.WEB_EMBED, false, 0);
+        assertFalse("an ordinary refusal", refusals.hasMadeForKids("v", 1));
+        refusals.noteRefused("v", AppClient.VISIONOS, false, 1_000, refusals.generation(), true);
+        assertTrue(refusals.hasMadeForKids("v", 2_000));
+        assertFalse(refusals.hasMadeForKids("v", 1_000 + RecentRefusals.TTL_MS));
+        assertFalse("another video", refusals.hasMadeForKids("w", 2_000));
+        refusals.noteServed("v", AppClient.VISIONOS);
+        assertFalse("VISIONOS served it since", refusals.hasMadeForKids("v", 2_000));
     }
 
     private void refused(String videoId, AppClient client, boolean auth, long nowMs) {

@@ -67,6 +67,20 @@ public final class PhoneSourcePlanner {
     private static final Set<AppClient> AGE_GATE_SERVERS_SIGNED_IN =
             Collections.unmodifiableSet(EnumSet.of(ACCOUNT_ROUTE, AppClient.WEB_EMBED));
 
+    /**
+     * NEWTUBE(recovery-kids): the only sources measured to serve a made-for-kids video: TV_TIZEN
+     * (anonymous signed out, 15/15 on LTE; with the account signed in) and WEB_EMBED when TV_TIZEN
+     * cannot. VISIONOS and ANDROID_VR refuse every one ({@link #refusesMadeForKids}); IOS,
+     * ANDROID_REEL, MWEB, WEB and WEB_SAFARI answer them SABR-only (v20 on the emulator, both lanes:
+     * 6 of 6 answers {@code usableAdaptive=0 hls=n sabr=y}, the recovery that asked them all first
+     * took 8.3 s to its first frame).
+     */
+    private static final Set<AppClient> KIDS_SERVERS =
+            Collections.unmodifiableSet(EnumSet.of(ACCOUNT_ROUTE, AppClient.WEB_EMBED));
+
+    /** NEWTUBE(live-card): the live-DASH source (see VideoInfoService.isLiveDashCandidate). */
+    public static final AppClient LIVE_SOURCE = AppClient.ANDROID_VR;
+
     /** What a walk knows before its first request. */
     public static final class Context {
         final Lane lane;
@@ -77,6 +91,8 @@ public final class PhoneSourcePlanner {
         final boolean accountRouteFirst;
         final boolean accountRouteHinted;
         final Set<AppClient> recoveryRefused;
+        final boolean recoveryKidsRefused;
+        final boolean liveCardHinted;
 
         /**
          * @param recoverySuspect     the source that served the watched video when its media
@@ -120,6 +136,23 @@ public final class PhoneSourcePlanner {
         public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
                 boolean accountRouteBenched, boolean accountRouteFirst, boolean accountRouteHinted,
                 Set<AppClient> recoveryRefused) {
+            this(lane, recoverySuspect, anonChallenged, accountRouteBenched, accountRouteFirst,
+                    accountRouteHinted, recoveryRefused, false, false);
+        }
+
+        /**
+         * @param recoveryKidsRefused a recovery walk: VISIONOS or ANDROID_VR refused this video on
+         *                            its content moments ago (the made-for-kids refusal,
+         *                            RecentRefusals), so the sources that never serve such a video
+         *                            are asked after the suspect. Ignored outside a recovery walk
+         * @param liveCardHinted      the app opened this video from an item that says it is live:
+         *                            the live-DASH source first, VISIONOS second (a stale flag costs
+         *                            its one request; VideoInfoService sets a non-live answer
+         *                            aside). Ignored in a recovery walk
+         */
+        public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
+                boolean accountRouteBenched, boolean accountRouteFirst, boolean accountRouteHinted,
+                Set<AppClient> recoveryRefused, boolean recoveryKidsRefused, boolean liveCardHinted) {
             this.lane = lane;
             this.recoverySuspect = recoverySuspect;
             this.anonChallenged = anonChallenged;
@@ -128,6 +161,8 @@ public final class PhoneSourcePlanner {
             this.accountRouteHinted = accountRouteHinted;
             this.recoveryRefused = recoveryRefused.isEmpty()
                     ? Collections.<AppClient>emptySet() : EnumSet.copyOf(recoveryRefused);
+            this.recoveryKidsRefused = recoveryKidsRefused;
+            this.liveCardHinted = liveCardHinted;
         }
     }
 
@@ -161,6 +196,16 @@ public final class PhoneSourcePlanner {
             order.add(0, ACCOUNT_ROUTE);
         }
 
+        // NEWTUBE(live-card): the item the app opened says live. Every live walk used to ask
+        // VISIONOS for an HLS answer it holds and never plays, then went straight to ANDROID_VR's
+        // DASH manifest (11 of 11 live opens, ~110-200 ms on Wi-Fi, ~240-350 on LTE). VISIONOS right
+        // after: a stale flag (a stream that just ended) costs one request, and the VOD order goes
+        // on. Never a recovery walk (its suspect decides).
+        if (context.liveCardHinted && context.recoverySuspect == null) {
+            order.remove(LIVE_SOURCE);
+            order.add(0, LIVE_SOURCE);
+        }
+
         // The anonymous web identity is challenged here: every web client is a round trip to a
         // known refusal, so they go last (stable).
         if (context.anonChallenged) {
@@ -187,6 +232,23 @@ public final class PhoneSourcePlanner {
             order.add(suspect);
         }
 
+        // NEWTUBE(recovery-kids): the video was refused as made for kids moments ago, so only
+        // TV_TIZEN and WEB_EMBED can serve it: every other source goes behind the suspect. v20 on
+        // the emulator, both lanes: the recovery from WEB_EMBED's 403 with TV_TIZEN benched asked
+        // ANDROID_VR (refused), IOS, ANDROID_REEL, MWEB, WEB and WEB_SAFARI (SABR only) before
+        // WEB_EMBED served again at the seventh request, 8.3 s to the first frame. Kept, not dropped.
+        if (suspect != null && context.recoveryKidsRefused) {
+            List<AppClient> neverServe = new ArrayList<>();
+            for (Iterator<AppClient> it = order.iterator(); it.hasNext(); ) {
+                AppClient client = it.next();
+                if (client != suspect && !KIDS_SERVERS.contains(client)) {
+                    neverServe.add(client);
+                    it.remove();
+                }
+            }
+            order.addAll(neverServe);
+        }
+
         // NEWTUBE(recovery-refusals): and a source that refused this video moments ago is asked
         // after that, only if nothing else serves: it would refuse it again (v16 LTE, the kids
         // video: VISIONOS refused it, TV_TIZEN served it, the recovery from TV_TIZEN's media 403
@@ -209,6 +271,17 @@ public final class PhoneSourcePlanner {
             order.addAll(refused);
         }
         return order;
+    }
+
+    /**
+     * NEWTUBE(live-card): {@code client} comes after the live-DASH source in the lane's own order
+     * (IOS, ANDROID_REEL, MWEB, WEB, WEB_SAFARI). A live-hinted walk that set aside the live source's
+     * answer to a video that was not live (a stale flag) plays that answer when it gets here: where
+     * the lane would have asked the live source anyway.
+     */
+    public static boolean isPastLiveSourceTurn(AppClient client) {
+        int index = ORDER.indexOf(client);
+        return index > ORDER.indexOf(LIVE_SOURCE);
     }
 
     /**

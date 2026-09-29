@@ -64,6 +64,9 @@ public class VideoInfoPlannerTest {
     public void tearDown() {
         VideoInfoService.setPreferNoPotClient(false);
         VideoInfoService.setPreferDashManifestForLive(false);
+        VideoInfoService.setLiveCardHintEnabled(false);
+        VideoInfoService.setRecoveryKidsOrderEnabled(true);
+        VideoInfoService.liveCards().clear();
     }
 
     @Test
@@ -362,7 +365,8 @@ public class VideoInfoPlannerTest {
 
     /**
      * Kept, not dropped: TV_TIZEN refused anonymously a moment ago, but if nothing else serves the
-     * reload it is still asked, last of all.
+     * reload it is still asked, last of all. (v21: VISIONOS's refusal was the made-for-kids one, so
+     * WEB_EMBED, the one other source that serves such a video, is asked first.)
      */
     @Test
     public void aRecoveryStillAsksATizenThatRefusedLastOfAll() {
@@ -373,8 +377,8 @@ public class VideoInfoPlannerTest {
         VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.TV_TIZEN
                 ? playable(auth) : unplayable(NOT_AVAILABLE + " " + client, auth);
         assertEquals(AppClient.TV_TIZEN, open("kids").getClient());
-        assertEquals(Arrays.asList("ANDROID_VR", "IOS", "ANDROID_REEL", "MWEB", "WEB", "WEB_SAFARI",
-                "WEB_EMBED", "VISIONOS", "TV_TIZEN"), calls());
+        assertEquals(Arrays.asList("WEB_EMBED", "ANDROID_VR", "IOS", "ANDROID_REEL", "MWEB", "WEB",
+                "WEB_SAFARI", "VISIONOS", "TV_TIZEN"), calls());
     }
 
     /**
@@ -428,6 +432,123 @@ public class VideoInfoPlannerTest {
                 "{\"playabilityStatus\": {\"status\": \"OK\"}, \"streamingData\": {\"serverAbrStreamingUrl\":"
                         + " \"https://media.invalid/sabr\", \"adaptiveFormats\": [{\"itag\": 137,"
                         + " \"mimeType\": \"video/mp4\"}]}}", false)));
+    }
+
+    /** NEWTUBE(live-card): the item said live: ANDROID_VR's DASH answer at the first request. */
+    @Test
+    public void aLiveCardIsServedAtTheFirstRequest() {
+        VideoInfoService.setLiveCardHintEnabled(true);
+        VideoInfoService.noteVideoLive("live", true);
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> liveAnswer(client, auth);
+        assertEquals(AppClient.ANDROID_VR, open("live").getClient());
+        assertEquals(Arrays.asList("ANDROID_VR"), calls());
+    }
+
+    /**
+     * A stale flag (the stream ended: a VOD now) costs one request: ANDROID_VR's answer is set
+     * aside and VISIONOS serves it, as the lane would have.
+     */
+    @Test
+    public void aStaleLiveCardCostsOneRequest() {
+        VideoInfoService.setLiveCardHintEnabled(true);
+        VideoInfoService.noteVideoLive("ended", true);
+        assertEquals(AppClient.VISIONOS, open("ended").getClient());
+        assertEquals(Arrays.asList("ANDROID_VR", "VISIONOS"), calls());
+    }
+
+    /**
+     * ...and when the lane's own sources before ANDROID_VR refuse the video, the answer set aside
+     * plays where the lane would have asked ANDROID_VR: no request more than without the flag.
+     */
+    @Test
+    public void aStaleLiveCardsAnswerPlaysAtItsTurnInTheLane() {
+        VideoInfoService.setLiveCardHintEnabled(true);
+        VideoInfoService.noteVideoLive("vod", true);
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.ANDROID_VR
+                ? playable(auth) : unplayable(NOT_AVAILABLE + " " + client, auth);
+        assertEquals(AppClient.ANDROID_VR, open("vod").getClient());
+        assertEquals(Arrays.asList("ANDROID_VR", "VISIONOS", "TV_TIZEN", "WEB_EMBED"), calls());
+    }
+
+    /** Off (the rollback), or never noted, or noted not live: today's live walk. */
+    @Test
+    public void withoutTheLiveCardTheWalkIsTodays() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> liveAnswer(client, auth);
+        VideoInfoService.setLiveCardHintEnabled(true);
+        VideoInfoService.noteVideoLive("live", true);
+        VideoInfoService.setLiveCardHintEnabled(false);
+        open("live");
+        assertEquals(Arrays.asList("VISIONOS", "ANDROID_VR"), calls());
+
+        VideoInfoService.setLiveCardHintEnabled(true);
+        VideoInfoService.noteVideoLive("live", false);
+        open("live");
+        assertEquals(Arrays.asList("VISIONOS", "ANDROID_VR"), calls());
+    }
+
+    /** A recovery walk keeps its own order, live card or not. */
+    @Test
+    public void aRecoveryIgnoresTheLiveCard() {
+        VideoInfoService.setLiveCardHintEnabled(true);
+        VideoInfoService.noteVideoLive("live", true);
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> liveAnswer(client, auth);
+        recoverFrom(AppClient.ANDROID_VR);
+        open("live");
+        assertEquals("VISIONOS", calls().get(0));
+    }
+
+    /**
+     * NEWTUBE(recovery-kids): v20 on the emulator. VISIONOS refused the kids video, TV_TIZEN was
+     * benched, WEB_EMBED served it and its media 403'd: the recovery asked six sources that never
+     * serve kids videos before WEB_EMBED again. Now WEB_EMBED is asked first.
+     */
+    @Test
+    public void aKidsRecoveryGoesStraightBackToWhatServesKids() {
+        BotWallBook book = ReflectionHelpers.getField(service, "mBotWall");
+        book.noteRouteFailed("wifi:100", VideoInfoService.noMediaVideoKey("kids"), "media-403",
+                android.os.SystemClock.elapsedRealtime());
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
+                ? playable(auth) : unplayable(NOT_AVAILABLE, auth);
+        assertEquals(AppClient.WEB_EMBED, open("kids").getClient());
+        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED"), calls());
+
+        recoverFrom(AppClient.WEB_EMBED);
+        assertEquals(AppClient.WEB_EMBED, open("kids").getClient());
+        assertEquals(Arrays.asList("WEB_EMBED"), calls());
+    }
+
+    /** The rollback (debug.arc.recovery_kids=0): the v20 recovery order. */
+    @Test
+    public void withoutTheKidsRecoveryOrderTheRecoveryIsV20s() {
+        VideoInfoService.setRecoveryKidsOrderEnabled(false);
+        BotWallBook book = ReflectionHelpers.getField(service, "mBotWall");
+        book.noteRouteFailed("wifi:100", VideoInfoService.noMediaVideoKey("kids"), "media-403",
+                android.os.SystemClock.elapsedRealtime());
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
+                ? playable(auth) : unplayable(NOT_AVAILABLE, auth);
+        open("kids");
+        recoverFrom(AppClient.WEB_EMBED);
+        open("kids");
+        assertEquals(Arrays.asList("ANDROID_VR", "IOS", "ANDROID_REEL", "MWEB", "WEB", "WEB_SAFARI",
+                "WEB_EMBED"), calls());
+    }
+
+    /** Only a made-for-kids refusal moves the tail: an age gate's recovery keeps the lane's order. */
+    @Test
+    public void anAgeGatesRecoveryKeepsTheLanesOrder() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
+                ? playable(auth) : ageGate(auth);
+        open("adult");
+        recoverFrom(AppClient.WEB_EMBED);
+        open("adult");
+        assertEquals("ANDROID_VR", calls().get(0));
+    }
+
+    private static VideoInfo liveAnswer(AppClient client, boolean auth) {
+        return parse("{\"playabilityStatus\": {\"status\": \"OK\"}, \"videoDetails\": {\"videoId\": \"live\","
+                + " \"isLive\": true, \"isLiveContent\": true}, \"streamingData\": {\"hlsManifestUrl\":"
+                + " \"https://media.invalid/live.m3u8\"" + (client == AppClient.ANDROID_VR
+                ? ", \"dashManifestUrl\": \"https://media.invalid/live.mpd\"" : "") + "}}", auth);
     }
 
     /** What the player's error path leaves for the reload: a recovery walk past {@code suspect}. */

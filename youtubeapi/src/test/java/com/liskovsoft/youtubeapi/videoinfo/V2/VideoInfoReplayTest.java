@@ -136,7 +136,12 @@ public class VideoInfoReplayTest {
                     "debug.arc.bench", "debug.arc.bench_seek", "debug.arc.anon_tizen",
                     // The kids channel memory hints only a walk whose channel the app named, and a
                     // replay names none: on or off, its walks are the same.
-                    "debug.arc.kids_channel"));
+                    "debug.arc.kids_channel",
+                    // v21: the live card hints only a walk the app named live (a replay names
+                    // none); the token warm-up's timing, the HLS challenge fold and the embed
+                    // identity's re-roll change no answer a replay feeds the walk.
+                    "debug.arc.live_card", "debug.arc.token_warmup", "debug.arc.hls_n_fold",
+                    "debug.arc.embed_reroll"));
 
     /** Case name and its JSON: plain strings, so nothing crosses into the sandbox's class loader. */
     @ParameterizedRobolectricTestRunner.Parameters(name = "{0}")

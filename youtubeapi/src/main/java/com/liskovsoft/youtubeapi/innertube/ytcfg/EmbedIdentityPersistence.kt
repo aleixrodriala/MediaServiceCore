@@ -102,6 +102,8 @@ object EmbedIdentityPersistence {
         addProperty("flags", identity.encryptedHostFlags)
         addProperty("visitor", identity.visitorData)
         addProperty("fetchedAtMs", identity.fetchedAtMs)
+        if (identity.rerolledAtMs > 0)
+            addProperty("rerolledAtMs", identity.rerolledAtMs)
     }.toString()
 
     /** Null for anything but a complete snapshot of this version. */
@@ -111,9 +113,11 @@ object EmbedIdentityPersistence {
         val flags = json.get("flags")?.asString
         val visitor = json.get("visitor")?.asString
         val fetchedAtMs = json.get("fetchedAtMs")?.asLong
+        // NEWTUBE(embed-reroll): optional; a snapshot without it (older builds) carries no budget.
+        val rerolledAtMs = json.get("rerolledAtMs")?.asLong ?: 0L
         if (json.get("v")?.asInt != VERSION || flags.isNullOrEmpty() || visitor.isNullOrEmpty()
             || fetchedAtMs == null) null
-        else YtCfgService.EmbedIdentity(flags, visitor, fetchedAtMs)
+        else YtCfgService.EmbedIdentity(flags, visitor, fetchedAtMs, rerolledAtMs)
     } catch (e: RuntimeException) {
         null // IllegalStateException / JsonParseException / NumberFormatException: nothing restored
     }

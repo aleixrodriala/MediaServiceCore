@@ -16,6 +16,7 @@ import com.liskovsoft.youtubeapi.app.nsigsolver.impl.V8ChallengeProvider;
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitHelper;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.KidsChannelMemory;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.LiveCardNotes;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PhoneSourcePlanner;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSource;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSourceCatalog;
@@ -313,6 +314,72 @@ public class VideoInfoService extends VideoInfoServiceBase {
         return sKidsChannels;
     }
 
+    // NEWTUBE(live-card): see setLiveCardHintEnabled. Process-wide like the kids memory.
+    private static volatile boolean sLiveCardHint;
+    private static final LiveCardNotes sLiveCards = new LiveCardNotes();
+
+    /**
+     * NEWTUBE(live-card): on the phone, a video the app opens from an item that says "live" (the
+     * card's badge, the next-video slot; {@link #noteVideoLive}) asks ANDROID_VR, the live-DASH
+     * source, first and VISIONOS second: every live walk used to ask VISIONOS for an HLS answer it
+     * held and never played (11 of 11 live opens, ~110-200 ms on Wi-Fi, 240-350 on LTE). A stale
+     * flag costs one request: ANDROID_VR's answer to a video that is not live is set aside, the
+     * lane's order goes on from VISIONOS, and that answer only plays where the lane would have
+     * asked ANDROID_VR anyway. A recovery walk, a bot wall and a forced client ignore it. Off by
+     * default; the phone turns it on (MobileMainApplication), rollback debug.arc.live_card=0.
+     */
+    public static void setLiveCardHintEnabled(boolean enabled) {
+        sLiveCardHint = enabled;
+    }
+
+    /**
+     * NEWTUBE(live-card): the app's item for {@code videoId} says live ({@code live}) or not - the
+     * card or the next-video slot before the open, /next after it (a stream that ended is noted
+     * not live again). No request; any thread.
+     */
+    public static void noteVideoLive(@Nullable String videoId, boolean live) {
+        if (!sLiveCardHint || !sPreferNoPotClient || videoId == null) {
+            return;
+        }
+        if (sLiveCards.note(videoId, live)) {
+            android.util.Log.d("NetPath", "live-card named video=" + videoId + " live=" + (live ? "y" : "n"));
+        }
+    }
+
+    /** The process's live-card notes (tests reset them). */
+    static LiveCardNotes liveCards() {
+        return sLiveCards;
+    }
+
+    // NEWTUBE(recovery-kids): see setRecoveryKidsOrderEnabled.
+    private static volatile boolean sRecoveryKidsOrder = true;
+
+    /**
+     * NEWTUBE(recovery-kids): a recovery walk of a video VISIONOS or ANDROID_VR refused as made for
+     * kids moments ago asks the sources that never serve such a video (all but TV_TIZEN and
+     * WEB_EMBED) after its suspect (PhoneSourcePlanner). On by default; only the phone's planned
+     * walk reads it. false = the v20 recovery order (debug.arc.recovery_kids=0).
+     */
+    public static void setRecoveryKidsOrderEnabled(boolean enabled) {
+        sRecoveryKidsOrder = enabled;
+    }
+
+    // NEWTUBE(embed-reroll): see setEmbedRerollEnabled.
+    private static volatile boolean sEmbedReroll;
+
+    /**
+     * NEWTUBE(embed-reroll): a WEB_EMBED answer that is SABR-only (adaptive formats without URLs,
+     * an HLS manifest) is about the embed identity's visitor, not the video: across every logged
+     * WEB_EMBED answer, 11 of 60 visitors were SABR-only, every time, and 49 never (netbench r11
+     * analysis, section 3.4b); over HLS the Pixel's 18+ opens took ~550 ms longer to their first
+     * frame. The answer plays as before; then that identity is dropped and a new one fetched in the
+     * background, at most once per 6 h (YtCfgService.rerollEmbedIdentity). The 152 path is
+     * unchanged. Off by default; the phone turns it on, rollback debug.arc.embed_reroll=0.
+     */
+    public static void setEmbedRerollEnabled(boolean enabled) {
+        sEmbedReroll = enabled;
+    }
+
     private static String laneName(PhoneSourcePlanner.Lane lane) {
         return lane == PhoneSourcePlanner.Lane.SIGNED_IN ? "signed-in" : "signed-out";
     }
@@ -464,6 +531,43 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setSkipLiveDashInfoWithManifest(boolean skip) {
         VideoInfoServiceBase.setSkipLiveDashInfoWithManifest(skip);
+    }
+
+    /**
+     * NEWTUBE(hls-vod-fold): the phone flavor's switch for solving an HLS-for-VOD manifest's "/n/"
+     * challenge inside the answer's bulk solve (VideoInfoServiceBase.setFoldHlsChallenge).
+     * Rollback in debug and benchmark builds: debug.arc.hls_n_fold=0.
+     */
+    public static void setFoldHlsChallenge(boolean fold) {
+        VideoInfoServiceBase.setFoldHlsChallenge(fold);
+    }
+
+    /**
+     * NEWTUBE(token-warmup): runs background work once the app says the moment is right - after the
+     * open in flight has shown its first frame (or failed), right away when none is. Supplied by the
+     * phone app; see {@link #setEnrichmentGate}.
+     */
+    public interface BackgroundGate {
+        /** Runs {@code task} (on any thread) now or later; never drops it. */
+        void runWhenIdle(Runnable task);
+    }
+
+    @Nullable
+    private static volatile BackgroundGate sEnrichmentGate;
+
+    /**
+     * NEWTUBE(token-warmup): the WEB subtitle-enrichment /player (applyFixesAsync) is the one request
+     * that builds the BotGuard WebView on its own when the warm-up has not: it leaves as soon as
+     * the answer is in, which on a slow phone is exactly when the open's own main-thread work
+     * runs (the Mi 8's share-link cold starts: answer -> first media request 280 ms with the
+     * WebView's construction beside it, 107 without; netbench r11 analysis, 3.4a). With a gate,
+     * an enrichment that would build the WebView waits for the gate - the app holds it until the
+     * open's first frame, as it holds the warm-up - and then leaves with its token as before. A
+     * warm session is never held. Null (TV, and the rollback debug.arc.token_warmup=frame) = as
+     * before.
+     */
+    public static void setEnrichmentGate(@Nullable BackgroundGate gate) {
+        sEnrichmentGate = gate;
     }
 
     @Nullable
@@ -1326,6 +1430,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // and the memory's generation (an account change since the walk began voids its writes).
         java.util.Map<AppClient, Long> recoveryRefused = java.util.Collections.emptyMap();
         final long refusalGeneration = recentRefusals().generation();
+        // NEWTUBE(live-card): the app's item says live (planned walks only), and the live source's
+        // answer to a video that turned out not to be live, set aside (see setLiveCardHintEnabled).
+        boolean liveCardHinted = false;
+        VideoInfo staleLive = null;
         if (sDebugForcedClient != null) {
             visitOrder = java.util.Collections.singletonList(sDebugForcedClient);
             android.util.Log.d("NetPath", "player-ring forced-client=" + sDebugForcedClient);
@@ -1345,10 +1453,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
             visitOrder = new java.util.ArrayList<>(wallPlan.order);
         } else if (planned) {
+            // NEWTUBE(live-card): the app's item says live: the live-DASH source first.
+            liveCardHinted = sLiveCardHint && !recoveryWalk && sLiveCards.isLive(videoId);
             // Signed in, the account route is planned unless BotWallBook has benched it for this
             // video or this attachment (a media 403, a challenge, a reload-page or SABR-only answer).
-            // NEWTUBE(kids-channel): a recovery walk has its own order; the hint is never read.
-            if (sKidsChannelHint && !recoveryWalk) {
+            // NEWTUBE(kids-channel): a recovery walk has its own order; the hint is never read. Nor
+            // is it for a live card: TV_TIZEN is never a live route.
+            if (sKidsChannelHint && !recoveryWalk && !liveCardHinted) {
                 kidsChannel = sKidsChannels.channelOf(videoId);
                 kidsHint = sKidsChannels.hintFor(lane, kidsChannel);
             }
@@ -1364,15 +1475,20 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     && mBotWall.hasSuspicion(walkStartMs);
             kidsHinted = kidsHint == KidsChannelMemory.Hint.FIRST && !accountRouteBenched
                     && !kidsSuspicion;
+            boolean recoveryKids = false;
             if (recoveryWalk) {
                 recoveryRefused = recentRefusals().recent(videoId, lane, walkStartMs);
+                recoveryKids = sRecoveryKidsOrder && recentRefusals().hasMadeForKids(videoId, walkStartMs);
             }
             visitOrder = PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(
                     lane, recoveryWalk ? lastWinner : null, anonChallenged, accountRouteBenched,
-                    sAccountRouteFirst, kidsHinted, recoveryRefused.keySet()));
+                    sAccountRouteFirst, kidsHinted, recoveryRefused.keySet(), recoveryKids,
+                    liveCardHinted));
             android.util.Log.d("NetPath", "player-ring plan video=" + videoId
                     + " lane=" + (authenticated ? "signed-in" : "signed-out")
                     + (recoveryWalk ? " suspect=" + lastWinner : "")
+                    + (recoveryKids ? " made-for-kids" : "")
+                    + (liveCardHinted ? " live-card" : "")
                     + (anonChallenged ? " anon-challenged" : "")
                     + (accountRouteBenched ? " account-route=benched" : "")
                     + " order=" + visitOrder);
@@ -1472,6 +1588,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 break;
             }
 
+            // NEWTUBE(live-card): a stale live flag set ANDROID_VR's VOD answer aside and the lane
+            // went on; here the lane would have asked ANDROID_VR itself, so that answer plays.
+            if (staleLive != null && PhoneSourcePlanner.isPastLiveSourceTurn(nextType)) {
+                android.util.Log.d("NetPath", "live-card stale-served video=" + videoId
+                        + " client=" + staleLive.getClient() + " before=" + nextType
+                        + " attempts=" + attempt);
+                if (planned && sKidsChannelHint && !kidsHinted) {
+                    noteKidsChannelServed(videoId, lane, staleLive.getClient(), staleLive, kidsRefusal,
+                            kidsGeneration);
+                }
+                return staleLive;
+            }
+
             // Overall wall-clock bound (see RING_WALK_BUDGET_MS). `attempt > 0` guarantees the walk
             // always spends at least one round trip, whatever the clock says.
             long remainingBudgetMs = walkDeadlineMs - android.os.SystemClock.elapsedRealtime();
@@ -1546,14 +1675,19 @@ public class VideoInfoService extends VideoInfoServiceBase {
                             + " channel=" + KidsChannelMemory.tag(kidsChannel));
                     continue;
                 }
-                if (playable) {
-                    // The card's channel may not be the video's: the answer's own, when it differs.
-                    String answered = channelOf(result);
+                String answered = playable ? channelOf(result) : null;
+                if (playable && answered != null && !answered.equals(kidsChannel)) {
+                    // The card named another channel than the video's own: this ask tested nothing
+                    // about the remembered one, so it spends none of its hints (and proves nothing
+                    // about the video's: no refusal came first).
+                    android.util.Log.d("NetPath", "kids-channel hint-mismatch video=" + videoId
+                            + " channel=" + KidsChannelMemory.tag(kidsChannel)
+                            + " answerChannel=" + KidsChannelMemory.tag(answered) + " client=" + nextType
+                            + " hintsLeft=" + sKidsChannels.hintsLeft(lane, kidsChannel));
+                } else if (playable) {
                     android.util.Log.d("NetPath", "kids-channel hint-served video=" + videoId
                             + " channel=" + KidsChannelMemory.tag(kidsChannel) + " client=" + nextType
-                            + " hintsLeft=" + sKidsChannels.spendHint(lane, kidsChannel, kidsGeneration)
-                            + (answered != null && !answered.equals(kidsChannel)
-                                    ? " answerChannel=" + KidsChannelMemory.tag(answered) : ""));
+                            + " hintsLeft=" + sKidsChannels.spendHint(lane, kidsChannel, kidsGeneration));
                 } else {
                     sKidsChannels.drop(lane, kidsChannel, kidsGeneration);
                     android.util.Log.d("NetPath", "kids-channel drop channel="
@@ -1573,7 +1707,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     recentRefusals().noteServed(videoId, nextType);
                 } else if (isRefusalOfTheVideo(nextType, result)) {
                     recentRefusals().noteRefused(videoId, nextType, result.isAuth(),
-                            android.os.SystemClock.elapsedRealtime(), refusalGeneration);
+                            android.os.SystemClock.elapsedRealtime(), refusalGeneration,
+                            PhoneSourcePlanner.refusesMadeForKids(nextType) && isContentRefusal(result));
                 }
             }
             if (result != null && !result.isAuth() && result.isUnknownRestricted()
@@ -1587,6 +1722,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     && result.getPlayabilityStatus() != null
                     && result.getPlayabilityStatus().contains("152")) {
                 com.liskovsoft.youtubeapi.innertube.ytcfg.YtCfgService.invalidateEmbedIdentity();
+            }
+            // NEWTUBE(embed-reroll): a SABR-only answer is the identity's visitor, not the video:
+            // it plays as it is (HLS), and the next WEB_EMBED ask gets a new visitor.
+            if (sEmbedReroll && nextType == AppClient.WEB_EMBED && playable && isSabrOnlyAnswer(result)) {
+                com.liskovsoft.youtubeapi.innertube.ytcfg.YtCfgService.rerollEmbedIdentity(videoId);
             }
 
             // NEWTUBE(botwall): wall evidence and the account route. Runs BEFORE the bot-check
@@ -1762,7 +1902,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                         + " reason-hash=" + unplayable.reasonHash()
                         + " attempts=" + attempt
                         + " skipped=" + (visitOrder.size() - visitIndex - 1));
-                return result;
+                return staleLive != null ? staleLive : result; // a held serve beats a verdict
             }
 
             // NEWTUBE(planner): an age gate nothing left in this walk can serve is the verdict:
@@ -1781,7 +1921,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     android.util.Log.d("NetPath", "player-ring age-gate-settled video=" + videoId
                             + " refused=" + refused + " attempts=" + attempt
                             + " skipped=" + (visitOrder.size() - visitIndex - 1));
-                    return firstAgeGate;
+                    return staleLive != null ? staleLive : firstAgeGate;
                 }
             }
 
@@ -1818,6 +1958,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
                         && mBotWall.noteAnonServed(wallKeys.network())) {
                     android.util.Log.w("NetPath", "player-ring botwall cleared reason=anon-served"
                             + " client=" + nextType + " network=" + wallKeys.network());
+                }
+                // NEWTUBE(live-card): the flag was stale (the stream ended: a VOD, or a recording).
+                // ANDROID_VR is no VOD route of the lane's choosing, so its answer waits and the
+                // lane's order goes on from VISIONOS: one request spent. See the loop's top.
+                if (liveCardHinted && attempt == 1 && nextType == PhoneSourcePlanner.LIVE_SOURCE
+                        && !result.isLive()) {
+                    staleLive = result;
+                    android.util.Log.d("NetPath", "live-card stale video=" + videoId + " client=" + nextType
+                            + " next=" + (visitIndex + 1 < visitOrder.size() ? visitOrder.get(visitIndex + 1) : "none"));
+                    continue;
                 }
                 // Mobile live routing (see sPreferDashManifestForLive): hold an HLS-only live
                 // result and keep walking toward a dash-manifest client.
@@ -1880,7 +2030,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return challenge.result;
         }
 
-        if ((budgetExhausted || transportDown) && liveWithoutDash == null) {
+        if ((budgetExhausted || transportDown) && liveWithoutDash == null && staleLive == null) {
             return null;
         }
 
@@ -1889,6 +2039,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
         if (liveWithoutDash != null) {
             android.util.Log.d("NetPath", "player-ring live-no-dash exhausted video=" + videoId
                     + " attempts=" + attempt + " nonCandidatesSkipped=" + liveDashSkipped);
+        }
+        if (liveWithoutDash == null && staleLive != null) {
+            android.util.Log.d("NetPath", "live-card stale-served video=" + videoId
+                    + " client=" + staleLive.getClient() + " before=end attempts=" + attempt);
+            return staleLive;
         }
         return liveWithoutDash != null ? liveWithoutDash : firstUnplayable;
     }
@@ -2127,6 +2282,17 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 && !result.isBotCheckRequired() && !hasLiveSignal(result)
                 && !BotCheckDetector.isReloadPageVerdict(status, reason)
                 && !(client == AppClient.WEB_EMBED && reason != null && reason.contains("152"));
+    }
+
+    /**
+     * NEWTUBE(embed-reroll): an OK answer whose adaptive formats all lack a URL (SABR only) and
+     * that carries an HLS manifest instead: the shape a bucketed WEB_EMBED visitor gets for every
+     * video (usableAdaptive=0 hls=y). Not live: a live answer's formats are another matter.
+     */
+    static boolean isSabrOnlyAnswer(@Nullable VideoInfo result) {
+        return result != null && "OK".equals(result.getRawPlayabilityStatus()) && !hasLiveSignal(result)
+                && result.getAdaptiveFormats() != null && !result.getAdaptiveFormats().isEmpty()
+                && result.isAdaptiveFormatsBroken() && result.getHlsManifestUrl() != null;
     }
 
     /** NEWTUBE(kids-channel): why the hinted account route did not serve, for the drop line. */
@@ -3833,7 +3999,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return;
         }
 
-        getInfoExecutor().submit(() -> {
+        Runnable enrichment = () -> {
             try {
                 if (needExtended) {
                     Log.d(TAG, "Enable high bitrate formats (deferred)...");
@@ -3857,7 +4023,21 @@ public class VideoInfoService extends VideoInfoServiceBase {
             } catch (Exception e) {
                 Log.e(TAG, "applyFixesAsync enrichment failed: %s", e.getMessage());
             }
-        });
+        };
+        // NEWTUBE(token-warmup): a WEB enrichment that would build the WebView now waits for the
+        // app's gate (the open's first frame); see setEnrichmentGate.
+        BackgroundGate gate = sEnrichmentGate;
+        if (gate != null && needSubs && !PoTokenGate.isWebSessionReady()) {
+            final long heldAtMs = android.os.SystemClock.elapsedRealtime();
+            android.util.Log.d("NetPath", "player-enrichment hold video=" + videoId + " reason=web-pot-cold");
+            gate.runWhenIdle(() -> {
+                android.util.Log.d("NetPath", "player-enrichment release video=" + videoId
+                        + " heldMs=" + (android.os.SystemClock.elapsedRealtime() - heldAtMs));
+                getInfoExecutor().submit(enrichment);
+            });
+            return;
+        }
+        getInfoExecutor().submit(enrichment);
     }
 
     private void resetInfoTypeToDefault() {

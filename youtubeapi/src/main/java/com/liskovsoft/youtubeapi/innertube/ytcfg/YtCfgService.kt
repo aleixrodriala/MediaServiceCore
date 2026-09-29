@@ -19,6 +19,24 @@ object YtCfgService {
      */
     private var invalidations = 0
     private val identityLock = Any()
+    /**
+     * NEWTUBE(embed-reroll): when this process last re-rolled the identity (wall clock, under
+     * [identityLock]); 0 = never. Carried into every identity fetched while it is recent, and
+     * persisted with it, so a re-roll's budget survives a 152 refetch and a new process.
+     */
+    private var lastRerollAtMs = 0L
+
+    /** Test hooks: where the re-roll's background fetch runs, and what fetches the embed page. */
+    @JvmField
+    @Volatile
+    internal var rerollExecutor: (Runnable) -> Unit = { task ->
+        Thread(task, "EmbedReroll").apply { isDaemon = true }.start()
+    }
+    @JvmField
+    @Volatile
+    internal var embedPageFetcher: (String) -> JsonObject? = { videoId ->
+        downloadYtCfg(AppClient.WEB_EMBED, videoId)
+    }
 
     /**
      * NEWTUBE(web-embed-identity): what a WEB_EMBEDDED_PLAYER /player request needs from the embed
@@ -30,10 +48,12 @@ object YtCfgService {
      * (one page served every video probed), so it is cached and reused. Measured 2026-09-28 against
      * the /player endpoint directly; yt-dlp's web_embedded sends the same pair.
      */
-    class EmbedIdentity(
+    class EmbedIdentity @JvmOverloads constructor(
         @JvmField val encryptedHostFlags: String,
         @JvmField val visitorData: String,
-        @JvmField val fetchedAtMs: Long
+        @JvmField val fetchedAtMs: Long,
+        /** NEWTUBE(embed-reroll): the re-roll whose budget this identity carries; 0 = none. */
+        @JvmField val rerolledAtMs: Long = 0L
     )
 
     @JvmStatic
@@ -52,6 +72,7 @@ object YtCfgService {
             synchronized(identityLock) {
                 if (invalidations == epoch)
                     cachedEmbedIdentity = it
+                lastRerollAtMs = maxOf(lastRerollAtMs, it.rerolledAtMs)
             }
             android.util.Log.d("NetPath",
                 "embed-identity source=restored ageMin=" + (nowMs - it.fetchedAtMs) / 60_000)
@@ -62,7 +83,7 @@ object YtCfgService {
             return null
 
         val ytCfg = try {
-            downloadYtCfg(AppClient.WEB_EMBED, videoId)
+            embedPageFetcher(videoId)
         } catch (e: Exception) {
             null
         } ?: return null
@@ -79,7 +100,12 @@ object YtCfgService {
         if (flags.isNullOrEmpty() || visitorData.isNullOrEmpty())
             return null
 
-        return EmbedIdentity(flags, visitorData, System.currentTimeMillis()).also {
+        val fetchedAtMs = System.currentTimeMillis()
+        val rerollBudget = synchronized(identityLock) {
+            if (lastRerollAtMs > 0 && fetchedAtMs - lastRerollAtMs in 0 until EMBED_IDENTITY_TTL_MS)
+                lastRerollAtMs else 0L
+        }
+        return EmbedIdentity(flags, visitorData, fetchedAtMs, rerollBudget).also {
             synchronized(identityLock) {
                 if (invalidations == epoch) {
                     cachedEmbedIdentity = it
@@ -101,6 +127,58 @@ object YtCfgService {
             cachedEmbedIdentity = null
             EmbedIdentityPersistence.clear()
         }
+    }
+
+    /**
+     * NEWTUBE(embed-reroll): the identity just used for [videoId] got a SABR-only answer (formats
+     * without URLs, HLS only). That is its visitor's bucket, not the video: 11 of 60 logged visitors
+     * were SABR-only every time and 49 never (netbench r11 analysis, 3.4b), and a persisted one keeps
+     * every WEB_EMBED open on HLS (~550 ms slower to the first frame) for 6 h. The answer plays as it
+     * is; this drops the identity, both copies, and fetches a new one off the walk, so the next
+     * WEB_EMBED ask gets a new visitor. At most once per [EMBED_IDENTITY_TTL_MS]: an identity a
+     * re-roll fetched is never re-rolled (its budget is its own lifetime), and a new visitor that is
+     * bucketed too keeps HLS until then. Never in a loop, never in the walk; 152 invalidates as before.
+     * Returns whether it re-rolled.
+     */
+    @JvmStatic
+    fun rerollEmbedIdentity(videoId: String?): Boolean {
+        if (videoId == null)
+            return false
+        val nowMs = System.currentTimeMillis()
+        val dropped = synchronized(identityLock) {
+            val current = cachedEmbedIdentity
+            if (current == null) {
+                android.util.Log.d("NetPath", "embed-identity reroll-skip reason=no-identity video=$videoId")
+                return false
+            }
+            val last = maxOf(lastRerollAtMs, current.rerolledAtMs)
+            if (last > 0 && nowMs - last in 0 until EMBED_IDENTITY_TTL_MS) {
+                android.util.Log.d("NetPath", "embed-identity reroll-skip reason=budget video=$videoId"
+                        + " lastRerollMin=" + (nowMs - last) / 60_000)
+                return false
+            }
+            lastRerollAtMs = nowMs
+            invalidations++
+            cachedEmbedIdentity = null
+            EmbedIdentityPersistence.clear()
+            current
+        }
+        android.util.Log.d("NetPath", "embed-identity reroll reason=sabr-only video=$videoId"
+                + " ageMin=" + (nowMs - dropped.fetchedAtMs) / 60_000)
+        try {
+            rerollExecutor(Runnable {
+                val fresh = try {
+                    getEmbedIdentity(videoId)
+                } catch (e: Exception) {
+                    null
+                }
+                android.util.Log.d("NetPath", "embed-identity reroll-fetched ok=" + (if (fresh != null) "y" else "n"))
+            })
+        } catch (e: Throwable) {
+            // The next WEB_EMBED ask fetches it in the walk instead, as after a 152.
+            android.util.Log.w("NetPath", "embed-identity reroll-fetch not started error=" + e.javaClass.simpleName)
+        }
+        return true
     }
 
     /**

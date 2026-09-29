@@ -769,15 +769,27 @@ public class VideoInfoBotWallTest {
         protected static void resetCache() {
         }
 
+        /**
+         * Like the real one: WEB_EMBED carries no Web token, so its reset only drops the embed
+         * identity (not modeled here) and answers false - the recovery moves on past it.
+         */
         @Implementation
         protected static boolean resetCache(AppClient client) {
-            return client.isWebPotRequired();
+            return client != AppClient.WEB_EMBED && client.isWebPotRequired();
         }
 
         /** No BotGuard in a unit test: no token (the format transform of a full getVideoInfo). */
         @Implementation
         protected static String getPoToken(AppClient client, String videoId) {
             return null;
+        }
+
+        /** NEWTUBE(token-warmup): whether the BotGuard session is minted (tests set it). */
+        static volatile boolean webSessionReady = true;
+
+        @Implementation
+        protected static boolean isWebSessionReady() {
+            return webSessionReady;
         }
     }
 

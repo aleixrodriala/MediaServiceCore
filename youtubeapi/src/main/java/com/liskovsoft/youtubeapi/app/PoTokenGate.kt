@@ -217,6 +217,14 @@ internal object PoTokenGate {
     @JvmStatic
     fun isWebPotExpired() = PoTokenProviderImpl.isWebPotExpired
 
+    /**
+     * NEWTUBE(token-warmup): the BotGuard session is minted and current, so the next Web token is a
+     * cheap mint rather than the WebView's construction (~0.35-0.9 s, on the main thread).
+     */
+    @JvmStatic
+    fun isWebSessionReady(): Boolean =
+        !PoTokenProviderImpl.isWebPotSupported || (mWebPoToken != null && !PoTokenProviderImpl.isWebPotExpired)
+
     @JvmStatic
     fun resetCache(client: AppClient): Boolean {
         return when {

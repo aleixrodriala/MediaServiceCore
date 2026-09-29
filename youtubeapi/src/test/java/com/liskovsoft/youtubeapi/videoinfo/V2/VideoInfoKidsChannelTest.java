@@ -363,16 +363,24 @@ public class VideoInfoKidsChannelTest {
         assertTrue(logs().toString(), logs().toString().contains("hintsLeft=-1"));
     }
 
-    /** The card named one channel, the answer another: the hint is spent and the answer's logged. */
+    /**
+     * The card named one channel, the answer another (the analysis's review point: the proof is a
+     * route pattern, so check the served video's channel against the note). The ask tested nothing
+     * about the remembered channel: none of its hints is spent, and it proves nothing about the
+     * other (no refusal came first).
+     */
     @Test
-    public void aHintServedForAnotherChannelIsLogged() {
+    public void aHintServedForAnotherChannelSpendsNothing() {
         open("k1");
         VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> playable(auth, "UCother");
         VideoInfoService.noteVideoChannel("k2", KIDS);
         open("k2");
         assertEquals(Collections.singletonList("TV_TIZEN"), calls());
-        assertTrue(logs().toString(), logs().toString().contains("answerChannel="
-                + KidsChannelMemory.tag("UCother")));
+        assertTrue(logs().toString(), logs().contains("kids-channel hint-mismatch video=k2 channel="
+                + KidsChannelMemory.tag(KIDS) + " answerChannel=" + KidsChannelMemory.tag("UCother")
+                + " client=TV_TIZEN hintsLeft=" + KidsChannelMemory.HINTS_PER_PROOF));
+        assertEquals(KidsChannelMemory.HINTS_PER_PROOF, memory.hintsLeft(SIGNED_OUT, KIDS));
+        assertFalse(memory.isRemembered(SIGNED_OUT, "UCother"));
     }
 
     /** Signed in, the hint leads with the account route: one request, with the account. */

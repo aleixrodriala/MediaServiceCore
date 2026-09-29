@@ -40,10 +40,12 @@ public final class RecentRefusals {
     private static final class Refusal {
         final long atMs;
         final boolean auth;
+        final boolean madeForKids;
 
-        Refusal(long atMs, boolean auth) {
+        Refusal(long atMs, boolean auth, boolean madeForKids) {
             this.atMs = atMs;
             this.auth = auth;
+            this.madeForKids = madeForKids;
         }
     }
 
@@ -68,6 +70,15 @@ public final class RecentRefusals {
      */
     public synchronized void noteRefused(@Nullable String videoId, @Nullable AppClient client, boolean auth,
             long nowMs, long generation) {
+        noteRefused(videoId, client, auth, nowMs, generation, false);
+    }
+
+    /**
+     * @param madeForKids the refusal is the one a made-for-kids video gets from VISIONOS and
+     *                    ANDROID_VR (their anonymous content refusal; see {@link #hasMadeForKids})
+     */
+    public synchronized void noteRefused(@Nullable String videoId, @Nullable AppClient client, boolean auth,
+            long nowMs, long generation, boolean madeForKids) {
         if (videoId == null || client == null || generation != mGeneration) {
             return;
         }
@@ -76,7 +87,7 @@ public final class RecentRefusals {
             refusals = new EnumMap<>(AppClient.class);
             mVideos.put(videoId, refusals);
         }
-        refusals.put(client, new Refusal(nowMs, auth));
+        refusals.put(client, new Refusal(nowMs, auth, madeForKids));
     }
 
     /** {@code client} served {@code videoId}: whatever it answered before no longer holds. */
@@ -109,6 +120,25 @@ public final class RecentRefusals {
             }
         }
         return recent;
+    }
+
+    /**
+     * NEWTUBE(recovery-kids): VISIONOS or ANDROID_VR refused {@code videoId} as made for kids in the
+     * last {@link #TTL_MS} (whatever the lane: those refusals are anonymous in both). Its recovery
+     * asks the sources that never serve such a video after the suspect (PhoneSourcePlanner).
+     */
+    public synchronized boolean hasMadeForKids(@Nullable String videoId, long nowMs) {
+        EnumMap<AppClient, Refusal> refusals = videoId != null ? mVideos.get(videoId) : null;
+        if (refusals == null) {
+            return false;
+        }
+        for (Refusal refusal : refusals.values()) {
+            long ageMs = nowMs - refusal.atMs;
+            if (refusal.madeForKids && ageMs >= 0 && ageMs < TTL_MS) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -182,6 +182,65 @@ public class PhoneSourcePlannerTest {
                         EnumSet.of(AppClient.VISIONOS, AppClient.TV_TIZEN))));
     }
 
+    /**
+     * NEWTUBE(recovery-kids): v20 on the emulator, both lanes: a kids video VISIONOS refused,
+     * WEB_EMBED served (TV_TIZEN benched), its media 403'd, and the recovery asked ANDROID_VR, IOS,
+     * ANDROID_REEL, MWEB, WEB and WEB_SAFARI (a refusal, five SABR-only answers) before WEB_EMBED
+     * again. Only TV_TIZEN and WEB_EMBED serve such a video: the rest go behind the suspect.
+     */
+    @Test
+    public void aKidsRecoveryAsksOnlyWhatServesKidsFirst() {
+        EnumSet<AppClient> visionOs = EnumSet.of(AppClient.VISIONOS);
+        assertEquals("WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI VISIONOS",
+                join(kidsRecovery(SIGNED_OUT, AppClient.WEB_EMBED, true, visionOs)));
+        assertEquals("WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI VISIONOS",
+                join(kidsRecovery(SIGNED_IN, AppClient.WEB_EMBED, true, visionOs)));
+        // TV_TIZEN served, not benched: WEB_EMBED, then TV_TIZEN again before the never-servers.
+        assertEquals("WEB_EMBED TV_TIZEN ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI VISIONOS",
+                join(kidsRecovery(SIGNED_OUT, AppClient.TV_TIZEN, false, visionOs)));
+        // Signed in, the account route not benched and WEB_EMBED the suspect: TV_TIZEN first.
+        assertEquals("TV_TIZEN WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI VISIONOS",
+                join(kidsRecovery(SIGNED_IN, AppClient.WEB_EMBED, false, visionOs)));
+        // The refusal came from ANDROID_VR: VISIONOS (a kids witness too) goes behind the suspect.
+        assertEquals("WEB_EMBED VISIONOS IOS ANDROID_REEL MWEB WEB WEB_SAFARI ANDROID_VR",
+                join(kidsRecovery(SIGNED_OUT, AppClient.WEB_EMBED, true, EnumSet.of(AppClient.ANDROID_VR))));
+        // Outside a recovery walk the flag changes nothing.
+        assertEquals("VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(kidsRecovery(SIGNED_OUT, null, false, EnumSet.noneOf(AppClient.class))));
+    }
+
+    /**
+     * NEWTUBE(live-card): the item says live: the live-DASH source first, VISIONOS second, then the
+     * lane. Never in a recovery walk.
+     */
+    @Test
+    public void aLiveCardAsksTheLiveSourceFirst() {
+        assertEquals("ANDROID_VR VISIONOS WEB_EMBED IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(liveCard(SIGNED_OUT, null)));
+        assertEquals("ANDROID_VR VISIONOS TV_TIZEN WEB_EMBED IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(liveCard(SIGNED_IN, null)));
+        assertEquals("WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI VISIONOS",
+                join(liveCard(SIGNED_OUT, AppClient.VISIONOS)));
+        // A stale flag's set-aside answer plays where the lane would have asked the live source.
+        assertTrue(PhoneSourcePlanner.isPastLiveSourceTurn(AppClient.IOS));
+        assertTrue(PhoneSourcePlanner.isPastLiveSourceTurn(AppClient.WEB_SAFARI));
+        for (AppClient client : new AppClient[] {AppClient.VISIONOS, AppClient.TV_TIZEN, AppClient.WEB_EMBED,
+                AppClient.ANDROID_VR}) {
+            assertFalse(client.toString(), PhoneSourcePlanner.isPastLiveSourceTurn(client));
+        }
+    }
+
+    private static List<AppClient> kidsRecovery(PhoneSourcePlanner.Lane lane, AppClient suspect,
+            boolean benched, EnumSet<AppClient> refused) {
+        return PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(lane, suspect, false, benched,
+                false, false, refused, true, false));
+    }
+
+    private static List<AppClient> liveCard(PhoneSourcePlanner.Lane lane, AppClient suspect) {
+        return PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(lane, suspect, false, false,
+                false, false, EnumSet.noneOf(AppClient.class), false, true));
+    }
+
     private static List<AppClient> recovering(PhoneSourcePlanner.Lane lane, AppClient suspect,
             boolean benched, EnumSet<AppClient> refused) {
         return PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(lane, suspect, false, benched,

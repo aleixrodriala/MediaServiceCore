@@ -100,6 +100,20 @@ public abstract class VideoInfoServiceBase {
         sSkipSolveWithoutChallenges = skip;
     }
 
+    // See setFoldHlsChallenge.
+    private static volatile boolean sFoldHlsChallenge;
+
+    /**
+     * NEWTUBE(hls-vod-fold): set from the phone flavor. An answer played over HLS for VOD has its
+     * manifest's "/n/" challenge solved too (see solveVodHlsChallenge), and that solve was a second
+     * V8 run after the bulk one ({@code hls-vod-n ... shared=n}: 65-195 ms on the Pixel). On, the
+     * manifest's challenge goes into the bulk solve with the formats' ones: one V8 run. If the
+     * bulk answer does not carry it, the separate solve runs as before. Never on TV.
+     */
+    public static void setFoldHlsChallenge(boolean fold) {
+        sFoldHlsChallenge = fold;
+    }
+
     /** Whether any url holder has an n or a signature parameter to solve. */
     static boolean hasChallenge(List<String> nParams, List<String> sParams) {
         return !Helpers.allNulls(nParams) || !Helpers.allNulls(sParams);
@@ -178,15 +192,40 @@ public abstract class VideoInfoServiceBase {
         List<String> nParams = extractNParams(urlHolders);
         List<String> sParams = extractSParams(urlHolders);
         long sigStartMs = android.os.SystemClock.elapsedRealtime();
+        // NEWTUBE(hls-vod-fold): the HLS manifest's challenge rides the bulk solve, as one more
+        // entry after the holders' (see setFoldHlsChallenge).
+        String manifestN = sFoldHlsChallenge ? vodHlsChallenge(videoInfo) : null;
+        List<String> nSolve = nParams;
+        List<String> sSolve = sParams;
+        if (manifestN != null) {
+            nSolve = new ArrayList<>(nParams);
+            nSolve.add(manifestN);
+            sSolve = new ArrayList<>(sParams);
+            sSolve.add(null);
+        }
         // NEWTUBE(player-js-gate): nothing to solve asks nothing of the player (see
         // setSkipSolveWithoutChallenges); anything to solve waits for the validated player.
-        boolean solve = !sSkipSolveWithoutChallenges || hasChallenge(nParams, sParams);
+        boolean solve = !sSkipSolveWithoutChallenges || hasChallenge(nSolve, sSolve);
         if (!solve && mAppService.isPlayerJsValidationPending()) {
             android.util.Log.d("NetPath", "player-js-gate transform video="
                     + videoInfo.getVideoDetails().getVideoId() + " client=" + videoInfo.getClient()
                     + " solve=none validation=pending");
         }
-        Pair<List<String>, List<String>> result = solve ? mAppService.bulkSigExtract(nParams, sParams) : null;
+        Pair<List<String>, List<String>> result = solve ? mAppService.bulkSigExtract(nSolve, sSolve) : null;
+        String manifestSolved = null;
+        if (manifestN != null && result != null) {
+            List<String> nOut = result.getFirst();
+            List<String> sOut = result.getSecond();
+            boolean split = nOut != null && nOut.size() == nSolve.size();
+            if (split) {
+                manifestSolved = nOut.get(nOut.size() - 1);
+                nOut = new ArrayList<>(nOut.subList(0, nParams.size()));
+            }
+            if (sOut != null && sOut.size() == sSolve.size()) {
+                sOut = new ArrayList<>(sOut.subList(0, sParams.size()));
+            }
+            result = new Pair<>(nOut, sOut);
+        }
         // The V8 solve is charged per DISTINCT param, not per format, and it is the only part of
         // the transform that costs real CPU -- so log both counts next to the elapsed time. Without
         // them a slow transform is indistinguishable between "many distinct challenges" (which
@@ -197,13 +236,14 @@ public abstract class VideoInfoServiceBase {
                 + " s=" + distinctCount(sParams) + "/" + nonNullCount(sParams)
                 + " nOut=" + FormatTransformDiagnostics.summarize(nParams, result != null ? result.getFirst() : null)
                 + " sOut=" + FormatTransformDiagnostics.summarize(sParams, result != null ? result.getSecond() : null)
-                + " ms=" + (android.os.SystemClock.elapsedRealtime() - sigStartMs));
+                + " ms=" + (android.os.SystemClock.elapsedRealtime() - sigStartMs)
+                + (manifestN != null ? " hlsN=" + (manifestSolved != null ? "folded" : "missed") : ""));
 
         if (result != null) {
             applyNParams(urlHolders, result.getFirst());
             applySignatures(urlHolders, result.getSecond());
         }
-        solveVodHlsChallenge(videoInfo, nParams, result != null ? result.getFirst() : null);
+        solveVodHlsChallenge(videoInfo, nParams, result != null ? result.getFirst() : null, manifestSolved);
 
         String poToken = PoTokenGate.getPoToken(videoInfo.getClient(), videoInfo.getVideoDetails().getVideoId());
         videoInfo.setPoToken(poToken);
@@ -225,19 +265,15 @@ public abstract class VideoInfoServiceBase {
      * they were.
      */
     private void solveVodHlsChallenge(VideoInfo videoInfo, List<String> nParams,
-            @Nullable List<String> nSolved) {
+            @Nullable List<String> nSolved, @Nullable String folded) {
         String url = videoInfo.getHlsManifestUrl();
-        List<? extends VideoFormat> adaptive = videoInfo.getAdaptiveFormats();
-        boolean noAdaptiveUrl = adaptive == null || adaptive.isEmpty()
-                || videoInfo.isAdaptiveFormatsBroken();
-        String n = url != null && noAdaptiveUrl && VodDelivery.acceptsHls(videoInfo)
-                ? manifestChallenge(url) : null;
+        String n = vodHlsChallenge(videoInfo);
         if (n == null) {
             return;
         }
-        String solved = null;
+        String solved = folded;
         int index = nParams.indexOf(n);
-        if (index >= 0 && nSolved != null && !nSolved.isEmpty()) {
+        if (solved == null && index >= 0 && nSolved != null && !nSolved.isEmpty()) {
             // The bulk transform answers per holder, or once when every holder had the same one.
             solved = nSolved.get(nSolved.size() == nParams.size() ? index : 0);
         }
@@ -251,6 +287,21 @@ public abstract class VideoInfoServiceBase {
         if (solved != null) {
             videoInfo.setHlsManifestUrl(withManifestChallenge(url, solved));
         }
+    }
+
+    /**
+     * The HLS manifest's "/n/" challenge of an answer the loader would open over HLS for VOD (no
+     * adaptive format with a URL, and VodDelivery plays it), or null: the one solveVodHlsChallenge
+     * solves.
+     */
+    @Nullable
+    private static String vodHlsChallenge(VideoInfo videoInfo) {
+        String url = videoInfo.getHlsManifestUrl();
+        List<? extends VideoFormat> adaptive = videoInfo.getAdaptiveFormats();
+        boolean noAdaptiveUrl = adaptive == null || adaptive.isEmpty()
+                || videoInfo.isAdaptiveFormatsBroken();
+        return url != null && noAdaptiveUrl && VodDelivery.acceptsHls(videoInfo)
+                ? manifestChallenge(url) : null;
     }
 
     /** The "/n/&lt;challenge&gt;/" path value of a googlevideo manifest URL, or null. */
