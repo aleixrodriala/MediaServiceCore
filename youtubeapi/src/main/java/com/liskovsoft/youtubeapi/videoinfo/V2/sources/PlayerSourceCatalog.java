@@ -47,7 +47,7 @@ public final class PlayerSourceCatalog {
         add(AppClient.TV, APP_VISITOR, NONE, PlayerSource.Xhr.FALSE, PLAYER, SPECULATIVE,
                 "TVHTML5 7.x; the signed-in account client (Cobalt sts suffix, QueryBuilderTimestampTest)");
         add(AppClient.TV_LEGACY, APP_VISITOR, NONE, PlayerSource.Xhr.FALSE, PLAYER, SPECULATIVE,
-                "same /player as TV; phone-skipped (setSkipTvFallbackClients)");
+                "same /player as TV; phone-skipped (not in PhoneSourcePlanner)");
         add(AppClient.TV_EMBED, APP_VISITOR, NONE, PlayerSource.Xhr.FALSE, PLAYER, SPECULATIVE,
                 "embedded TV client; phone-skipped; its host flags come from the WEB embed page");
         add(AppClient.TV_SIMPLY, APP_VISITOR, NONE, PlayerSource.Xhr.FALSE, PLAYER, SPECULATIVE,

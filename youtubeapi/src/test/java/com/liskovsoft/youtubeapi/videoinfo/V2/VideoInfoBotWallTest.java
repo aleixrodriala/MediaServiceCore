@@ -60,8 +60,6 @@ public class VideoInfoBotWallTest {
         ShadowWalk.calls.clear();
         ShadowWalk.script = (client, auth) -> playable(auth);
         VideoInfoService.setPreferNoPotClient(true);
-        VideoInfoService.setPreferAttestedWebFallback(true);
-        VideoInfoService.setSkipTvFallbackClients(true);
         VideoInfoService.setPreferDashManifestForLive(true);
         service = ReflectionHelpers.callConstructor(VideoInfoService.class);
         // The shadowed constructor skips field initializers; give the instance what the walk uses.
@@ -81,8 +79,6 @@ public class VideoInfoBotWallTest {
     @After
     public void tearDown() {
         VideoInfoService.setPreferNoPotClient(false);
-        VideoInfoService.setPreferAttestedWebFallback(false);
-        VideoInfoService.setSkipTvFallbackClients(false);
         VideoInfoService.setPreferDashManifestForLive(false);
         VideoInfoService.setDebugBotWallSource(null);
         VideoInfoService.setDebugForcedClient(null);

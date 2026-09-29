@@ -51,8 +51,6 @@ public class VideoInfoPlannerTest {
         VideoInfoBotWallTest.ShadowWalk.calls.clear();
         VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> playable(auth);
         VideoInfoService.setPreferNoPotClient(true);
-        VideoInfoService.setPreferAttestedWebFallback(true);
-        VideoInfoService.setSkipTvFallbackClients(true);
         VideoInfoService.setPreferDashManifestForLive(true);
         service = ReflectionHelpers.callConstructor(VideoInfoService.class);
         initIfNull("mAuthRouteQuarantine", new AuthRouteQuarantineBook());
@@ -65,8 +63,6 @@ public class VideoInfoPlannerTest {
     @After
     public void tearDown() {
         VideoInfoService.setPreferNoPotClient(false);
-        VideoInfoService.setPreferAttestedWebFallback(false);
-        VideoInfoService.setSkipTvFallbackClients(false);
         VideoInfoService.setPreferDashManifestForLive(false);
     }
 

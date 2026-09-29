@@ -483,7 +483,7 @@ public class VideoInfoVisitOrderTest {
         assertEquals("no client visited twice", order.size(), new HashSet<>(order).size());
     }
 
-    /** TV never sets sPreferAttestedWebFallback, so its signed-in order stays as it was. */
+    /** TV passes preferWebFamily=false, so its signed-in order stays as it was. */
     @Test
     public void tvAuthenticatedOrderDoesNotGainTheTokenFreeClient() {
         List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
@@ -596,25 +596,6 @@ public class VideoInfoVisitOrderTest {
         }
     }
 
-    /**
-     * The point of the experiment: once the TV head is quarantined, the account-bearing WEB_EMBED
-     * must actually get a turn. Without this it sits behind VISIONOS, which serves the video and
-     * returns, so the arm measures nothing.
-     */
-    @Test
-    public void anAccountBearingWebEmbedLeadsTheExhaustedHeadWalk() {
-        VideoInfoService.setWebEmbedAuthEnabled(true);
-
-        List<AppClient> order = VideoInfoService.buildRequestVisitOrder(
-                AppClient.WEB_EMBED, AppClient.TV_DOWNGRADED, true, false, true,
-                forbidden(AppClient.TV, AppClient.TV_DOWNGRADED), true, false);
-
-        assertEquals(AppClient.WEB_EMBED, order.get(0));
-        assertEquals("the token-free client stays right behind it as the safety net",
-                AppClient.VISIONOS, order.get(1));
-        assertEquals(order.size(), new HashSet<>(order).size());
-    }
-
     /** Same inputs, gate off: VISIONOS leads, as the 2026-09-07 device round measured. */
     @Test
     public void theSameWalkIsUnchangedWhileTheGateIsOff() {
@@ -638,19 +619,6 @@ public class VideoInfoVisitOrderTest {
                 AppClient.WEB_EMBED, null, false, false, false, noneForbidden());
 
         assertEquals(before, after);
-    }
-
-    /** Idempotent, and a no-op on an order that has no WEB_EMBED to promote. */
-    @Test
-    public void leadWithAuthenticatedWebClientIsIdempotentAndNeedsTheClient() {
-        List<AppClient> once = VideoInfoService.leadWithAuthenticatedWebClient(
-                Arrays.asList(AppClient.VISIONOS, AppClient.WEB_EMBED, AppClient.ANDROID_VR));
-        assertEquals(Arrays.asList(AppClient.WEB_EMBED, AppClient.VISIONOS, AppClient.ANDROID_VR),
-                once);
-        assertEquals(once, VideoInfoService.leadWithAuthenticatedWebClient(once));
-
-        List<AppClient> noWebEmbed = Arrays.asList(AppClient.VISIONOS, AppClient.ANDROID_VR);
-        assertEquals(noWebEmbed, VideoInfoService.leadWithAuthenticatedWebClient(noWebEmbed));
     }
 
     /**

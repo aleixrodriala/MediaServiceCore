@@ -62,11 +62,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
             //AppClient.ANDROID_SDK_LESS, // doesn't require pot (hangs on cronet!)
     };
     // === Mobile fast-start (NewTube touch flavor) =========================================
-    // When enabled by the mobile flavor, getVideoInfo tries a no-PO-token / no-cipher client
-    // FIRST (PREFERRED_FIRST_CLIENT). Its fallback tail is Web-family-first so restricted /
-    // made-for-kids videos do not wander through unrelated platform identities, and an
-    // error-driven reload starts directly in that Web partition. This skips roughly one second
-    // of median cold-start latency in the Pixel 9 sample while retaining attested Web recovery.
+    // When enabled by the mobile flavor, getVideoInfo asks the sources in PhoneSourcePlanner's
+    // order (netbench LANES.md), led by a no-PO-token / no-cipher client (PREFERRED_FIRST_CLIENT).
     // TV builds never enable this flag, so they keep the WEB_EMBED-first order and unbounded
     // (no-timeout) behaviour byte-for-byte.
     private static volatile boolean sAccountRouteFirst;
@@ -200,27 +197,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     private static final int ANON_CHALLENGE_MIN_HITS = 2;
     private static volatile ExecutorService sInfoExecutor;
-    // Phone ring trim (NewTube touch flavor): the tail of VIDEO_INFO_TYPE_LIST is four TV-app
-    // fallback clients that only earn their keep on TV boxes; on a phone they just lengthen the
-    // failover walk of a hard video (4 extra /player round-trips per sweep). Gated the same way as
-    // the other mobile-only switches in this file (static setter called once from
-    // MobileMainApplication); VIDEO_INFO_TYPE_LIST itself stays untouched to keep the upstream
-    // merge surface clean (upstream churns that list on every YouTube breakage). AppClient.TV is
-    // NOT skipped: it's the ring's only auth-capable client (fixes "please sign in").
-    private static volatile boolean sSkipTvFallbackClients;
-    private static final AppClient[] TV_FALLBACK_CLIENTS = {
-            AppClient.TV_LEGACY, AppClient.TV_DOWNGRADED, AppClient.TV_EMBED, AppClient.TV_SIMPLY
-    };
-    // Web-family-first fallback (NewTube touch flavor): GVS acceptance is client/session-specific,
-    // not a transport or carrier-CGNAT property. On-device isolation found that iOS and the old
-    // Android VR request could return signed URLs whose init ranges worked but deep ranges got 403;
-    // sibling Web clients remained healthy. Android VR is repaired separately by using the same
-    // fresh Web-derived visitor identity as current extractors. This partition is still valuable:
-    // after WEB_EMBED cannot serve a video, probe WEB/WEB_SAFARI/GEO/MWEB before falling through to
-    // platform clients with different token requirements. During recovery, also defer the suspect
-    // last winner so it cannot immediately win again. VIDEO_INFO_TYPE_LIST stays byte-identical for
-    // upstream compatibility, and TV never enables this behavior.
-    private static volatile boolean sPreferAttestedWebFallback;
     // Learned per-process: an authenticated TV /player response was SABR-only (every adaptive
     // format broken + serverAbrStreamingUrl present). This NO LONGER drives ordering — TV_DOWNGRADED
     // is now unconditionally the signed-in head (see AUTHENTICATED_HEAD), which subsumes the swap
@@ -262,27 +238,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         sRotateVisitorOnAnonChallenge = rotate;
     }
 
-    /**
-     * Enabled once from the mobile flavor (MobileMainApplication). Makes the failover ring skip
-     * the TV-only fallback clients ({@link #TV_FALLBACK_CLIENTS}). Never called on TV.
-     */
-    public static void setSkipTvFallbackClients(boolean skip) {
-        sSkipTvFallbackClients = skip;
-    }
-
     /** Any sign the answer is about a live stream, current, ended or scheduled. */
     static boolean hasLiveSignal(VideoInfo result) {
         return result.isLive() || result.getStartTimestamp() != null
                 || result.getVideoDetails() != null && result.getVideoDetails().isLiveContent();
-    }
-
-    /**
-     * Enabled once from the mobile flavor (MobileMainApplication). Makes the failover walk probe
-     * Web-family clients (isWebPotRequired) before platform fallbacks with different identity and
-     * token requirements. See {@link #sPreferAttestedWebFallback}. Never called on TV.
-     */
-    public static void setPreferAttestedWebFallback(boolean prefer) {
-        sPreferAttestedWebFallback = prefer;
     }
 
     /**
@@ -325,8 +284,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
-     * Debug playground, mobile-only, OFF by default: let WEB_EMBED carry the account on /player
-     * and lead the fallback walk with it, the way yt-dlp's signed-in client list does. AppClient
+     * Debug playground, mobile-only, OFF by default: let WEB_EMBED carry the account on /player,
+     * the way yt-dlp's signed-in client list does; it keeps its place in the walk. AppClient
      * is module-internal, so the phone flavor flips it through here like every other switch.
      * Read {@link AppClient#setWebEmbedAuthEnabled} for why this is not a default.
      */
@@ -419,16 +378,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
         VideoInfoServiceBase.setSkipLiveDashInfoWithManifest(skip);
     }
 
-    private static boolean isSkippedClient(AppClient client) {
-        return sSkipTvFallbackClients && Helpers.equalsAny(client, (Object[]) TV_FALLBACK_CLIENTS);
-    }
-
     @Nullable
     private volatile AppClient mActualInfoType = null;
     @Nullable
     private volatile AppClient mNextInfoType = null;
-    // mNextInfoType is also used for the persisted-client cold-start hint. Keep an explicit bit so
-    // only an error-driven cursor invokes recovery ordering and defers the previous winner.
+    // Set with mNextInfoType by an error-driven cursor (nextVideoInfoType): only such a cursor
+    // invokes recovery ordering and defers the previous winner.
     private volatile boolean mRecoveryWalk;
     /**
      * Set when the previous walk gave up because the link was dead (see TRANSPORT_DOWN_STREAK).
@@ -440,8 +395,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
     // switchNextFormat after it finishes. The generation makes cursor consumption conditional on
     // the request having observed the same routing state it is about to clear.
     private final AtomicLong mRoutingGeneration = new AtomicLong();
-    // Guards the one-time restore of the persisted "winning" fast client at cold start (mobile only).
-    private boolean mInfoTypeRestored;
 
     /**
      * NEWTUBE(walk-role): who a walk is for. The routing state here - the recovery cursor, the
@@ -1070,8 +1023,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return blockedResult;
         }
 
-        restoreVideoInfoTypeIfNeeded();
-
         AppService.instance().resetClientPlaybackNonce(); // unique value per each video info
 
         mAuthBlock = true;
@@ -1082,10 +1033,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return null;
         }
 
-        // An error cursor and a persisted cold-start hint are both one-shot on mobile. Leaving either
-        // set after a successful failover made every later open start from stale routing state.
-        // TV keeps its historical behavior. A speculative walk leaves both to the video the user
-        // opens (see WalkRole).
+        // An error cursor is one-shot on mobile. Leaving it set after a successful failover made
+        // every later open start from stale routing state. TV keeps its historical behavior. A
+        // speculative walk leaves it to the video the user opens (see WalkRole).
         if (!speculative && sPreferNoPotClient
                 && routingGeneration == mRoutingGeneration.get()) {
             mNextInfoType = null;
@@ -1173,18 +1123,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
-     * Walks the client ring ONCE from the remembered/preferred begin client and returns the first
-     * PLAYABLE result. The first non-null (necessarily unplayable) result seen along the way is
-     * remembered and returned as a fallback when the whole ring yields nothing playable, so the
-     * caller still gets an "unplayable" reason to show. Same outcome as the old two-pass sweep
-     * (pass 1: first playable, pass 2: first non-null) at half the worst-case /player call count.
+     * Walks the order ONCE (the phone's from PhoneSourcePlanner, TV's the client ring from the
+     * remembered begin client) and returns the first PLAYABLE result. The first non-null
+     * (necessarily unplayable) result seen along the way is remembered and returned as a fallback
+     * when the whole walk yields nothing playable, so the caller still gets an "unplayable" reason
+     * to show. Same outcome as the old two-pass sweep (pass 1: first playable, pass 2: first
+     * non-null) at half the worst-case /player call count.
      */
     private VideoInfo firstPlayable(String videoId, String clickTrackingParams,
             boolean authenticated, @Nullable CancellationSignal cancellationSignal) {
         //final AppClient beginType = getDefaultClient();
-        // Mobile fast-start: when no client is remembered from a previous video, start at the
-        // no-pot/no-cipher client instead of WEB_EMBED. buildVisitOrder keeps this fast head but
-        // puts the Web family immediately behind it. TV (flag unset) keeps the raw ring as before.
         // NEWTUBE(recovery-blame): a recovery walk steps past the client that served the FAILING
         // video, which a prefetch may no longer have in mActualInfoType (see switchNextFormat).
         // NEWTUBE(walk-role): a speculative walk (next-video preload, touch preload, warmup) is not
@@ -1215,8 +1163,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // of tv_downgraded for authenticated extraction. An error-driven reload is different: its
         // cursor deliberately points past the client whose GVS URL just failed. Re-promoting TV on
         // that reload selected the same TV_DOWNGRADED client forever and defeated the entire 403
-        // recovery ring. Let recovery honor the cursor and Web-family partition; auth headers are
-        // still attached automatically if a later auth-capable client is reached.
+        // recovery ring. Let recovery honor the cursor; auth headers are still attached
+        // automatically if a later auth-capable client is reached.
         final boolean authenticatedRecovery = authenticated && recoveryWalk;
         final java.util.Set<AppClient> forbiddenAuthClients = forbiddenAuthClients();
         // Only a FULLY quarantined account head hands the walk to the anonymous partition. A single
@@ -1231,9 +1179,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 : AUTHENTICATED_HEAD[0];
         final AppClient defaultBegin = authenticated && !authenticatedRecovery
                 ? authBegin
-                : (sPreferNoPotClient ? PREFERRED_FIRST_CLIENT : VIDEO_INFO_TYPE_LIST[0]);
-        // mNextInfoType is the recovery cursor or the cold-start hint; a speculative walk may use
-        // only the hint.
+                : VIDEO_INFO_TYPE_LIST[0];
+        // mNextInfoType is the recovery cursor, which a speculative walk does not follow.
         final AppClient beginType = authenticated && !authenticatedRecovery
                 ? authBegin
                 : (mNextInfoType != null && !(mRecoveryWalk && speculative)
@@ -1292,7 +1239,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     + " order=" + visitOrder);
         } else {
             visitOrder = buildRequestVisitOrder(
-                    beginType, lastWinner, sPreferAttestedWebFallback,
+                    beginType, lastWinner, false,
                     recoveryWalk, authenticated, forbiddenAuthClients, authenticatedWebFirst,
                     anonChallenged);
             if (anonChallenged) {
@@ -1374,14 +1321,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
                         + " heldUnplayable=" + (firstUnplayable != null ? "y" : "n")
                         + " heldLive=" + (liveWithoutDash != null ? "y" : "n"));
                 break;
-            }
-
-            // Phone ring trim: TV-only fallback clients are skipped (a stale mNextInfoType from
-            // nextVideoInfoType may land on one; it's simply not probed).
-            if (isSkippedClient(nextType)
-                    && sDebugForcedClient != nextType
-                    && !(authenticated && nextType == AppClient.TV_DOWNGRADED)) {
-                continue;
             }
 
             // A playable live result is already held and ONLY a dash manifest can improve on it
@@ -1487,6 +1426,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             // The account-bearing route is currently broken server-side (see
             // isAuthRouteReloadVerdict). Demote it the same way a media 403 does, so the walk stops
             // spending two guaranteed-dead round trips on the head of every signed-in open.
+            // A planned walk asks no TVHTML5 client, so only a forced-client walk gets here.
             // isAuthSupported (TV family), NOT isAuthCapable - deliberately. Two reasons. The
             // "reload page" shape is a TVHTML5 server behaviour; the same shape from an
             // authenticated WEB_EMBED is far more likely to be a genuinely unplayable video, and
@@ -1850,10 +1790,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
             }
         }
 
-        // "Next" literally: once TV_TIZEN has won an open it is the ring's remembered last winner
-        // and already sits in the order - behind the whole Web partition (buildVisitOrder puts
-        // non-Web clients last). Checking only for its absence skipped the move, and the Pixel
-        // paid VISIONOS + five challenged Web clients before it (2026-09-25, botwall run B, open 2).
+        // "Next" literally: the account route may already sit later in the order (a recovery walk
+        // asks its suspect last), so checking only for its absence would skip the move. In the old
+        // ring that cost the Pixel VISIONOS + five challenged Web clients before it (2026-09-25,
+        // botwall run B, open 2).
         if (authenticated && anonymous && result.isLoginRequired()
                 && !attempted.contains(BotWallBook.ACCOUNT_ROUTE)
                 && (index + 1 >= order.size() || order.get(index + 1) != BotWallBook.ACCOUNT_ROUTE)
@@ -2087,19 +2027,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
     /**
      * Whether any client AFTER {@code index} can still answer despite the anonymous web identity
      * being challenged. Web-pot clients all share that identity, so they are not candidates; every
-     * other client either carries the account or presents a different platform identity. Mirrors
-     * the loop's own skip rule, including its authenticated TV_DOWNGRADED carve-out, so the walk
-     * never claims a candidate it would then skip.
+     * other client either carries the account or presents a different platform identity.
      */
     static boolean hasUnchallengedClientAfter(List<AppClient> order, int index,
             boolean authenticated) {
         for (int i = index + 1; i < order.size(); i++) {
             AppClient candidate = order.get(i);
             if (candidate.isWebPotRequired()) {
-                continue;
-            }
-            if (isSkippedClient(candidate)
-                    && !(authenticated && candidate == AppClient.TV_DOWNGRADED)) {
                 continue;
             }
             return true;
@@ -2379,35 +2313,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
-     * NEWTUBE(auth-probe): with WEB_EMBED carrying the account, it is no longer "the guest client
-     * we fall through to" - it is the account route, and yt-dlp puts it FIRST for a signed-in
-     * extraction ({@code _DEFAULT_AUTHED_CLIENTS[0]}, commit 5d5b634). So on the walk that has
-     * given up on the TV head it leads, and {@link #PREFERRED_FIRST_CLIENT} stays right behind it
-     * as the immediate safety net if the bearer is refused.
-     * <p>
-     * Applied only when {@link AppClient#getSWebEmbedAuthEnabled()} is on, so with the flag off
-     * the order is byte-identical to before. Deliberately composed AFTER
-     * {@link #leadWithTokenFreeClient} rather than replacing it: that keeps VISIONOS at index 1
-     * instead of dropping it back down the ring, which is what preserves the measured
-     * "0 bot checks, 0 403s" behaviour on the fallback path.
-     */
-    static List<AppClient> leadWithAuthenticatedWebClient(List<AppClient> order) {
-        if (order.isEmpty() || order.get(0) == AppClient.WEB_EMBED
-                || !order.contains(AppClient.WEB_EMBED)) {
-            return order;
-        }
-
-        List<AppClient> result = new java.util.ArrayList<>(order.size());
-        result.add(AppClient.WEB_EMBED);
-        for (AppClient type : order) {
-            if (type != AppClient.WEB_EMBED) {
-                result.add(type);
-            }
-        }
-        return result;
-    }
-
-    /**
      * Slots {@link #PREFERRED_FIRST_CLIENT} in immediately BEFORE the first web-pot client, leaving
      * everything ahead of it untouched. Used on a normal signed-in walk, where the account head
      * keeps attempts 1-2 and this only decides which client the walk falls through to.
@@ -2586,7 +2491,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 recoveryWalk);
         if (authenticated && !recoveryWalk && !authenticatedWebFirst) {
             order = promoteAuthenticatedTvFallback(order, forbiddenAuthClients);
-            // Mobile only: preferWebFamily is sPreferAttestedWebFallback, which TV never sets.
+            // preferWebFamily was the phone's ring before PhoneSourcePlanner; TV passes false.
             if (preferWebFamily) {
                 order = insertTokenFreeClientBeforeWebPot(order);
                 order = demoteQuarantinedHeadBehindTokenFreeClient(order, forbiddenAuthClients);
@@ -2603,12 +2508,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // the embedded client - so this adds a third independent identity, not a false hit.
         if (authenticated && (recoveryWalk || authenticatedWebFirst)) {
             order = leadWithTokenFreeClient(order);
-            // ...unless WEB_EMBED is carrying the account, in which case it is the account route
-            // and goes in front of the token-free client. Off by default; see
-            // leadWithAuthenticatedWebClient.
-            if (authenticatedWebFirst && AppClient.isWebEmbedAuthEnabled()) {
-                order = leadWithAuthenticatedWebClient(order);
-            }
         }
         // Applied LAST, so it also overrides an attested-web-first or authenticated-web-first
         // preference: if the account head is exhausted AND the guest identity is challenged, the
@@ -3600,49 +3499,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
         });
     }
 
-    /**
-     * Mobile-only: at the first getVideoInfo of the process, restore the "winning" fast client from a
-     * previous session so subsequent cold starts skip straight to it (persisted by
-     * persistRecentTypeIfNeeded). Only a fast (non-web-pot) client is restored: a one-off restricted
-     * video that fell back to WEB_EMBED must not poison the fast path for normal videos. TV never
-     * enables the flag, so TV restore stays disabled (WEB_EMBED-first order unchanged).
-     */
-    private void restoreVideoInfoTypeIfNeeded() {
-        if (!sPreferNoPotClient || mInfoTypeRestored || mNextInfoType != null) {
-            return;
-        }
-
-        // Prefs may not be ready on the very first call; try again on the next one.
-        if (!GlobalPreferences.isInitialized()) {
-            return;
-        }
-
-        mInfoTypeRestored = true;
-
-        // NEWTUBE(source-catalog): keyed by source id; the legacy ordinal is migrated once.
-        PlayerSource hint = SourceWinnerHint.read(winnerHintPrefs());
-        if (hint == null) {
-            return;
-        }
-
-        AppClient restored = hint.client;
-        // NEWTUBE(live-winner): ANDROID_VR is never a useful VOD head on the phone - its media hits
-        // the deep-range 403 wall (HANDOFF §17) - and until live answers stopped updating the winner
-        // (see persistRecentTypeIfNeeded) every live open persisted it here. A restored ANDROID_VR
-        // then began every cold-start VOD open on it and, while it kept "winning" /player, never
-        // healed. VISIONOS remains the default head; the ring still reaches ANDROID_VR as a fallback.
-        if (sPreferDashManifestForLive && restored == AppClient.ANDROID_VR) {
-            android.util.Log.d("NetPath", "player-ring restore-skipped client=" + restored
-                    + " reason=live-dash-client");
-            return;
-        }
-        // Skipped (TV-only) clients aren't restored either: a winner persisted before the phone
-        // ring trim existed must not make the ring begin at a client it would skip anyway.
-        if (!restored.isWebPotRequired() && !isSkippedClient(restored) && Arrays.asList(VIDEO_INFO_TYPE_LIST).contains(restored)) {
-            mNextInfoType = restored;
-        }
-    }
-
     private void resetInfoTypeToDefault() {
         mNextInfoType = null;
         mRecoveryWalk = false;
@@ -3661,8 +3517,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
     }
 
     /**
-     * NEWTUBE(source-catalog): the winner hint's own preference; upstream's ordinal field in
-     * MediaServiceData is only read, once, to migrate it (see SourceWinnerHint).
+     * NEWTUBE(source-catalog): the winner hint's own preference. It is still written on every
+     * winner change, but no walk reads it back: TV never did, and the phone's order comes from
+     * PhoneSourcePlanner (its cold-start restore went with design 3).
      */
     private SourceWinnerHint.Prefs winnerHintPrefs() {
         return new SourceWinnerHint.Prefs() {

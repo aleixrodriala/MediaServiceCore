@@ -6,16 +6,18 @@ import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 
 /**
  * NEWTUBE(source-catalog): the persisted "last winner" hint - which source a cold start's walk
- * begins with - keyed by source id ("VISIONOS@1").
+ * began with until the phone's order moved to PhoneSourcePlanner; VideoInfoService still writes
+ * it and no longer reads it - keyed by source id ("VISIONOS@1").
  *
  * <p>It used to be the winning AppClient's ORDINAL inside upstream's MediaServiceData
  * (setVideoInfoType), so an enum entry inserted by an upstream merge would silently re-point it to
  * another client. The id is stable, and it names a source rather than a client, so a second source
  * of one client (phase 6) cannot be confused with the first.
  *
- * <p>Migration: the legacy ordinal is read exactly once, through a table frozen at the time of the
- * move ({@link #LEGACY_ORDINALS}, never {@code AppClient.values()}), and the result is written
- * straight back, so it is never consulted again. An explicit empty value means "no hint" and stays
+ * <p>Migration, in {@link #read} (which no production code calls now): the legacy ordinal is read
+ * exactly once, through a table frozen at the time of the move ({@link #LEGACY_ORDINALS}, never
+ * {@code AppClient.values()}), and the result is written straight back, so it is never consulted
+ * again. An explicit empty value means "no hint" and stays
  * that way; an id this build does not know is no hint either.
  */
 public final class SourceWinnerHint {

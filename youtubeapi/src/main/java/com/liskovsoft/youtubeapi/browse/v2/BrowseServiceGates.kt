@@ -2,7 +2,7 @@ package com.liskovsoft.youtubeapi.browse.v2
 
 /**
  * Phone-only static gates for the browse services, set from the app's Application class
- * (mirrors VideoInfoService.setSkipTvFallbackClients — the TV flavors never call these, so
+ * (mirrors VideoInfoService.setPreferNoPotClient — the TV flavors never call these, so
  * upstream behavior is unchanged by default). Lives outside the internal BrowseService2
  * class so the app module can reach it.
  */
