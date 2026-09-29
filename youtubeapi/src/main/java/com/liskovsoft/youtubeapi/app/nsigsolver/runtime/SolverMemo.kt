@@ -26,8 +26,11 @@ import com.liskovsoft.youtubeapi.app.nsigsolver.provider.JsChallengeRequest
  * with an error or a missing value is never used: today's path answers it, and a disagreement turns
  * the memo off.
  *
- * Its own monitor guards the state, so a solve can ask [worthWaiting] before it takes the provider's
- * V8 lock; the provider changes it only while holding that lock.
+ * NEWTUBE(v8-priority): a solve never waits for the check. The warm-up runs it in two steps behind
+ * [V8Lane]'s memo gate (see MemoWarmup), and a solve that comes first takes today's path at once,
+ * on the player's code staged in the runtime ([onStaged]) when it is there.
+ *
+ * Its own monitor guards the state; the provider changes it only while holding its lane.
  */
 internal class SolverMemo {
     enum class Route {
@@ -49,13 +52,16 @@ internal class SolverMemo {
     // was checked, and a later load of different code under the same URL is refused ([matchesCheck]).
     private val verified = HashMap<String, Long>()
     private val rejected = HashSet<String>()
-    // The warm-ups under way per player (they hold the V8 lock for most of it). A count: two
-    // extractors for one player can overlap, and the first to finish must not end the wait.
-    private val checking = HashMap<String, Int>()
     // Per runtime. slotUrl: the player newtube.memo.js holds (set when a load starts, so a failed load
     // is still known to occupy it); loadedUrl: that player, once its load finished and may answer.
     private var slotUrl: String? = null
     private var loadedUrl: String? = null
+    // Per runtime. The player whose preprocessed code is staged (__ntStage), and its fingerprint.
+    private var stagedUrl: String? = null
+    private var stagedFingerprint = 0L
+    // Per runtime. The check's first half (__ntCheckLoad) ran for this player and staged code.
+    private var checkLoadedUrl: String? = null
+    private var checkLoadedFingerprint = 0L
 
     @Synchronized
     fun route(playerUrl: String, keepAlive: Boolean): Route = when {
@@ -65,44 +71,63 @@ internal class SolverMemo {
         else -> Route.LOAD
     }
 
-    /**
-     * Whether a solve should take the V8 lock to ask the memo: yes when the kept solvers may answer,
-     * or when a warm-up is checking this player (waiting for its verdict beats evaluating the player
-     * next to it). No when the memo is off or nothing is checking the player, so today's path runs
-     * exactly as before, its cache read overlapping whatever V8 is doing.
-     */
-    @Synchronized
-    fun worthWaiting(playerUrl: String, keepAlive: Boolean): Boolean = when (route(playerUrl, keepAlive)) {
-        Route.OFF -> false
-        Route.UNCHECKED -> checking.containsKey(playerUrl)
-        Route.LOAD, Route.HIT -> true
-    }
-
     /** The `memo=` of a `v8-run` line for a solve that took today's path. */
     fun fullPathLabel(playerUrl: String, keepAlive: Boolean): String =
         if (route(playerUrl, keepAlive) == Route.OFF) LABEL_OFF else LABEL_MISS
-
-    @Synchronized
-    fun onCheckStarted(playerUrl: String) {
-        checking[playerUrl] = (checking[playerUrl] ?: 0) + 1
-    }
-
-    @Synchronized
-    fun onCheckFinished(playerUrl: String) {
-        val left = (checking[playerUrl] ?: 0) - 1
-        if (left > 0) {
-            checking[playerUrl] = left
-        } else {
-            checking.remove(playerUrl)
-        }
-    }
 
     /** A script that evaluates [playerUrl] into the memo is about to run: it replaces whatever is held. */
     @Synchronized
     fun onLoadStarted(playerUrl: String) {
         slotUrl = playerUrl
         loadedUrl = null
+        checkLoadedUrl = null
     }
+
+    /**
+     * NEWTUBE(v8-priority): the runtime keeps [playerUrl]'s preprocessed code (fingerprint
+     * [codeFingerprint]) and today's path may run on it. It replaces the one staged before.
+     */
+    @Synchronized
+    fun onStaged(playerUrl: String, codeFingerprint: Long) {
+        stagedUrl = playerUrl
+        stagedFingerprint = codeFingerprint
+    }
+
+    @Synchronized
+    fun isStaged(playerUrl: String): Boolean = stagedUrl == playerUrl
+
+    /** The fingerprint of [playerUrl]'s staged code, or null when another player (or none) is staged. */
+    @Synchronized
+    fun stagedFingerprint(playerUrl: String): Long? = if (stagedUrl == playerUrl) stagedFingerprint else null
+
+    /** A script on the staged code failed: the runtime's copy is not trusted as staged any more. */
+    @Synchronized
+    fun onStageLost() {
+        stagedUrl = null
+        checkLoadedUrl = null
+    }
+
+    /**
+     * The check's first half evaluated [playerUrl]'s staged code ([codeFingerprint]) into the memo
+     * and kept its first answers. It is loaded, but answers nothing before [onVerified].
+     */
+    @Synchronized
+    fun onCheckLoaded(playerUrl: String, codeFingerprint: Long) {
+        if (slotUrl == playerUrl) {
+            loadedUrl = playerUrl
+            checkLoadedUrl = playerUrl
+            checkLoadedFingerprint = codeFingerprint
+        }
+    }
+
+    /**
+     * The check's second half may run: its first half loaded this very code, the memo still holds
+     * it, and the same code is still staged for today's path to run on.
+     */
+    @Synchronized
+    fun checkLoaded(playerUrl: String, codeFingerprint: Long): Boolean =
+        checkLoadedUrl == playerUrl && checkLoadedFingerprint == codeFingerprint
+                && loadedUrl == playerUrl && stagedUrl == playerUrl && stagedFingerprint == codeFingerprint
 
     /** The load of [playerUrl] finished in the runtime that is still alive. */
     @Synchronized
@@ -112,10 +137,29 @@ internal class SolverMemo {
         }
     }
 
+    /**
+     * NEWTUBE(v8-priority): what the warm-up has left to do for [playerUrl] (see MemoWarmup): stage
+     * its code, then the check's two halves; for a player checked earlier, load it again. Null when
+     * the memo is off, rejected this player, or answers for it already.
+     */
+    @Synchronized
+    fun warmupStep(playerUrl: String, keepAlive: Boolean): MemoWarmup.Step? = when (route(playerUrl, keepAlive)) {
+        Route.OFF, Route.HIT -> null
+        Route.LOAD -> MemoWarmup.Step.LOAD
+        Route.UNCHECKED -> when {
+            stagedUrl != playerUrl -> MemoWarmup.Step.STAGE
+            !checkLoaded(playerUrl, stagedFingerprint) -> MemoWarmup.Step.CHECK_LOAD
+            else -> MemoWarmup.Step.CHECK
+        }
+    }
+
     @Synchronized
     fun onVerified(playerUrl: String, codeFingerprint: Long) {
         if (playerUrl !in rejected) {
             verified[playerUrl] = codeFingerprint
+        }
+        if (checkLoadedUrl == playerUrl) {
+            checkLoadedUrl = null
         }
     }
 
@@ -137,23 +181,27 @@ internal class SolverMemo {
         }
         slotUrl = null
         loadedUrl = null
+        checkLoadedUrl = null
         return true
     }
 
     @Synchronized
     fun holdsSlot(playerUrl: String): Boolean = slotUrl == playerUrl
 
-    /** The runtime's newtube.memo.js slot was emptied (__ntDrop). */
+    /** The runtime's newtube.memo.js slot was emptied (__ntDrop; the staged code stays). */
     @Synchronized
     fun onSlotDropped() {
         slotUrl = null
         loadedUrl = null
+        checkLoadedUrl = null
     }
 
     @Synchronized
     fun onRuntimeDisposed() {
         slotUrl = null
         loadedUrl = null
+        stagedUrl = null
+        checkLoadedUrl = null
     }
 
     /**
@@ -165,6 +213,9 @@ internal class SolverMemo {
         verified.remove(playerUrl)
         if (loadedUrl == playerUrl) {
             loadedUrl = null
+        }
+        if (checkLoadedUrl == playerUrl) {
+            checkLoadedUrl = null
         }
         return rejected.add(playerUrl)
     }
@@ -203,9 +254,33 @@ internal class SolverMemo {
         fun loadAndSolveStdin(playerUrl: String, code: String, requests: List<JsChallengeRequest>): String =
             "JSON.stringify(__ntLoadAndSolve(${gson.toJson(playerUrl)}, ${gson.toJson(code)}, ${requestsJson(requests)}));"
 
-        /** The guard: kept solvers, jsc() and the kept solvers again, on the same challenges. */
-        fun checkStdin(playerUrl: String, code: String, requests: List<JsChallengeRequest>): String =
-            "JSON.stringify(__ntCheck(${gson.toJson(playerUrl)}, ${gson.toJson(code)}, ${requestsJson(requests)}));"
+        /** The same from the staged code: no player sent. */
+        fun loadAndSolveStagedStdin(playerUrl: String, requests: List<JsChallengeRequest>): String =
+            "JSON.stringify(__ntLoadAndSolveStaged(${gson.toJson(playerUrl)}, ${requestsJson(requests)}));"
+
+        /** NEWTUBE(v8-priority): keep [code] in the runtime for today's path. */
+        fun stageStdin(playerUrl: String, code: String): String =
+            "__ntStage(${gson.toJson(playerUrl)}, ${gson.toJson(code)});"
+
+        /** Today's path (jsc) on the staged code: the challenges only. */
+        fun fullStdin(playerUrl: String, requests: List<JsChallengeRequest>): String =
+            "JSON.stringify(__ntFull(${gson.toJson(playerUrl)}, ${requestsJson(requests)}));"
+
+        /** Stage [code], then today's path on it: one script, the cost of today's full path. */
+        fun stageAndFullStdin(playerUrl: String, code: String, requests: List<JsChallengeRequest>): String =
+            stageStdin(playerUrl, code) + "\n" + fullStdin(playerUrl, requests)
+
+        /** Today's path for a player the cache does not have (jsc preprocesses it); its output is staged. */
+        fun fullPlayerStdin(playerUrl: String, player: String, requests: List<JsChallengeRequest>): String =
+            "JSON.stringify(__ntFullPlayer(${gson.toJson(playerUrl)}, ${gson.toJson(player)}, ${requestsJson(requests)}));"
+
+        /** The guard's first half: the staged code evaluated into the memo, its answers kept in the runtime. */
+        fun checkLoadStdin(playerUrl: String, requests: List<JsChallengeRequest>): String =
+            "__ntCheckLoad(${gson.toJson(playerUrl)}, ${requestsJson(requests)});"
+
+        /** The guard's second half: jsc() on the staged code, then the kept solvers again. */
+        fun checkFinishStdin(playerUrl: String, requests: List<JsChallengeRequest>): String =
+            "JSON.stringify(__ntCheckFinish(${gson.toJson(playerUrl)}, ${requestsJson(requests)}));"
 
         fun parseOutput(stdout: String?): SolverOutput? = try {
             gson.fromJson(stdout, solverOutputType)
@@ -259,8 +334,8 @@ internal class SolverMemo {
         }
 
         /**
-         * The guard's verdict on [checkStdin]'s output: null when the kept solvers answered exactly
-         * what today's path did, twice, else why they may not answer for this player.
+         * The guard's verdict on [checkFinishStdin]'s output: null when the kept solvers answered
+         * exactly what today's path did, twice, else why they may not answer for this player.
          */
         fun checkVerdict(stdout: String?, requests: List<JsChallengeRequest>): String? {
             val check = try {

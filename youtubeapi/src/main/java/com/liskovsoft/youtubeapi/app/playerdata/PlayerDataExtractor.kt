@@ -242,13 +242,14 @@ internal class PlayerDataExtractor @JvmOverloads constructor(
             val startMs = android.os.SystemClock.elapsedRealtime()
             android.util.Log.d("NetPath", "v8-warmup start")
             try {
-                // NEWTUBE(v8-memo): with the runtime, evaluate this player into it and cross-check
-                // it against today's path on checkSigData's fixed challenges, so the first
-                // signature/n solve of the process is usually a hit instead of 206-240 ms of
-                // player re-evaluation (Pixel 9, netbench ttff-analysis.md 3.1). That adds one
-                // cache read and two player evaluations to this thread (its own v8-memo line has
-                // the time; "complete" below now includes it); a solve that arrives meanwhile
-                // waits for the verdict instead of evaluating the player itself.
+                // NEWTUBE(v8-memo): with the runtime, stage this player's code in it, evaluate it
+                // into the memo and cross-check it against today's path on checkSigData's fixed
+                // challenges, so later signature/n solves are hits instead of 206-240 ms of player
+                // re-evaluation (Pixel 9, netbench ttff-analysis.md 3.1).
+                // NEWTUBE(v8-priority): one step at a time, and a solve always goes first: it waits
+                // at most for the step in flight, and the memo steps (one player evaluation each)
+                // wait for the first solve after this began or MemoWarmup.GRACE_MS. So "complete"
+                // below can come seconds later; each step has its own v8-queue line.
                 V8ChallengeProvider.warmup(fixedPlayerUrl, listOf(
                     JsChallengeRequest(JsChallengeType.N, ChallengeInput(fixedPlayerUrl, listOf(CHECK_N))),
                     JsChallengeRequest(JsChallengeType.SIG, ChallengeInput(fixedPlayerUrl, listOf(CHECK_SIG)))

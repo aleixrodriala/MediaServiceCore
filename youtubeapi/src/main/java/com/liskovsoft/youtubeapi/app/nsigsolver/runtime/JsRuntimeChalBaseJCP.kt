@@ -38,23 +38,18 @@ internal abstract class JsRuntimeChalBaseJCP: JsChallengeProvider() {
     protected abstract fun runJsRuntime(stdin: String, playerUrl: String): String
 
     /**
-     * NEWTUBE(v8-memo): the answer of the solvers the runtime already holds for [playerUrl], without
-     * reading or re-evaluating the player, or null to take today's path. See [SolverMemo].
+     * One player's answer. Today's path here; NEWTUBE(v8-memo, v8-priority): V8ChallengeProvider
+     * answers from the solvers its runtime keeps when the guard allows it, runs today's path on the
+     * player's code staged in the runtime, and orders both against its warm-up (see V8Lane).
      */
-    protected open fun solveFromMemo(playerUrl: String, requests: List<JsChallengeRequest>): SolverOutput? = null
-
-    /** NEWTUBE(v8-memo): the memo's answer had an error or a missing value; today's path answered [fullAnswer]. */
-    protected open fun onMemoUnclean(playerUrl: String, memoAnswer: SolverOutput, fullAnswer: SolverOutput) {}
+    protected open fun solvePlayer(playerUrl: String, requests: List<JsChallengeRequest>): SolverOutput =
+        solveFull(playerUrl, requests)
 
     override fun realBulkSolve(requests: List<JsChallengeRequest>): Sequence<JsChallengeProviderResponse> = sequence {
         val grouped: Map<String, List<JsChallengeRequest>> = requests.groupBy { it.input.playerUrl }
 
         for ((playerUrl, groupedRequests) in grouped) {
-            // NEWTUBE(v8-memo): the kept solvers answer when the guard allows it; today's path
-            // answers otherwise, and also whenever their answer is not clean.
-            val output = SolverMemo.answer(solveFromMemo(playerUrl, groupedRequests), groupedRequests,
-                { solveFull(playerUrl, groupedRequests) },
-                { memo, full -> onMemoUnclean(playerUrl, memo, full) })
+            val output = solvePlayer(playerUrl, groupedRequests)
 
             for ((request, responseData) in groupedRequests.zip(output.responses)) {
                 if (responseData.type == "error") {
@@ -70,7 +65,7 @@ internal abstract class JsRuntimeChalBaseJCP: JsChallengeProvider() {
     }
 
     /** Today's path: read the player, send all of it, and V8 evaluates it before solving. */
-    private fun solveFull(playerUrl: String, groupedRequests: List<JsChallengeRequest>): SolverOutput {
+    protected fun solveFull(playerUrl: String, groupedRequests: List<JsChallengeRequest>): SolverOutput {
         val data = ie.cache.load(cacheSection, "player:$playerUrl")
         var player = data?.code
 
@@ -89,24 +84,38 @@ internal abstract class JsRuntimeChalBaseJCP: JsChallengeProvider() {
                 + " challenges=" + groupedRequests.sumOf { it.input.challenges.size })
         val stdout = runJsRuntime(stdin, playerUrl)
 
+        val output = parseSolverOutput(stdout)
+        storePreprocessed(playerUrl, output)
+        return output
+    }
+
+    /** jsc()'s output; throws on an unparsable one or an error for the whole call, as today's path does. */
+    protected fun parseSolverOutput(stdout: String?): SolverOutput {
         val gson = Gson()
-        val output: SolverOutput = try {
+        val parsed: SolverOutput? = try {
             gson.fromJson(stdout, solverOutputType)
         } catch (e: JsonSyntaxException) {
             throw JsChallengeProviderError("Cannot parse solver output", e)
         }
+        val output = parsed ?: throw JsChallengeProviderError("Cannot parse solver output")
 
         if (output.type == "error")
             throw JsChallengeProviderError(output.error ?: "Unknown solver output error")
 
-        val preprocessed = output.preprocessed_player
-        if (preprocessed != null)
-            ie.cache.store(cacheSection, "player:$playerUrl", CachedData(preprocessed))
-
         return output
     }
 
-    private fun constructStdin(player: String, preprocessed: Boolean, requests: List<JsChallengeRequest>): String {
+    /** A player preprocessed by this call goes to the cache, for the next process. */
+    protected fun storePreprocessed(playerUrl: String, output: SolverOutput) {
+        val preprocessed = output.preprocessed_player
+        if (preprocessed != null)
+            ie.cache.store(cacheSection, "player:$playerUrl", CachedData(preprocessed))
+    }
+
+    /** The cache's preprocessed [playerUrl], or null. */
+    protected fun cachedPlayer(playerUrl: String): String? = ie.cache.load(cacheSection, "player:$playerUrl")?.code
+
+    protected fun constructStdin(player: String, preprocessed: Boolean, requests: List<JsChallengeRequest>): String {
         val jsonRequests = requests.map { request ->
             mapOf(
                 // TODO: i despise nsig name
