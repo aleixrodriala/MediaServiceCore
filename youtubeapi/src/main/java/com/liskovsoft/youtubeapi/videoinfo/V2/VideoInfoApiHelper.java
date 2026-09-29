@@ -47,10 +47,27 @@ public class VideoInfoApiHelper {
                 + " visitor=" + VisitorFingerprint.of(visitorData)
                 + " visitorAgeMs=" + visitorAgeMs
                 + " playerPot=" + (poToken != null && !poToken.isEmpty() ? "y" : "n"));
+        // NEWTUBE(player-js-gate): a source whose answers need no signature/n solve does not wait
+        // for a new player's validation, only for its JS to be read (see PlayerJsGate).
+        AppService.ReadAheadPlayerData readAhead = VideoInfoService.skipsPlayerJsValidation(client)
+                ? readAheadPlayerData(client, videoId) : null;
         String query = createCheckedQuery(client, videoId, clickTrackingParams,
                 client == AppClient.GEO, poToken, visitorData,
-                embed != null ? embed.encryptedHostFlags : null);
+                embed != null ? embed.encryptedHostFlags : null, readAhead);
         return new PlayerRequest(query, visitorData);
+    }
+
+    private static AppService.ReadAheadPlayerData readAheadPlayerData(AppClient client, String videoId) {
+        long startMs = android.os.SystemClock.elapsedRealtime();
+        AppService.ReadAheadPlayerData readAhead = AppService.instance().getReadAheadPlayerData();
+        if (readAhead != null) {
+            android.util.Log.d("NetPath", "player-js-gate request video=" + safeVideoId(videoId)
+                    + " client=" + client
+                    + " waitMs=" + (android.os.SystemClock.elapsedRealtime() - startMs)
+                    + " sts=" + (readAhead.signatureTimestamp != null ? "y" : "n")
+                    + " validation=pending");
+        }
+        return readAhead;
     }
 
     public static String getPlayerVisitorData(AppClient client) {
@@ -78,7 +95,8 @@ public class VideoInfoApiHelper {
      */
     private static String createCheckedQuery(AppClient client, String videoId, String clickTrackingParams,
                                              boolean enableGeoFix, String poToken, String visitorData,
-                                             String encryptedHostFlags) {
+                                             String encryptedHostFlags,
+                                             AppService.ReadAheadPlayerData readAhead) {
         // Important: use only for the clients that don't support auth.
         // Otherwise, google suggestions and history won't work (visitor data bug)
         return new QueryBuilder(client)
@@ -87,6 +105,8 @@ public class VideoInfoApiHelper {
                 .setPoToken(poToken)
                 .setVisitorData(visitorData)
                 .setEncryptedHostFlags(encryptedHostFlags)
+                .setReadAheadPlayerData(readAhead != null ? readAhead.clientPlaybackNonce : null,
+                        readAhead != null ? readAhead.signatureTimestamp : null)
                 .enableGeoFix(enableGeoFix) // may broke other functionality
                 .build();
     }

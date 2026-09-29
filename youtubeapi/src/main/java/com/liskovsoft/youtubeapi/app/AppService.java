@@ -3,9 +3,11 @@ package com.liskovsoft.youtubeapi.app;
 import android.content.Context;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.liskovsoft.sharedutils.helpers.Helpers;
 import com.liskovsoft.sharedutils.prefs.GlobalPreferences;
+import com.liskovsoft.youtubeapi.app.playerdata.PlayerDataExtractor;
 import com.liskovsoft.youtubeapi.auth.V1.AuthApi;
 
 import java.util.ArrayList;
@@ -131,6 +133,64 @@ public class AppService {
                 + " result=" + (mClientPlaybackNonce != null ? "ok" : "missing"));
 
         return mClientPlaybackNonce;
+    }
+
+    /**
+     * NEWTUBE(player-js-gate): the cpn and signatureTimestamp of a /player request, when the
+     * current player is still being validated. See {@link PlayerJsReadAhead}.
+     */
+    public static final class ReadAheadPlayerData {
+        public final String clientPlaybackNonce;
+        public final String signatureTimestamp;
+
+        ReadAheadPlayerData(String clientPlaybackNonce, String signatureTimestamp) {
+            this.clientPlaybackNonce = clientPlaybackNonce;
+            this.signatureTimestamp = signatureTimestamp;
+        }
+    }
+
+    /** NEWTUBE(player-js-gate): see {@link AppServiceIntCached#setPlayerJsReadAhead}. */
+    public static void setPlayerJsReadAhead(boolean enabled) {
+        AppServiceIntCached.setPlayerJsReadAhead(enabled);
+    }
+
+    /**
+     * NEWTUBE(player-js-gate): for a /player request whose answer needs no signature/n solve. When
+     * the current player has not been validated yet, waits only until its JS is read and returns
+     * that player's signatureTimestamp with this video's cpn; the validation goes on in the
+     * background. Null when the extractor is built already or nothing could be read ahead: then
+     * {@link #getClientPlaybackNonce()} and {@link #getSignatureTimestamp()} answer, as before.
+     * <p>
+     * The cpn is the one {@link #getClientPlaybackNonce()} keeps for this video (history reports
+     * it): made here from the read-ahead cpn code when this video has none yet. The monitor is taken
+     * to make and keep it, never while waiting for the player.
+     */
+    @Nullable
+    public ReadAheadPlayerData getReadAheadPlayerData() {
+        PlayerJsReadAhead.Data read = mAppServiceInt.awaitPlayerJsReadAhead();
+        if (read == null) {
+            return null;
+        }
+
+        String cpn;
+        synchronized (this) {
+            // Made and kept in one hold, like getClientPlaybackNonce (a few ms of J2V8, no wait).
+            if (mClientPlaybackNonce == null) {
+                long startMs = android.os.SystemClock.elapsedRealtime();
+                mClientPlaybackNonce = PlayerDataExtractor.clientPlaybackNonceFromCode(read.cpnCode);
+                android.util.Log.d("NetPath", "player-cpn complete ms="
+                        + (android.os.SystemClock.elapsedRealtime() - startMs)
+                        + " result=" + (mClientPlaybackNonce != null ? "ok" : "missing") + " readAhead=y");
+            }
+            cpn = mClientPlaybackNonce;
+        }
+
+        return new ReadAheadPlayerData(cpn, read.signatureTimestamp);
+    }
+
+    /** NEWTUBE(player-js-gate): a player read ahead is still being validated in the background. */
+    public boolean isPlayerJsValidationPending() {
+        return mAppServiceInt.isPlayerJsValidationPending();
     }
 
     /**

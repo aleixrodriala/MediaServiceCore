@@ -161,6 +161,20 @@ public class AppServiceInt {
         return false;
     }
 
+    /**
+     * NEWTUBE(player-js-gate): what a /player request needs from the current player before that
+     * player is validated, or null to ask the extractor (which waits for the validation). See
+     * {@link PlayerJsReadAhead}. Nothing is read ahead without the cache.
+     */
+    PlayerJsReadAhead.Data awaitPlayerJsReadAhead() {
+        return null;
+    }
+
+    /** NEWTUBE(player-js-gate): a read-ahead player is still being validated. */
+    boolean isPlayerJsValidationPending() {
+        return false;
+    }
+
     // Moved from AppService
 
     public String getClientId() {

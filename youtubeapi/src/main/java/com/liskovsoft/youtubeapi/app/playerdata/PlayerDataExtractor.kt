@@ -10,7 +10,11 @@ import com.liskovsoft.youtubeapi.app.nsigsolver.provider.JsChallengeRequest
 import com.liskovsoft.youtubeapi.app.nsigsolver.provider.JsChallengeType
 import com.liskovsoft.youtubeapi.service.internal.MediaServiceData
 
-internal class PlayerDataExtractor(val playerUrl: String) {
+internal class PlayerDataExtractor @JvmOverloads constructor(
+    val playerUrl: String,
+    /** NEWTUBE(player-js-gate): told the signatureTimestamp once a not-yet-validated JS is read. */
+    private val onPlayerJsRead: OnPlayerJsRead? = null
+) {
     private val tag = PlayerDataExtractor::class.java.simpleName
     private val data
         get() = MediaServiceData.instance()
@@ -41,13 +45,32 @@ internal class PlayerDataExtractor(val playerUrl: String) {
         YouTubeInfoExtractor.withPlayerMemo {
             // Get the code from the cache
             restoreAllData()
-            checkSigData()
-            checkCpnData()
 
-            if (cpnCode == null || signatureTimestamp == null) {
+            if (onPlayerJsRead != null && !(nFuncCode && sFuncCode)) {
+                // NEWTUBE(player-js-gate): a player not validated on this device yet. Read its JS
+                // FIRST and hand over what a /player request carries (the signatureTimestamp and
+                // the cpn code), then validate it exactly as below: the same solve on the same
+                // memo'd body, the same second read when the first found nothing, the same persist.
+                // Only the order moves; this constructor still returns validated or not, as before.
                 fetchAllData()
+                signatureTimestamp?.let { onPlayerJsRead.onRead(it, cpnCode) }
+                checkSigData()
                 checkCpnData()
+
+                if (cpnCode == null || signatureTimestamp == null) {
+                    fetchAllData()
+                    checkCpnData()
+                }
                 persistAllData()
+            } else {
+                checkSigData()
+                checkCpnData()
+
+                if (cpnCode == null || signatureTimestamp == null) {
+                    fetchAllData()
+                    checkCpnData()
+                    persistAllData()
+                }
             }
         }
 
@@ -245,9 +268,29 @@ internal class PlayerDataExtractor(val playerUrl: String) {
         }, "V8WarmUp").start()
     }
 
-    private companion object {
+    /** NEWTUBE(player-js-gate): see PlayerJsReadAhead. */
+    fun interface OnPlayerJsRead {
+        fun onRead(signatureTimestamp: String, cpnCode: String?)
+    }
+
+    companion object {
         // checkSigData's fixed challenges; the v8-memo guard in warmupSigRuntimeAsync reuses them.
-        const val CHECK_N = "5cNpZqIJ7ixNqU68Y7S"
-        const val CHECK_SIG = "NJAJEij0EwRgIhAI0KExTgjfPk-MPM9MAdzyyPRt=BM8-XO5tm5hlMCSVpAiEAv7eP3CURqZNSPow8BXXAoazVoXgeMP7gH9BdylHCwgw=gwzz"
+        private const val CHECK_N = "5cNpZqIJ7ixNqU68Y7S"
+        private const val CHECK_SIG = "NJAJEij0EwRgIhAI0KExTgjfPk-MPM9MAdzyyPRt=BM8-XO5tm5hlMCSVpAiEAv7eP3CURqZNSPow8BXXAoazVoXgeMP7gH9BdylHCwgw=gwzz"
+
+        /**
+         * NEWTUBE(player-js-gate): a cpn from a read-ahead cpn code, the way
+         * [createClientPlaybackNonce] makes one from the extractor's own (the random generator
+         * when there is no code or it does not run).
+         */
+        @JvmStatic
+        fun clientPlaybackNonceFromCode(cpnCode: String?): String? {
+            val fromCode = try {
+                cpnCode?.let { ClientPlaybackNonceExtractor.createClientPlaybackNonce(it) }
+            } catch (e: Exception) {
+                null
+            }
+            return fromCode ?: YouTubeHelper.generateCPNParameter()
+        }
     }
 }

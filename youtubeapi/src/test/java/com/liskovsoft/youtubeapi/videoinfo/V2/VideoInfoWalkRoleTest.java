@@ -63,6 +63,12 @@ public class VideoInfoWalkRoleTest {
         protected kotlin.Pair<List<String>, List<String>> bulkSigExtract(List<String> nParams, List<String> sParams) {
             return null;
         }
+
+        /** NEWTUBE(player-js-gate): no player is being validated. */
+        @Implementation
+        protected boolean isPlayerJsValidationPending() {
+            return false;
+        }
     }
 
     @Before

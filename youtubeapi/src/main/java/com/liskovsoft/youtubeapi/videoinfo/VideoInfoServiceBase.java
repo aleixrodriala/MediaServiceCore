@@ -81,6 +81,30 @@ public abstract class VideoInfoServiceBase {
         return null;
     }
 
+    // See setSkipSolveWithoutChallenges.
+    private static volatile boolean sSkipSolveWithoutChallenges;
+
+    /**
+     * NEWTUBE(player-js-gate): set from the phone flavor (through VideoInfoService's player-JS
+     * gate). Never on TV.
+     * <p>
+     * {@link #transformFormats} asked AppService for the signature/n solve of EVERY answer, including
+     * one with no signature and no n parameter at all (VISIONOS, ANDROID_VR). The solve itself then
+     * does nothing, but asking for it builds the player extractor first - and while a new player is
+     * being validated in the background (the gate lets those sources' requests go out before that
+     * validation) it waits the whole validation out, only to hand back nulls. With nothing to solve
+     * the call is skipped: the result is the same (no n, no signature to apply), without the wait.
+     * An answer with anything to solve still asks, and still waits.
+     */
+    protected static void setSkipSolveWithoutChallenges(boolean skip) {
+        sSkipSolveWithoutChallenges = skip;
+    }
+
+    /** Whether any url holder has an n or a signature parameter to solve. */
+    static boolean hasChallenge(List<String> nParams, List<String> sParams) {
+        return !Helpers.allNulls(nParams) || !Helpers.allNulls(sParams);
+    }
+
     protected VideoInfoServiceBase() {
         mAppService = AppService.instance();
         mDashInfoApi = RetrofitHelper.create(DashInfoApi.class);
@@ -154,7 +178,15 @@ public abstract class VideoInfoServiceBase {
         List<String> nParams = extractNParams(urlHolders);
         List<String> sParams = extractSParams(urlHolders);
         long sigStartMs = android.os.SystemClock.elapsedRealtime();
-        Pair<List<String>, List<String>> result = mAppService.bulkSigExtract(nParams, sParams);
+        // NEWTUBE(player-js-gate): nothing to solve asks nothing of the player (see
+        // setSkipSolveWithoutChallenges); anything to solve waits for the validated player.
+        boolean solve = !sSkipSolveWithoutChallenges || hasChallenge(nParams, sParams);
+        if (!solve && mAppService.isPlayerJsValidationPending()) {
+            android.util.Log.d("NetPath", "player-js-gate transform video="
+                    + videoInfo.getVideoDetails().getVideoId() + " client=" + videoInfo.getClient()
+                    + " solve=none validation=pending");
+        }
+        Pair<List<String>, List<String>> result = solve ? mAppService.bulkSigExtract(nParams, sParams) : null;
         // The V8 solve is charged per DISTINCT param, not per format, and it is the only part of
         // the transform that costs real CPU -- so log both counts next to the elapsed time. Without
         // them a slow transform is indistinguishable between "many distinct challenges" (which

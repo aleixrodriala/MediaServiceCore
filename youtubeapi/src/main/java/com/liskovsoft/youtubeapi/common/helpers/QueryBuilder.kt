@@ -42,6 +42,7 @@ internal class QueryBuilder(private val client: AppClient) {
     private var poToken: String? = null
     private var encryptedHostFlags: String? = null
     private var signatureTimestamp: Int? = null
+    private var readAheadTimestamp: String? = null
     private var isGeoFixEnabled: Boolean = false
 
     fun setType(type: PostDataType) = apply { this.type = type }
@@ -61,6 +62,17 @@ internal class QueryBuilder(private val client: AppClient) {
     fun setVisitorData(visitorData: String?) = apply { this.visitorData = visitorData }
     fun setEncryptedHostFlags(flags: String?) = apply { this.encryptedHostFlags = flags }
     fun enableGeoFix(enableGeoFix: Boolean) = apply { isGeoFixEnabled = enableGeoFix }
+
+    /**
+     * NEWTUBE(player-js-gate): the cpn and the player's raw signatureTimestamp, read ahead of the
+     * player's validation (AppService.getReadAheadPlayerData). They stand in for AppService's
+     * values, which wait for that validation; the timestamp gets the same TV format below. Null
+     * leaves both to AppService, as before.
+     */
+    fun setReadAheadPlayerData(cpn: String?, signatureTimestamp: String?) = apply {
+        if (this.cpn == null) this.cpn = cpn
+        readAheadTimestamp = signatureTimestamp
+    }
 
     fun build(): String {
         // TODO: need more robust type detection
@@ -91,7 +103,7 @@ internal class QueryBuilder(private val client: AppClient) {
             // TVHTML5_SIMPLY is served working media URLs by the real five-digit value and dead,
             // instantly-403 URLs by the suffixed one -- see [AppClient.usesTvSignatureTimestamp].
             if (signatureTimestamp == null || signatureTimestamp == -1)
-                signatureTimestamp = Helpers.parseInt(appService.signatureTimestamp?.let {
+                signatureTimestamp = Helpers.parseInt((readAheadTimestamp ?: appService.signatureTimestamp)?.let {
                     if (client.usesTvSignatureTimestamp && it.length == 5) it + "001" else it
                 })
         }

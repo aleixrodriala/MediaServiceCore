@@ -219,6 +219,36 @@ public class VideoInfoService extends VideoInfoServiceBase {
      */
     public static void setPreferNoPotClient(boolean prefer) {
         sPreferNoPotClient = prefer;
+        applyPlayerJsGate();
+    }
+
+    // See setPlayerJsGateEnabled. Only the phone path reads it (sPreferNoPotClient).
+    private static volatile boolean sPlayerJsGate = true;
+
+    /**
+     * NEWTUBE(player-js-gate): on the phone, a source whose answers need no signature/n solve
+     * (PlayerJsGate: VISIONOS, ANDROID_VR) sends its /player as soon as a new player's JS is read,
+     * instead of after that player's V8 validation (~3 s on the emulator); the validation runs in
+     * the background and everything that deciphers still waits for it. On by default with the
+     * phone path. false restores waiting for the whole validation on every request: the rollback
+     * for debug and benchmark builds (debug.arc.player_js_gate=0). Never called on TV, where the
+     * gate is off anyway.
+     */
+    public static void setPlayerJsGateEnabled(boolean enabled) {
+        sPlayerJsGate = enabled;
+        applyPlayerJsGate();
+    }
+
+    /** Pushes the phone gate down to the extractor build and the format transform. */
+    private static void applyPlayerJsGate() {
+        boolean active = sPreferNoPotClient && sPlayerJsGate;
+        AppService.setPlayerJsReadAhead(active);
+        VideoInfoServiceBase.setSkipSolveWithoutChallenges(active);
+    }
+
+    /** NEWTUBE(player-js-gate): whether {@code client}'s /player may skip the wait. See PlayerJsGate. */
+    static boolean skipsPlayerJsValidation(AppClient client) {
+        return PlayerJsGate.skipsValidation(client, sPreferNoPotClient, sPlayerJsGate);
     }
 
     /**
