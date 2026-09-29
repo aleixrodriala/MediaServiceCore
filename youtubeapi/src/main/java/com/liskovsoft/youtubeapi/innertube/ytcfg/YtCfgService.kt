@@ -12,6 +12,13 @@ object YtCfgService {
     private val EMBED_IDENTITY_TTL_MS = TimeUnit.HOURS.toMillis(6)
     @Volatile
     private var cachedEmbedIdentity: EmbedIdentity? = null
+    /**
+     * NEWTUBE(embed-persist): bumped by every invalidation, under [identityLock]. An identity that
+     * was restored or fetched while one happened is used for its own request but never cached or
+     * persisted, so a refused pair cannot come back through an ask that was already in flight.
+     */
+    private var invalidations = 0
+    private val identityLock = Any()
 
     /**
      * NEWTUBE(web-embed-identity): what a WEB_EMBEDDED_PLAYER /player request needs from the embed
@@ -31,9 +38,24 @@ object YtCfgService {
 
     @JvmStatic
     fun getEmbedIdentity(videoId: String?): EmbedIdentity? {
+        val nowMs = System.currentTimeMillis()
         cachedEmbedIdentity?.let {
-            if (System.currentTimeMillis() - it.fetchedAtMs < EMBED_IDENTITY_TTL_MS)
+            if (EmbedIdentityPersistence.isFresh(it, nowMs, EMBED_IDENTITY_TTL_MS))
                 return it
+        }
+
+        val epoch = synchronized(identityLock) { invalidations }
+        // NEWTUBE(embed-persist): a new process's first ask takes the pair an earlier process
+        // fetched while it is inside the TTL of that fetch, instead of paying the embed page again
+        // (218-236 ms warm, ~390 ms cold on the Pixel over LTE; see EmbedIdentityPersistence).
+        EmbedIdentityPersistence.restore(nowMs, EMBED_IDENTITY_TTL_MS)?.let {
+            synchronized(identityLock) {
+                if (invalidations == epoch)
+                    cachedEmbedIdentity = it
+            }
+            android.util.Log.d("NetPath",
+                "embed-identity source=restored ageMin=" + (nowMs - it.fetchedAtMs) / 60_000)
+            return it
         }
 
         if (videoId == null)
@@ -57,13 +79,28 @@ object YtCfgService {
         if (flags.isNullOrEmpty() || visitorData.isNullOrEmpty())
             return null
 
-        return EmbedIdentity(flags, visitorData, System.currentTimeMillis()).also { cachedEmbedIdentity = it }
+        return EmbedIdentity(flags, visitorData, System.currentTimeMillis()).also {
+            synchronized(identityLock) {
+                if (invalidations == epoch) {
+                    cachedEmbedIdentity = it
+                    EmbedIdentityPersistence.save(it)
+                }
+            }
+            android.util.Log.d("NetPath", "embed-identity source=fetched ms=" + (it.fetchedAtMs - nowMs))
+        }
     }
 
-    /** Next WEB_EMBED request fetches a fresh page (its answer came back refused). */
+    /**
+     * Next WEB_EMBED request fetches a fresh page (its answer came back refused). NEWTUBE(embed-persist):
+     * the persisted copy goes too, or the next process would restore the refused pair.
+     */
     @JvmStatic
     fun invalidateEmbedIdentity() {
-        cachedEmbedIdentity = null
+        synchronized(identityLock) {
+            invalidations++
+            cachedEmbedIdentity = null
+            EmbedIdentityPersistence.clear()
+        }
     }
 
     /**
