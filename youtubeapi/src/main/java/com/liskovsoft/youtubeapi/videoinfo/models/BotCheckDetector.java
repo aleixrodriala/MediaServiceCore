@@ -280,6 +280,11 @@ public final class BotCheckDetector {
         return value.substring(start, end);
     }
 
+    /** A reason as the comparisons here see it (accents, case and spacing dropped); "" for null. */
+    public static String normalizedReason(@Nullable String reason) {
+        return reason == null ? "" : normalize(reason);
+    }
+
     private static String normalize(String value) {
         return Normalizer.normalize(value, Normalizer.Form.NFD)
                 .replaceAll("\\p{M}+", "")

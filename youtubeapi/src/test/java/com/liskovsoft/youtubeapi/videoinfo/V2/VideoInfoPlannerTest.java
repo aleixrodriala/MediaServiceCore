@@ -292,11 +292,11 @@ public class VideoInfoPlannerTest {
      * A private video as the Pixel saw it (2026-09-29, yZIXLfi8CZQ): VISIONOS and ANDROID_VR say only
      * "Inicia sesión", the others that it is private. The two identical answers used to read as a
      * localized bot check and arm the fifteen-minute circuit, which then answered the next open
-     * without a request. One video repeating it is the video's own refusal; a second video within
-     * ten minutes confirms a challenge of the identity.
+     * without a request. Sign-in requests that differ by client are about the video, however many
+     * such videos are opened.
      */
     @Test
-    public void aPrivateVideoIsNotABotCheckUnlessAnotherVideoRepeatsIt() {
+    public void privateVideosAreNotABotCheck() {
         VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
                 + " {\"status\": \"LOGIN_REQUIRED\", \"reason\": \"" + (client == AppClient.VISIONOS
                 || client == AppClient.ANDROID_VR ? "Inicia sesión" : "Este vídeo es privado") + "\"}}", auth);
@@ -304,21 +304,29 @@ public class VideoInfoPlannerTest {
         assertTrue(verdict.isUnplayable());
         assertFalse(verdict.isBotCheckRequired());
         assertEquals(calls().toString(), 8, calls().size());
-        // Opened again: still one video.
         VideoInfoBotWallTest.ShadowWalk.calls.clear();
-        assertFalse(open("private").isBotCheckRequired());
+        assertFalse(open("private2").isBotCheckRequired());
 
         // The circuit is not armed: the next video is asked for.
         VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> playable(auth);
         VideoInfoBotWallTest.ShadowWalk.calls.clear();
         assertFalse(open("normal").isUnplayable());
         assertEquals(Collections.singletonList("VISIONOS"), calls());
+    }
 
-        // A second video answering the same way is a challenge of the identity.
+    /**
+     * The same sign-in request from every client (a localized wall with no known bot text) is a
+     * challenge of the identity once a second video repeats it; the first is the video's refusal.
+     */
+    @Test
+    public void aUniformSignInRequestIsABotCheckOnTheSecondVideo() {
         VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
                 + " {\"status\": \"LOGIN_REQUIRED\", \"reason\": \"Inicia sesión\"}}", auth);
+        assertFalse(open("first").isBotCheckRequired());
         VideoInfoBotWallTest.ShadowWalk.calls.clear();
-        assertTrue(open("other").isBotCheckRequired());
+        assertFalse("the same video again is still one video", open("first").isBotCheckRequired());
+        VideoInfoBotWallTest.ShadowWalk.calls.clear();
+        assertTrue(open("second").isBotCheckRequired());
     }
 
     /** Signed in, an ordinary video is still one anonymous VISIONOS request. */
