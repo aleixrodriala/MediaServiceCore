@@ -3246,7 +3246,13 @@
         "result": "playable",
         "client": "WEB_EMBED",
         "botCheckTrip": false,
-        "markers": []
+        "markers": [],
+        "changed": {
+         "asked": [
+          "WEB_EMBED"
+         ],
+         "why": "the recovery asks a source that refused the video moments ago after everything else (router v20, RecentRefusals): VISIONOS refused the kids video half a second before TV_TIZEN's media 403, so the recovery goes straight to WEB_EMBED instead of re-asking it"
+        }
        }
       }
      ],

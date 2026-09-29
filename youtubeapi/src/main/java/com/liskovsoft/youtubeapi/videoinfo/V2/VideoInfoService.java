@@ -19,6 +19,7 @@ import com.liskovsoft.youtubeapi.videoinfo.V2.sources.KidsChannelMemory;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PhoneSourcePlanner;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSource;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PlayerSourceCatalog;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.RecentRefusals;
 import com.liskovsoft.youtubeapi.videoinfo.V2.sources.SourceWinnerHint;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitOkHttpHelper;
 import com.liskovsoft.youtubeapi.service.internal.MediaServiceData;
@@ -610,6 +611,29 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 }
             });
     private static final int VIDEO_WINNER_MEMORY = 8;
+    /**
+     * NEWTUBE(recovery-refusals): which sources refused which recent videos; a recovery walk asks
+     * them last (see RecentRefusals). Created on first use: tests build this service without its
+     * field initializers.
+     */
+    @Nullable
+    private volatile RecentRefusals mRecentRefusals;
+
+    private RecentRefusals recentRefusals() {
+        RecentRefusals refusals = mRecentRefusals;
+        if (refusals == null) {
+            synchronized (sRecentRefusalsLock) {
+                refusals = mRecentRefusals;
+                if (refusals == null) {
+                    refusals = new RecentRefusals();
+                    mRecentRefusals = refusals;
+                }
+            }
+        }
+        return refusals;
+    }
+
+    private static final Object sRecentRefusalsLock = new Object();
     /**
      * NEWTUBE(botwall): debug-build fault injection, installed by the phone app only when
      * BuildConfig.DEBUG (DebugBotWall). Null in release, so the per-request cost there is one
@@ -1298,6 +1322,10 @@ public class VideoInfoService extends VideoInfoServiceBase {
         KidsChannelMemory.Hint kidsHint = KidsChannelMemory.Hint.NONE;
         boolean kidsHinted = false;
         final long kidsGeneration = sKidsChannels.generation();
+        // NEWTUBE(recovery-refusals): a recovery walk's sources that refused this video moments ago,
+        // and the memory's generation (an account change since the walk began voids its writes).
+        java.util.Map<AppClient, Long> recoveryRefused = java.util.Collections.emptyMap();
+        final long refusalGeneration = recentRefusals().generation();
         if (sDebugForcedClient != null) {
             visitOrder = java.util.Collections.singletonList(sDebugForcedClient);
             android.util.Log.d("NetPath", "player-ring forced-client=" + sDebugForcedClient);
@@ -1336,15 +1364,23 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     && mBotWall.hasSuspicion(walkStartMs);
             kidsHinted = kidsHint == KidsChannelMemory.Hint.FIRST && !accountRouteBenched
                     && !kidsSuspicion;
+            if (recoveryWalk) {
+                recoveryRefused = recentRefusals().recent(videoId, lane, walkStartMs);
+            }
             visitOrder = PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(
                     lane, recoveryWalk ? lastWinner : null, anonChallenged, accountRouteBenched,
-                    sAccountRouteFirst, kidsHinted));
+                    sAccountRouteFirst, kidsHinted, recoveryRefused.keySet()));
             android.util.Log.d("NetPath", "player-ring plan video=" + videoId
                     + " lane=" + (authenticated ? "signed-in" : "signed-out")
                     + (recoveryWalk ? " suspect=" + lastWinner : "")
                     + (anonChallenged ? " anon-challenged" : "")
                     + (accountRouteBenched ? " account-route=benched" : "")
                     + " order=" + visitOrder);
+            if (!recoveryRefused.isEmpty()) {
+                android.util.Log.d("NetPath", "player-ring recovery-refused video=" + videoId
+                        + " suspect=" + lastWinner + " refusedAgoMs=" + recoveryRefused
+                        + " first=" + visitOrder.get(0));
+            }
             if (kidsHint == KidsChannelMemory.Hint.FIRST) {
                 android.util.Log.d("NetPath", "kids-channel " + (kidsHinted ? "hint"
                         : "hint-skip reason=" + (accountRouteBenched ? "benched" : "suspicion"))
@@ -1530,6 +1566,16 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     && PhoneSourcePlanner.refusesMadeForKids(nextType) && isContentRefusal(result)) {
                 kidsRefusal = result;
             }
+            // NEWTUBE(recovery-refusals): what this source said about this video, for a recovery
+            // of it (every planned walk writes: a preload's refusal holds for the open it becomes).
+            if (planned && result != null) {
+                if (playable) {
+                    recentRefusals().noteServed(videoId, nextType);
+                } else if (isRefusalOfTheVideo(nextType, result)) {
+                    recentRefusals().noteRefused(videoId, nextType, result.isAuth(),
+                            android.os.SystemClock.elapsedRealtime(), refusalGeneration);
+                }
+            }
             if (result != null && !result.isAuth() && result.isUnknownRestricted()
                     && !nextType.isWebPotRequired()) {
                 botCheck.noteContentRefusal();
@@ -1549,7 +1595,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             if (mobileWall && result != null) {
                 visitOrder = noteBotWallEvidence(videoId, nextType, result, authenticated,
                         wallKeys, wallEvidence, wallPlan.walled, visitOrder, visitIndex, attempted,
-                        attempt);
+                        attempt, recoveryRefused.containsKey(BotWallBook.ACCOUNT_ROUTE));
             }
             // NEWTUBE(planner): signed out, an anonymous content refusal admits the account route
             // without the account (PhoneSourcePlanner.admitsAccountRouteAfter). The wall is read
@@ -1566,6 +1612,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     && !mBotWall.isWalled(wallKeys.network(), android.os.SystemClock.elapsedRealtime())
                     && !attempted.contains(BotWallBook.ACCOUNT_ROUTE)
                     && !(recoveryWalk && lastWinner == BotWallBook.ACCOUNT_ROUTE)
+                    // NEWTUBE(recovery-refusals): nor one that refused this video moments ago.
+                    && !recoveryRefused.containsKey(BotWallBook.ACCOUNT_ROUTE)
                     && (visitIndex + 1 >= visitOrder.size()
                             || visitOrder.get(visitIndex + 1) != BotWallBook.ACCOUNT_ROUTE)
                     && !mBotWall.isRouteFailed(wallKeys.network(), noMediaVideoKey(videoId),
@@ -1914,7 +1962,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private List<AppClient> noteBotWallEvidence(String videoId, AppClient client, VideoInfo result,
             boolean authenticated, WallKeys keys, BotWallBook.WalkEvidence walk,
             boolean walledAtStart, List<AppClient> order, int index,
-            java.util.Set<AppClient> attempted, int attempt) {
+            java.util.Set<AppClient> attempted, int attempt, boolean accountRouteRefusedRecently) {
         long nowMs = android.os.SystemClock.elapsedRealtime();
         boolean anonymous = !result.isAuth();
         boolean botCheck = result.isBotCheckRequired();
@@ -1969,7 +2017,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // asks its suspect last), so checking only for its absence would skip the move. In the old
         // ring that cost the Pixel VISIONOS + five challenged Web clients before it (2026-09-25,
         // botwall run B, open 2).
-        if (authenticated && anonymous && result.isLoginRequired()
+        // NEWTUBE(recovery-refusals): not in a recovery whose account route refused this video
+        // moments ago: the planner put it last, and moving it next would re-buy that refusal.
+        if (authenticated && anonymous && result.isLoginRequired() && !accountRouteRefusedRecently
                 && !attempted.contains(BotWallBook.ACCOUNT_ROUTE)
                 && (index + 1 >= order.size() || order.get(index + 1) != BotWallBook.ACCOUNT_ROUTE)
                 && !mBotWall.isRouteFailed(keys.network(), noMediaVideoKey(videoId), nowMs)) {
@@ -2055,6 +2105,28 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 && !result.isAgeGate() && !hasLiveSignal(result)
                 && BotCheckDetector.definitiveUnplayableKey(result.getRawPlayabilityStatus(),
                         result.getPlayabilityStatus()) == null;
+    }
+
+    /**
+     * NEWTUBE(recovery-refusals): {@code client} refused this video with a reason about the video
+     * for its identity, which a recovery of the same video would hear again (RecentRefusals):
+     * UNPLAYABLE (made for kids, members only, an embed policy, "not available on this app"), a
+     * sign-in request or an age gate. Not an answer (a timeout, an error), an OK answer it could
+     * not deliver (SABR only: WEB_EMBED's shape changes per request), ERROR (unavailable or removed:
+     * a video another source serves is neither, so it is that source's trouble), a bot check or a
+     * reload-page answer (the identity's, not the video's), a live signal (an upcoming or ended
+     * stream's answer changes by the minute), nor WEB_EMBED's stale embed identity ("152": its next
+     * request fetches a fresh one). A misread costs order, not reach: a recovery asks such a source
+     * after everything else, never not at all.
+     */
+    static boolean isRefusalOfTheVideo(AppClient client, VideoInfo result) {
+        String status = result.getRawPlayabilityStatus();
+        String reason = result.getPlayabilityStatus();
+        boolean aboutTheVideo = result.isUnknownRestricted() || result.isLoginRequired() || result.isAgeGate();
+        return aboutTheVideo && result.isUnplayable()
+                && !result.isBotCheckRequired() && !hasLiveSignal(result)
+                && !BotCheckDetector.isReloadPageVerdict(status, reason)
+                && !(client == AppClient.WEB_EMBED && reason != null && reason.contains("152"));
     }
 
     /** NEWTUBE(kids-channel): why the hinted account route did not serve, for the drop line. */
@@ -2839,6 +2911,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
         if (mBotWall.clearRouteFailures()) {
             android.util.Log.d("NetPath", "player-ring account-route cleared reason=account-change");
         }
+        // NEWTUBE(recovery-refusals): so were these.
+        recentRefusals().clear();
         // NEWTUBE(kids-channel): the records were the previous account's (or lane's) evidence.
         int kidsChannels = sKidsChannels.clear();
         if (kidsChannels > 0) {

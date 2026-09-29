@@ -141,6 +141,53 @@ public class PhoneSourcePlannerTest {
         }
     }
 
+    /**
+     * NEWTUBE(recovery-refusals): a recovery asks a source that refused this video moments ago after
+     * everything else, behind the suspect. The case is v16 LTE's kids video: VISIONOS refused it,
+     * TV_TIZEN served it, its media 403'd, and the recovery asked VISIONOS first again.
+     */
+    @Test
+    public void aRecoveryAsksWhatJustRefusedTheVideoLast() {
+        assertEquals("WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI TV_TIZEN VISIONOS",
+                join(recovering(SIGNED_OUT, AppClient.TV_TIZEN, false, EnumSet.of(AppClient.VISIONOS))));
+        // Signed in, an 18+ video: VISIONOS answered the age gate, the account route served it and
+        // its 403 benched it for the video: WEB_EMBED first.
+        assertEquals("WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI VISIONOS",
+                join(recovering(SIGNED_IN, AppClient.TV_TIZEN, true, EnumSet.of(AppClient.VISIONOS))));
+        // Several, in the lane's order, all behind the suspect.
+        assertEquals("IOS ANDROID_REEL MWEB WEB WEB_SAFARI WEB_EMBED VISIONOS ANDROID_VR",
+                join(recovering(SIGNED_OUT, AppClient.WEB_EMBED, false,
+                        EnumSet.of(AppClient.ANDROID_VR, AppClient.VISIONOS))));
+        // The suspect served the video: an older refusal of its own does not move it.
+        assertEquals("WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI VISIONOS",
+                join(recovering(SIGNED_OUT, AppClient.VISIONOS, false, EnumSet.of(AppClient.VISIONOS))));
+        // Outside a recovery walk the refusals are not read.
+        assertEquals("VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI",
+                join(recovering(SIGNED_OUT, null, false, EnumSet.of(AppClient.VISIONOS))));
+        // Nothing refused: the recovery order as before.
+        assertEquals("VISIONOS WEB_EMBED ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI TV_TIZEN",
+                join(recovering(SIGNED_OUT, AppClient.TV_TIZEN, false, EnumSet.noneOf(AppClient.class))));
+        // Signed out, the anonymous TV_TIZEN refused too: only the refusal rule would put it in a
+        // walk, and a recovery does not let it re-admit a refuser, so it is kept here, last.
+        assertEquals("ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI WEB_EMBED VISIONOS TV_TIZEN",
+                join(recovering(SIGNED_OUT, AppClient.WEB_EMBED, false,
+                        EnumSet.of(AppClient.VISIONOS, AppClient.TV_TIZEN))));
+        // ...unless benched.
+        assertEquals("ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI WEB_EMBED VISIONOS",
+                join(recovering(SIGNED_OUT, AppClient.WEB_EMBED, true,
+                        EnumSet.of(AppClient.VISIONOS, AppClient.TV_TIZEN))));
+        // Signed in, the account route that refused (an unverified account's age gate) goes last too.
+        assertEquals("ANDROID_VR IOS ANDROID_REEL MWEB WEB WEB_SAFARI WEB_EMBED VISIONOS TV_TIZEN",
+                join(recovering(SIGNED_IN, AppClient.WEB_EMBED, false,
+                        EnumSet.of(AppClient.VISIONOS, AppClient.TV_TIZEN))));
+    }
+
+    private static List<AppClient> recovering(PhoneSourcePlanner.Lane lane, AppClient suspect,
+            boolean benched, EnumSet<AppClient> refused) {
+        return PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(lane, suspect, false, benched,
+                false, false, refused));
+    }
+
     private static List<AppClient> hinted(PhoneSourcePlanner.Lane lane, AppClient suspect,
             boolean anonChallenged, boolean benched) {
         return PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(lane, suspect, anonChallenged,

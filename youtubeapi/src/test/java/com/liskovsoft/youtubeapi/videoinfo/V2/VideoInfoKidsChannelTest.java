@@ -258,7 +258,10 @@ public class VideoInfoKidsChannelTest {
         assertTrue("a skipped hint is no evidence against the channel", memory.isRemembered(SIGNED_OUT, KIDS));
     }
 
-    /** A recovery walk keeps its own order: the suspect TV_TIZEN is asked last, hint or not. */
+    /**
+     * A recovery walk keeps its own order: the suspect TV_TIZEN is asked last, hint or not (and
+     * VISIONOS, which refused k1 moments ago, after it: RecentRefusals).
+     */
     @Test
     public void aRecoveryWalkIgnoresTheHint() {
         open("k1");
@@ -268,7 +271,7 @@ public class VideoInfoKidsChannelTest {
         ReflectionHelpers.setField(service, "mRecoverySuspect", AppClient.TV_TIZEN);
         VideoInfoService.noteVideoChannel("k1", KIDS);
         open("k1");
-        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED"), calls());
+        assertEquals(Arrays.asList("WEB_EMBED"), calls());
     }
 
     /**

@@ -276,6 +276,167 @@ public class VideoInfoPlannerTest {
     }
 
     /**
+     * NEWTUBE(recovery-refusals): v16 LTE, the kids video. VISIONOS refused it, TV_TIZEN served it,
+     * its media 403'd, and the recovery walk asked VISIONOS first again: one more refusal before
+     * WEB_EMBED served. A source that refused the video moments ago is asked after everything else.
+     */
+    @Test
+    public void aRecoveryDoesNotReaskWhatJustRefusedTheVideo() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) ->
+                client == AppClient.TV_TIZEN || client == AppClient.WEB_EMBED
+                        ? playable(auth) : unplayable(NOT_AVAILABLE, auth);
+        assertEquals(AppClient.TV_TIZEN, open("kids").getClient());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN"), calls());
+
+        recoverFrom(AppClient.TV_TIZEN);
+        assertEquals(AppClient.WEB_EMBED, open("kids").getClient());
+        assertEquals(Arrays.asList("WEB_EMBED"), calls());
+    }
+
+    /** The refusal lapses: a recovery half an hour later asks the lane's order again. */
+    @Test
+    public void aRefusalFromLongAgoIsAskedInItsPlace() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) ->
+                client == AppClient.TV_TIZEN || client == AppClient.WEB_EMBED
+                        ? playable(auth) : unplayable(NOT_AVAILABLE, auth);
+        open("kids");
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(
+                java.time.Duration.ofMillis(com.liskovsoft.youtubeapi.videoinfo.V2.sources.RecentRefusals.TTL_MS));
+        recoverFrom(AppClient.TV_TIZEN);
+        open("kids");
+        assertEquals(Arrays.asList("VISIONOS", "WEB_EMBED"), calls());
+    }
+
+    /**
+     * Signed out, TV_TIZEN asked anonymously refused the video too (WEB_EMBED served it): the
+     * recovery neither leads with VISIONOS nor lets the refusal rule admit TV_TIZEN again.
+     */
+    @Test
+    public void aRecoveryDoesNotReadmitATizenThatJustRefused() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
+                ? playable(auth) : unplayable(NOT_AVAILABLE + " " + client, auth);
+        assertEquals(AppClient.WEB_EMBED, open("kids").getClient());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN", "WEB_EMBED"), calls());
+
+        recoverFrom(AppClient.WEB_EMBED);
+        assertEquals(AppClient.WEB_EMBED, open("kids").getClient());
+        List<String> calls = calls();
+        assertFalse(calls.toString(), calls.contains("VISIONOS"));
+        assertFalse(calls.toString(), calls.contains("TV_TIZEN"));
+        assertEquals(calls.toString(), "WEB_EMBED", calls.get(calls.size() - 1));
+    }
+
+    /**
+     * Signed in, an 18+ video: VISIONOS answered the age gate, the account route served it, and its
+     * media 403 benched the route for the video. The recovery goes to WEB_EMBED, not back to the gate.
+     */
+    @Test
+    public void signedInAnAgeGateRecoveryDoesNotReaskTheGate() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) ->
+                (client == AppClient.TV_TIZEN && auth) || client == AppClient.WEB_EMBED
+                        ? playable(auth) : ageGate(auth);
+        assertEquals(AppClient.TV_TIZEN, open("adult").getClient());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth"), calls());
+
+        BotWallBook book = ReflectionHelpers.getField(service, "mBotWall");
+        book.noteRouteFailed("wifi:100", VideoInfoService.noMediaVideoKey("adult"), "media-403",
+                android.os.SystemClock.elapsedRealtime());
+        recoverFrom(AppClient.TV_TIZEN);
+        assertEquals(AppClient.WEB_EMBED, open("adult").getClient());
+        assertEquals(Arrays.asList("WEB_EMBED"), calls());
+    }
+
+    /** A bot check is the identity's, not the video's: the recovery still asks that source first. */
+    @Test
+    public void aChallengeIsNotARefusalOfTheVideo() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.VISIONOS
+                ? parse("{\"playabilityStatus\": {\"status\": \"LOGIN_REQUIRED\","
+                        + " \"reason\": \"Sign in to confirm you're not a bot\"}}", auth)
+                : playable(auth);
+        assertEquals(AppClient.WEB_EMBED, open("challenged").getClient());
+        recoverFrom(AppClient.WEB_EMBED);
+        open("challenged");
+        assertEquals("VISIONOS", calls().get(0));
+    }
+
+    /**
+     * Kept, not dropped: TV_TIZEN refused anonymously a moment ago, but if nothing else serves the
+     * reload it is still asked, last of all.
+     */
+    @Test
+    public void aRecoveryStillAsksATizenThatRefusedLastOfAll() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
+                ? playable(auth) : unplayable(NOT_AVAILABLE + " " + client, auth);
+        open("kids");
+        recoverFrom(AppClient.WEB_EMBED);
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.TV_TIZEN
+                ? playable(auth) : unplayable(NOT_AVAILABLE + " " + client, auth);
+        assertEquals(AppClient.TV_TIZEN, open("kids").getClient());
+        assertEquals(Arrays.asList("ANDROID_VR", "IOS", "ANDROID_REEL", "MWEB", "WEB", "WEB_SAFARI",
+                "WEB_EMBED", "VISIONOS", "TV_TIZEN"), calls());
+    }
+
+    /**
+     * Signed in, the account refused the video (an unverified account's age gate) and WEB_EMBED
+     * served it. Its recovery asks the account route last: the anonymous sign-in rule that puts the
+     * account route next after a LOGIN_REQUIRED answer does not move it back up.
+     */
+    @Test
+    public void signedInARecoveryDoesNotPutARefusingAccountRouteNext() {
+        VideoInfoBotWallTest.ShadowWalk.signedIn = true;
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.WEB_EMBED
+                ? playable(auth) : ageGate(auth);
+        assertEquals(AppClient.WEB_EMBED, open("adult").getClient());
+        assertEquals(Arrays.asList("VISIONOS", "TV_TIZEN+auth", "WEB_EMBED"), calls());
+
+        recoverFrom(AppClient.WEB_EMBED);
+        assertEquals(AppClient.WEB_EMBED, open("adult").getClient());
+        assertEquals(Arrays.asList("ANDROID_VR", "IOS", "ANDROID_REEL", "MWEB", "WEB", "WEB_SAFARI",
+                "WEB_EMBED"), calls());
+    }
+
+    /** What a recovery remembers as a refusal of the video, and what it does not. */
+    @Test
+    public void whatCountsAsARefusalOfTheVideo() {
+        assertTrue(VideoInfoService.isRefusalOfTheVideo(AppClient.VISIONOS, unplayable(NOT_AVAILABLE, false)));
+        assertTrue(VideoInfoService.isRefusalOfTheVideo(AppClient.VISIONOS, ageGate(false)));
+        assertTrue(VideoInfoService.isRefusalOfTheVideo(AppClient.TV_TIZEN, ageGate(true)));
+        assertTrue("a sign-in request", VideoInfoService.isRefusalOfTheVideo(AppClient.VISIONOS, parse(
+                "{\"playabilityStatus\": {\"status\": \"LOGIN_REQUIRED\", \"reason\": \"Private video\"}}", false)));
+        assertTrue("an embed policy", VideoInfoService.isRefusalOfTheVideo(AppClient.WEB_EMBED,
+                unplayable("Playback on other websites has been disabled by the video owner", false)));
+        assertTrue("152 means a stale identity only from WEB_EMBED", VideoInfoService.isRefusalOfTheVideo(
+                AppClient.VISIONOS, unplayable("Error code: 152", false)));
+
+        assertFalse("WEB_EMBED's stale identity", VideoInfoService.isRefusalOfTheVideo(AppClient.WEB_EMBED,
+                unplayable("Error code: 152 - 4", false)));
+        assertFalse("unavailable: another source serves it", VideoInfoService.isRefusalOfTheVideo(
+                AppClient.VISIONOS, parse("{\"playabilityStatus\": {\"status\": \"ERROR\","
+                        + " \"reason\": \"Video unavailable\"}}", false)));
+        assertFalse("a bot check", VideoInfoService.isRefusalOfTheVideo(AppClient.VISIONOS, parse(
+                "{\"playabilityStatus\": {\"status\": \"LOGIN_REQUIRED\","
+                        + " \"reason\": \"Sign in to confirm you're not a bot\"}}", false)));
+        assertFalse("a reload-page answer", VideoInfoService.isRefusalOfTheVideo(AppClient.TV_TIZEN,
+                unplayable("The page needs to be reloaded.", true)));
+        assertFalse("an ended stream", VideoInfoService.isRefusalOfTheVideo(AppClient.VISIONOS, parse(
+                "{\"playabilityStatus\": {\"status\": \"UNPLAYABLE\", \"reason\": \"This live stream"
+                        + " recording is not available.\"}, \"videoDetails\": {\"videoId\": \"x\","
+                        + " \"isLiveContent\": true}}", false)));
+        assertFalse("served", VideoInfoService.isRefusalOfTheVideo(AppClient.VISIONOS, playable(false)));
+        assertFalse("SABR only: not a refusal", VideoInfoService.isRefusalOfTheVideo(AppClient.WEB_EMBED, parse(
+                "{\"playabilityStatus\": {\"status\": \"OK\"}, \"streamingData\": {\"serverAbrStreamingUrl\":"
+                        + " \"https://media.invalid/sabr\", \"adaptiveFormats\": [{\"itag\": 137,"
+                        + " \"mimeType\": \"video/mp4\"}]}}", false)));
+    }
+
+    /** What the player's error path leaves for the reload: a recovery walk past {@code suspect}. */
+    private void recoverFrom(AppClient suspect) {
+        ReflectionHelpers.setField(service, "mRecoveryWalk", true);
+        ReflectionHelpers.setField(service, "mRecoverySuspect", suspect);
+    }
+
+    /**
      * A plain sign-in request (no age marker) is not an age gate: the lane is asked to the end.
      * (Worded differently per client here: the same LOGIN_REQUIRED text from two clients is read
      * as a localized bot check, BotCheckDetector.isRepeatedLoginRequired.)

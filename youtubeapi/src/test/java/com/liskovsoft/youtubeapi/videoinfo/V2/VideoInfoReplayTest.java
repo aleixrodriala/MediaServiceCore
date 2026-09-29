@@ -96,7 +96,10 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>A case that does not match current behaviour for a known reason - a log from a build whose
  * behaviour was changed on purpose - carries {@code exclude} with the reason and is reported as
- * skipped with it, never dropped silently.
+ * skipped with it, never dropped silently. When the change is one walk asking fewer of the clients
+ * the device asked (or the same ones in another order), the case stays: that walk carries {@code
+ * expect.changed} (the order the current code asks, and why) beside the device's own record, and is
+ * checked against it; the rest of the case is replayed as the device ran it.
  */
 @RunWith(ParameterizedRobolectricTestRunner.class)
 @Config(manifest = Config.NONE, sdk = 28, application = Application.class,
@@ -361,7 +364,16 @@ public class VideoInfoReplayTest {
             }
 
             List<String> asked = new ArrayList<>(VideoInfoBotWallTest.ShadowWalk.calls);
-            assertEquals(where + ": the clients asked" + context(expect), deviceAsked, asked);
+            // A walk the current code asks differently on purpose (the manifest's "changed"): its
+            // order instead of the device's, with the reason in the message.
+            JsonElement changed = expect.get("changed");
+            if (changed != null && !changed.isJsonNull()) {
+                assertEquals(where + ": the clients asked, changed on purpose from the device's "
+                        + deviceAsked + " (" + text(changed.getAsJsonObject(), "why") + ")" + context(expect),
+                        strings(changed.getAsJsonObject().getAsJsonArray("asked")), asked);
+            } else {
+                assertEquals(where + ": the clients asked" + context(expect), deviceAsked, asked);
+            }
 
             String expected = text(expect, "result");
             String got;

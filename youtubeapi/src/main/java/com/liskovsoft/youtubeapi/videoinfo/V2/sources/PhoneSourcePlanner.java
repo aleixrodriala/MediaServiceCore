@@ -76,6 +76,7 @@ public final class PhoneSourcePlanner {
         final boolean accountRouteBenched;
         final boolean accountRouteFirst;
         final boolean accountRouteHinted;
+        final Set<AppClient> recoveryRefused;
 
         /**
          * @param recoverySuspect     the source that served the watched video when its media
@@ -107,12 +108,26 @@ public final class PhoneSourcePlanner {
          */
         public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
                 boolean accountRouteBenched, boolean accountRouteFirst, boolean accountRouteHinted) {
+            this(lane, recoverySuspect, anonChallenged, accountRouteBenched, accountRouteFirst,
+                    accountRouteHinted, Collections.<AppClient>emptySet());
+        }
+
+        /**
+         * @param recoveryRefused a recovery walk: the sources that refused this video moments ago
+         *                        (RecentRefusals), asked after everything else, the suspect
+         *                        included. Ignored outside a recovery walk
+         */
+        public Context(Lane lane, @Nullable AppClient recoverySuspect, boolean anonChallenged,
+                boolean accountRouteBenched, boolean accountRouteFirst, boolean accountRouteHinted,
+                Set<AppClient> recoveryRefused) {
             this.lane = lane;
             this.recoverySuspect = recoverySuspect;
             this.anonChallenged = anonChallenged;
             this.accountRouteBenched = accountRouteBenched;
             this.accountRouteFirst = accountRouteFirst;
             this.accountRouteHinted = accountRouteHinted;
+            this.recoveryRefused = recoveryRefused.isEmpty()
+                    ? Collections.<AppClient>emptySet() : EnumSet.copyOf(recoveryRefused);
         }
     }
 
@@ -170,6 +185,28 @@ public final class PhoneSourcePlanner {
         } else if (suspect == ACCOUNT_ROUTE && context.lane == Lane.SIGNED_OUT
                 && !context.accountRouteBenched) {
             order.add(suspect);
+        }
+
+        // NEWTUBE(recovery-refusals): and a source that refused this video moments ago is asked
+        // after that, only if nothing else serves: it would refuse it again (v16 LTE, the kids
+        // video: VISIONOS refused it, TV_TIZEN served it, the recovery from TV_TIZEN's media 403
+        // asked VISIONOS first, one refusal before WEB_EMBED served). Behind the suspect, which
+        // served the video; kept, not dropped, in case the refusal was a moment's. Signed out that
+        // includes the anonymous TV_TIZEN, which only the refusal rule puts in a walk: a recovery
+        // does not let the rule re-admit one that refused (VideoInfoService), so it goes here,
+        // unless benched.
+        if (suspect != null && !context.recoveryRefused.isEmpty()) {
+            List<AppClient> refused = new ArrayList<>();
+            for (AppClient client : ORDER) {
+                if (client == suspect || !context.recoveryRefused.contains(client)) {
+                    continue;
+                }
+                if (order.remove(client) || (client == ACCOUNT_ROUTE && context.lane == Lane.SIGNED_OUT
+                        && !context.accountRouteBenched)) {
+                    refused.add(client);
+                }
+            }
+            order.addAll(refused);
         }
         return order;
     }
