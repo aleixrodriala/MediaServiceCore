@@ -744,7 +744,8 @@ public class VideoInfoBotWallTest {
                 + " \"serverAbrStreamingUrl\": \"https://media.invalid/sabr\"}}", auth);
     }
 
-    private static VideoInfo parse(String json, boolean auth) {
+    /** A /player JSON through the production parser (VideoInfoReplayTest rebuilds answers with it). */
+    static VideoInfo parse(String json, boolean auth) {
         try {
             Converter<ResponseBody, ?> converter = JsonPathConverterFactory.create()
                     .responseBodyConverter(VideoInfo.class, new Annotation[0], null);
@@ -787,6 +788,8 @@ public class VideoInfoBotWallTest {
         static boolean signedIn;
         static final List<String> calls = new ArrayList<>();
         static BiFunction<AppClient, Boolean, VideoInfo> script;
+        /** Clients whose next null answer is a timeout (no response at all), not an error. */
+        static final java.util.Set<AppClient> silent = java.util.EnumSet.noneOf(AppClient.class);
 
         @Implementation
         protected void __constructor__() {
@@ -825,6 +828,9 @@ public class VideoInfoBotWallTest {
             boolean auth = client.isAuthCapable() && signedIn;
             calls.add(client.name() + (auth ? "+auth" : ""));
             VideoInfo result = script.apply(client, auth);
+            if (result == null && silent.remove(client) && noResponseOut != null && noResponseOut.length > 0) {
+                noResponseOut[0] = true; // what the real attempt reports on a timeout
+            }
             result = ReflectionHelpers.callStaticMethod(VideoInfoService.class, "maybeInjectBotWall",
                     ClassParameter.from(AppClient.class, client),
                     ClassParameter.from(VideoInfo.class, result));

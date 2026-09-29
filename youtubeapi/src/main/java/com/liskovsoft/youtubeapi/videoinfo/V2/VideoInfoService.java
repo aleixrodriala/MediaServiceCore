@@ -2316,6 +2316,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                 + " hls=" + (result.getHlsManifestUrl() != null ? "y" : "n")
                 + " sabr=" + (result.getServerAbrStreamingUrl() != null ? "y" : "n")
                 + " reason=\"" + safeLogValue(result.getPlayabilityStatus(), 160) + "\"");
+        PlayabilityLog.log(videoId, client, attempt, result); // debug builds: exact replay fixtures
     }
 
     /** "y"/"n" from the server's own logged_in tracking param, "?" when it did not send one. */

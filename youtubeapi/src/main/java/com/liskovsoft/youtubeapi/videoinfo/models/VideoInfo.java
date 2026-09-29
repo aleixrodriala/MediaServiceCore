@@ -300,6 +300,21 @@ public class VideoInfo {
                         STATUS_AGE_VERIFICATION_REQUIRED);
     }
 
+    /** NEWTUBE(walk-replay): YouTube's reason as sent, without the subreason (PlayabilityLog). */
+    public String getPlayabilityReason() {
+        return mPlayabilityReason;
+    }
+
+    /** NEWTUBE(walk-replay): the error screen's subreason, or null (PlayabilityLog). */
+    public String getPlayabilitySubreason() {
+        return mPlayabilityDescription != null ? mPlayabilityDescription.toString() : null;
+    }
+
+    /** NEWTUBE(walk-replay): the raw age-gate marker isAgeGate reads, 0 when absent (PlayabilityLog). */
+    public int getDesktopLegacyAgeGateReason() {
+        return mDesktopLegacyAgeGateReason;
+    }
+
     /**
      * Age restricted video
      */
