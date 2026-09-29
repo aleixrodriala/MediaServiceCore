@@ -97,6 +97,19 @@ public final class BotCheckDetector {
      */
     private static final String[] MEMBERS_ONLY_OPENINGS = {
             "join this channel",
+            // Captured on the Pixel (2026-09-29, w664JpkrDio): "Hazte miembro de este canal desde un
+            // ordenador o la aplicación móvil para..." and "Hazte miembro de este canal para
+            // acceder a...". The other locales are unverified guesses; a miss only costs requests.
+            "hazte miembro de este canal",
+            "unete a este canal",
+            "devenez membre de cette chaine",
+            "rejoignez cette chaine",
+            "werde mitglied dieses kanals",
+            "werde kanalmitglied",
+            "diventa membro di questo canale",
+            "abbonati a questo canale",
+            "seja membro deste canal",
+            "torne-se membro deste canal",
     };
 
     /**

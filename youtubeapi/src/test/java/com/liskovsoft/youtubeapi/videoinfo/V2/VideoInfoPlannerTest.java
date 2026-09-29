@@ -292,6 +292,39 @@ public class VideoInfoPlannerTest {
         assertEquals(calls().toString(), 8, calls().size());
     }
 
+    /**
+     * A private video as the Pixel saw it (2026-09-29, yZIXLfi8CZQ): VISIONOS and ANDROID_VR say only
+     * "Inicia sesión", the others that it is private. The two identical answers used to read as a
+     * localized bot check and arm the fifteen-minute circuit, which then answered the next open
+     * without a request. One video repeating it is the video's own refusal; a second video within
+     * ten minutes confirms a challenge of the identity.
+     */
+    @Test
+    public void aPrivateVideoIsNotABotCheckUnlessAnotherVideoRepeatsIt() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
+                + " {\"status\": \"LOGIN_REQUIRED\", \"reason\": \"" + (client == AppClient.VISIONOS
+                || client == AppClient.ANDROID_VR ? "Inicia sesión" : "Este vídeo es privado") + "\"}}", auth);
+        VideoInfo verdict = open("private");
+        assertTrue(verdict.isUnplayable());
+        assertFalse(verdict.isBotCheckRequired());
+        assertEquals(calls().toString(), 8, calls().size());
+        // Opened again: still one video.
+        VideoInfoBotWallTest.ShadowWalk.calls.clear();
+        assertFalse(open("private").isBotCheckRequired());
+
+        // The circuit is not armed: the next video is asked for.
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> playable(auth);
+        VideoInfoBotWallTest.ShadowWalk.calls.clear();
+        assertFalse(open("normal").isUnplayable());
+        assertEquals(Collections.singletonList("VISIONOS"), calls());
+
+        // A second video answering the same way is a challenge of the identity.
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> parse("{\"playabilityStatus\":"
+                + " {\"status\": \"LOGIN_REQUIRED\", \"reason\": \"Inicia sesión\"}}", auth);
+        VideoInfoBotWallTest.ShadowWalk.calls.clear();
+        assertTrue(open("other").isBotCheckRequired());
+    }
+
     /** Signed in, an ordinary video is still one anonymous VISIONOS request. */
     @Test
     public void signedInAnOrdinaryVideoIsOneRequest() {

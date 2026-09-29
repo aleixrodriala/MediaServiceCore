@@ -119,6 +119,12 @@ public class BotCheckDetectorTest {
                 + " access to members-only content like this video."));
         assertNull(BotCheckDetector.definitiveUnplayableKey("UNPLAYABLE", "You can join this channel"
                 + " to get access."));
+        // The Pixel's Spanish, both wordings (2026-09-29, w664JpkrDio).
+        assertEquals(tv, BotCheckDetector.definitiveUnplayableKey("UNPLAYABLE", "Hazte miembro de este"
+                + " canal desde un ordenador o la aplicación móvil para tener acceso a contenido exclusivo,"
+                + " como este vídeo."));
+        assertEquals(tv, BotCheckDetector.definitiveUnplayableKey("UNPLAYABLE", "Hazte miembro de este"
+                + " canal para acceder a contenido exclusivo, como este vídeo, y a otras ventajas únicas."));
     }
 
     @Test

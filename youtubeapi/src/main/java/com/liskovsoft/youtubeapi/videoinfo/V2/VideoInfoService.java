@@ -144,6 +144,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
      * telling the user "you are a bot" for fourteen minutes longer than YouTube did.
      */
     private static final long BOT_CHECK_PROBE_INTERVAL_MS = TimeUnit.MINUTES.toMillis(1);
+    /** See isChallengeConfirmed. */
+    private static final String SIGNAL_REPEATED_LOGIN = "repeated-login";
+    private static final long REPEATED_LOGIN_CONFIRM_MS = TimeUnit.MINUTES.toMillis(10);
     /**
      * DIFFERENT videos that must answer an account-bearing client with a no-media verdict before
      * that route is quarantined (see {@link #isAuthRouteReloadVerdict}). One is meaningless - a
@@ -454,6 +457,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
     private WalkRole mWalkRole = WalkRole.ACTIVE;
     private boolean mAuthBlock;
     private volatile long mBotCheckCooldownUntilMs;
+    // NEWTUBE(classification): the last video whose walk ended on the repeated sign-in request
+    // alone, and when (see isChallengeConfirmed).
+    @Nullable
+    private String mRepeatedLoginVideo;
+    private long mRepeatedLoginAtMs;
     private volatile boolean mBotCheckAuthenticatedAttempted;
     // Whether the walk that armed the circuit actually reached the END of the ring. Suppressing
     // later opens is only defensible once every client has been asked and every one refused; a
@@ -1548,7 +1556,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                                 result.getPlayabilityStatus());
                 if (result.isBotCheckRequired() || repeatedLoginRequired) {
                     final String signal =
-                            result.isBotCheckRequired() ? "explicit" : "repeated-login";
+                            result.isBotCheckRequired() ? "explicit" : SIGNAL_REPEATED_LOGIN;
                     // A challenge answered to a request that carried no account is evidence about
                     // the ANONYMOUS identity, not about this video. Count it so the walk can learn
                     // to stop leading with a partition the network is currently rejecting.
@@ -1572,7 +1580,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                         // still worth a round trip. See BotCheckWalkState for the full evidence.
                         android.util.Log.d("NetPath", "bot-check walk-on client=" + nextType
                                 + " signal=" + signal + " attempt=" + attempt);
-                    } else {
+                    } else if (isChallengeConfirmed(signal, videoId)) {
                         tripBotCheckCircuit(result, nextType, signal, authenticated,
                                 botCheck.ringExhausted());
                         return result;
@@ -1699,6 +1707,9 @@ public class VideoInfoService extends VideoInfoServiceBase {
         if (challenge == null && botCheck.hasHeldChallenge() && botCheck.isLoneChallengeAmidRefusals()) {
             android.util.Log.d("NetPath", "bot-check discounted video=" + videoId
                     + " reason=lone-challenge-amid-refusals");
+        }
+        if (challenge != null && !isChallengeConfirmed(challenge.signal, videoId)) {
+            challenge = null; // the video's own refusal is published below
         }
         if (challenge != null) {
             tripBotCheckCircuit(challenge.result, challenge.client, challenge.signal,
@@ -3010,6 +3021,32 @@ public class VideoInfoService extends VideoInfoServiceBase {
         android.util.Log.w("NetPath", "bot-check cooldown video=" + videoId
                 + " remainingMs=" + remainingMs + " network=n");
         return result;
+    }
+
+    /**
+     * NEWTUBE(classification): whether a challenge may trip the circuit. An explicit bot text may.
+     * The other signal - the same LOGIN_REQUIRED text from two clients, the fallback for a localized
+     * bot text (BotCheckDetector.isRepeatedLoginRequired) - is also exactly what a PRIVATE video
+     * answers: on the Pixel (2026-09-29, yZIXLfi8CZQ, Spanish) VISIONOS and ANDROID_VR both said
+     * "Inicia sesión", the walk armed the fifteen-minute circuit, the private video was reported as
+     * "confirm you're not a bot" and the next opens were answered from the cooldown. A challenge of
+     * the identity repeats across videos; a video's own refusal does not. So that signal trips the
+     * circuit only when a second video repeats it within REPEATED_LOGIN_CONFIRM_MS; the first is
+     * published as the video's refusal. Mobile only: TV trips as it always did.
+     */
+    private boolean isChallengeConfirmed(String signal, String videoId) {
+        if (!sPreferNoPotClient || !SIGNAL_REPEATED_LOGIN.equals(signal)) {
+            return true;
+        }
+        long nowMs = android.os.SystemClock.elapsedRealtime();
+        String earlier = mRepeatedLoginVideo;
+        boolean confirmed = earlier != null && !earlier.equals(videoId)
+                && nowMs - mRepeatedLoginAtMs <= REPEATED_LOGIN_CONFIRM_MS;
+        mRepeatedLoginVideo = videoId;
+        mRepeatedLoginAtMs = nowMs;
+        android.util.Log.d("NetPath", "bot-check repeated-login video=" + videoId
+                + (confirmed ? " confirmed-by=" + earlier : " unconfirmed reason=one-video"));
+        return confirmed;
     }
 
     private void tripBotCheckCircuit(VideoInfo result, AppClient client, String signal,
