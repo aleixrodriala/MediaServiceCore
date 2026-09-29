@@ -402,6 +402,17 @@ public class VideoInfo {
         return STATUS_LOGIN_REQUIRED.equals(mPlayabilityStatus);
     }
 
+    // NEWTUBE(embed-reroll): the visitorData the /player request carried; not from the answer.
+    private String mRequestVisitorData;
+
+    public String getRequestVisitorData() {
+        return mRequestVisitorData;
+    }
+
+    public void setRequestVisitorData(String visitorData) {
+        mRequestVisitorData = visitorData;
+    }
+
     public boolean isBotCheckRequired() {
         return mIsBotCheckRequired
                 || BotCheckDetector.isExplicitBotCheck(mPlayabilityStatus, getPlayabilityStatus());

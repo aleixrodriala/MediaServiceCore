@@ -36,6 +36,9 @@ object EmbedIdentityPersistence {
     private var store: Store? = null
     /** Guarded by this object: the persisted copy is read (and handed out) once per process. */
     private var restoreDone = false
+    /** NEWTUBE(embed-reroll): the re-roll budget the restored snapshot carried; 0 = none. */
+    @Volatile
+    private var restoredRerolledAtMs = 0L
 
     /** Phone flavor only, once at process start; null keeps the identity in memory only. */
     @JvmStatic
@@ -43,7 +46,12 @@ object EmbedIdentityPersistence {
     fun setStore(store: Store?) {
         this.store = store
         restoreDone = false
+        restoredRerolledAtMs = 0L
     }
+
+    /** NEWTUBE(embed-reroll): the re-roll budget read by [restore], pair or not; 0 = none. */
+    @JvmStatic
+    fun restoredRerolledAtMs(): Long = restoredRerolledAtMs
 
     /**
      * The identity an earlier process fetched, handed out on this process's first WEB_EMBED ask
@@ -64,8 +72,16 @@ object EmbedIdentityPersistence {
             null
         } ?: return null
         val identity = decode(snapshot)
+        val rerolledAtMs = decodeRerolledAtMs(snapshot)
+        if (rerolledAtMs > 0 && nowMs - rerolledAtMs in 0 until ttlMs) {
+            restoredRerolledAtMs = rerolledAtMs
+        }
         if (identity != null && isFresh(identity, nowMs, ttlMs)) {
             return identity
+        }
+        // NEWTUBE(embed-reroll): a re-roll mark without a pair stays while its budget holds.
+        if (identity == null && restoredRerolledAtMs > 0) {
+            return null
         }
         saveQuietly(store, null)
         return null
@@ -84,9 +100,27 @@ object EmbedIdentityPersistence {
      */
     @JvmStatic
     @Synchronized
-    fun clear() {
+    @JvmOverloads
+    fun clear(rerolledAtMs: Long = 0L) {
         restoreDone = true
-        store?.let { saveQuietly(it, null) }
+        // NEWTUBE(embed-reroll): a re-roll's budget outlives the pair it dropped (a mark: no pair).
+        store?.let { saveQuietly(it, if (rerolledAtMs > 0) encodeMark(rerolledAtMs) else null) }
+    }
+
+    /** NEWTUBE(embed-reroll): a snapshot with no pair, only the re-roll budget. */
+    @JvmStatic
+    fun encodeMark(rerolledAtMs: Long): String = JsonObject().apply {
+        addProperty("v", VERSION)
+        addProperty("rerolledAtMs", rerolledAtMs)
+    }.toString()
+
+    /** NEWTUBE(embed-reroll): the re-roll budget of any snapshot of this version (pair or mark); 0 = none. */
+    @JvmStatic
+    fun decodeRerolledAtMs(snapshot: String): Long = try {
+        val json = JsonParser.parseString(snapshot).asJsonObject
+        if (json.get("v")?.asInt == VERSION) json.get("rerolledAtMs")?.asLong ?: 0L else 0L
+    } catch (e: RuntimeException) {
+        0L
     }
 
     /** Fresh = fetched at most [ttlMs] ago, and not in the future (a wall clock set back). */

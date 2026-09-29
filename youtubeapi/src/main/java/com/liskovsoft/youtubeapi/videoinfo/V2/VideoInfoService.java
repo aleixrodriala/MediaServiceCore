@@ -1434,6 +1434,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // answer to a video that turned out not to be live, set aside (see setLiveCardHintEnabled).
         boolean liveCardHinted = false;
         VideoInfo staleLive = null;
+        boolean canceled = false;
         if (sDebugForcedClient != null) {
             visitOrder = java.util.Collections.singletonList(sDebugForcedClient);
             android.util.Log.d("NetPath", "player-ring forced-client=" + sDebugForcedClient);
@@ -1478,7 +1479,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
             boolean recoveryKids = false;
             if (recoveryWalk) {
                 recoveryRefused = recentRefusals().recent(videoId, lane, walkStartMs);
-                recoveryKids = sRecoveryKidsOrder && recentRefusals().hasMadeForKids(videoId, walkStartMs);
+                recoveryKids = sRecoveryKidsOrder && PhoneSourcePlanner.servesMadeForKids(lastWinner)
+                        && recentRefusals().hasMadeForKids(videoId, walkStartMs);
             }
             visitOrder = PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(
                     lane, recoveryWalk ? lastWinner : null, anonChallenged, accountRouteBenched,
@@ -1585,6 +1587,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             final AppClient nextType = visitOrder.get(visitIndex);
             if (abortCanceledRequest(videoId, "client-ring", cancellationSignal)) {
                 botCheck.markCutShort();
+                canceled = true;
                 break;
             }
 
@@ -1649,6 +1652,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
                     noResponse);
             if (abortCanceledRequest(videoId, "post-attempt", cancellationSignal)) {
                 botCheck.markCutShort();
+                canceled = true;
                 break;
             }
             // isAuthCapable, not isAuthSupported: this flag answers "has the account had its turn
@@ -1726,7 +1730,8 @@ public class VideoInfoService extends VideoInfoServiceBase {
             // NEWTUBE(embed-reroll): a SABR-only answer is the identity's visitor, not the video:
             // it plays as it is (HLS), and the next WEB_EMBED ask gets a new visitor.
             if (sEmbedReroll && nextType == AppClient.WEB_EMBED && playable && isSabrOnlyAnswer(result)) {
-                com.liskovsoft.youtubeapi.innertube.ytcfg.YtCfgService.rerollEmbedIdentity(videoId);
+                com.liskovsoft.youtubeapi.innertube.ytcfg.YtCfgService.rerollEmbedIdentity(videoId,
+                        result.getRequestVisitorData());
             }
 
             // NEWTUBE(botwall): wall evidence and the account route. Runs BEFORE the bot-check
@@ -1877,6 +1882,12 @@ public class VideoInfoService extends VideoInfoServiceBase {
                         // still worth a round trip. See BotCheckWalkState for the full evidence.
                         android.util.Log.d("NetPath", "bot-check walk-on client=" + nextType
                                 + " signal=" + signal + " attempt=" + attempt);
+                    } else if (staleLive != null) {
+                        // NEWTUBE(live-card): ANDROID_VR served this walk already (a stale live
+                        // flag set its answer aside): something played, so no verdict and no trip.
+                        android.util.Log.d("NetPath", "live-card stale-served video=" + videoId
+                                + " client=" + staleLive.getClient() + " before=challenge attempts=" + attempt);
+                        return staleLive;
                     } else if (isChallengeConfirmed(signal, videoId, signInReasons.size() <= 1)) {
                         tripBotCheckCircuit(result, nextType, signal, authenticated,
                                 botCheck.ringExhausted());
@@ -2015,6 +2026,13 @@ public class VideoInfoService extends VideoInfoServiceBase {
         // mBotCheckRingExhausted), so a challenge seen before the clock ran out publishes the
         // reason without silencing the next fifteen minutes of opens. A dead link is excluded
         // outright: when nothing answered, nothing was established about anything.
+        // NEWTUBE(live-card): a serve held from a stale live flag beats anything learned after it,
+        // a challenge included (something played), unless the walk was canceled.
+        if (staleLive != null && !canceled && liveWithoutDash == null) {
+            android.util.Log.d("NetPath", "live-card stale-served video=" + videoId
+                    + " client=" + staleLive.getClient() + " before=end attempts=" + attempt);
+            return staleLive;
+        }
         BotCheckWalkState.Outcome challenge = botCheck.finish(transportDown);
         if (challenge == null && botCheck.hasHeldChallenge() && botCheck.isLoneChallengeAmidRefusals()) {
             android.util.Log.d("NetPath", "bot-check discounted video=" + videoId
@@ -2030,7 +2048,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             return challenge.result;
         }
 
-        if ((budgetExhausted || transportDown) && liveWithoutDash == null && staleLive == null) {
+        if ((budgetExhausted || transportDown) && liveWithoutDash == null) {
             return null;
         }
 
@@ -2039,11 +2057,6 @@ public class VideoInfoService extends VideoInfoServiceBase {
         if (liveWithoutDash != null) {
             android.util.Log.d("NetPath", "player-ring live-no-dash exhausted video=" + videoId
                     + " attempts=" + attempt + " nonCandidatesSkipped=" + liveDashSkipped);
-        }
-        if (liveWithoutDash == null && staleLive != null) {
-            android.util.Log.d("NetPath", "live-card stale-served video=" + videoId
-                    + " client=" + staleLive.getClient() + " before=end attempts=" + attempt);
-            return staleLive;
         }
         return liveWithoutDash != null ? liveWithoutDash : firstUnplayable;
     }
@@ -3830,6 +3843,11 @@ public class VideoInfoService extends VideoInfoServiceBase {
             VideoInfoApiHelper.PlayerRequest request =
                     VideoInfoApiHelper.getVideoInfoRequest(client, videoId, clickTrackingParams);
             result = getVideoInfo(client, request);
+            if (result != null) {
+                // NEWTUBE(embed-reroll): which visitor this answer was given to (see
+                // YtCfgService.rerollEmbedIdentity).
+                result.setRequestVisitorData(request.visitorData);
+            }
         }
 
         // NEWTUBE(botwall): debug builds only. The real request was made (timing, server load and

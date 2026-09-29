@@ -68,7 +68,12 @@ object YtCfgService {
         // NEWTUBE(embed-persist): a new process's first ask takes the pair an earlier process
         // fetched while it is inside the TTL of that fetch, instead of paying the embed page again
         // (218-236 ms warm, ~390 ms cold on the Pixel over LTE; see EmbedIdentityPersistence).
-        EmbedIdentityPersistence.restore(nowMs, EMBED_IDENTITY_TTL_MS)?.let {
+        val restored = EmbedIdentityPersistence.restore(nowMs, EMBED_IDENTITY_TTL_MS)
+        synchronized(identityLock) {
+            // NEWTUBE(embed-reroll): the budget an earlier process left, with or without a pair.
+            lastRerollAtMs = maxOf(lastRerollAtMs, EmbedIdentityPersistence.restoredRerolledAtMs())
+        }
+        restored?.let {
             synchronized(identityLock) {
                 if (invalidations == epoch)
                     cachedEmbedIdentity = it
@@ -125,9 +130,14 @@ object YtCfgService {
         synchronized(identityLock) {
             invalidations++
             cachedEmbedIdentity = null
-            EmbedIdentityPersistence.clear()
+            // NEWTUBE(embed-reroll): a recent re-roll's budget stays on disk without the pair.
+            EmbedIdentityPersistence.clear(recentReroll(System.currentTimeMillis()))
         }
     }
+
+    /** [lastRerollAtMs] while it still holds a budget, else 0. Under [identityLock]. */
+    private fun recentReroll(nowMs: Long): Long =
+        if (lastRerollAtMs > 0 && nowMs - lastRerollAtMs in 0 until EMBED_IDENTITY_TTL_MS) lastRerollAtMs else 0L
 
     /**
      * NEWTUBE(embed-reroll): the identity just used for [videoId] got a SABR-only answer (formats
@@ -141,7 +151,8 @@ object YtCfgService {
      * Returns whether it re-rolled.
      */
     @JvmStatic
-    fun rerollEmbedIdentity(videoId: String?): Boolean {
+    @JvmOverloads
+    fun rerollEmbedIdentity(videoId: String?, usedVisitorData: String? = null): Boolean {
         if (videoId == null)
             return false
         val nowMs = System.currentTimeMillis()
@@ -149,6 +160,12 @@ object YtCfgService {
             val current = cachedEmbedIdentity
             if (current == null) {
                 android.util.Log.d("NetPath", "embed-identity reroll-skip reason=no-identity video=$videoId")
+                return false
+            }
+            // Only the identity that got the SABR-only answer: a 152 or another walk may have
+            // replaced it since, and the newer one says nothing yet.
+            if (usedVisitorData != null && usedVisitorData != current.visitorData) {
+                android.util.Log.d("NetPath", "embed-identity reroll-skip reason=replaced video=$videoId")
                 return false
             }
             val last = maxOf(lastRerollAtMs, current.rerolledAtMs)
@@ -160,7 +177,9 @@ object YtCfgService {
             lastRerollAtMs = nowMs
             invalidations++
             cachedEmbedIdentity = null
-            EmbedIdentityPersistence.clear()
+            // The budget goes to disk now, before the new pair exists: a process that dies before
+            // the background fetch still knows it re-rolled.
+            EmbedIdentityPersistence.clear(nowMs)
             current
         }
         android.util.Log.d("NetPath", "embed-identity reroll reason=sabr-only video=$videoId"

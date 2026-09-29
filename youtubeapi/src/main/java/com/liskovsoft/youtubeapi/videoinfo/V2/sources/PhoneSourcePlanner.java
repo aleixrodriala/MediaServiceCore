@@ -78,6 +78,16 @@ public final class PhoneSourcePlanner {
     private static final Set<AppClient> KIDS_SERVERS =
             Collections.unmodifiableSet(EnumSet.of(ACCOUNT_ROUTE, AppClient.WEB_EMBED));
 
+    /**
+     * NEWTUBE(recovery-kids): {@code client} is one of the only sources that serve a made-for-kids
+     * video. A recovery whose suspect is another source is not a kids video's (they never serve
+     * one), whatever VISIONOS said: the kids order is not applied (a music-only or paid video's
+     * refusal has the same shape).
+     */
+    public static boolean servesMadeForKids(@Nullable AppClient client) {
+        return client != null && KIDS_SERVERS.contains(client);
+    }
+
     /** NEWTUBE(live-card): the live-DASH source (see VideoInfoService.isLiveDashCandidate). */
     public static final AppClient LIVE_SOURCE = AppClient.ANDROID_VR;
 

@@ -470,6 +470,41 @@ public class VideoInfoPlannerTest {
         assertEquals(Arrays.asList("ANDROID_VR", "VISIONOS", "TV_TIZEN", "WEB_EMBED"), calls());
     }
 
+    /**
+     * The Codex review's case: a stale flag's ANDROID_VR served, then everything after it answered
+     * a bot check. Something played: the held answer, and no circuit trip.
+     */
+    @Test
+    public void aStaleLiveCardsServeBeatsALaterChallenge() {
+        VideoInfoService.setLiveCardHintEnabled(true);
+        VideoInfoService.noteVideoLive("vod", true);
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.ANDROID_VR
+                ? playable(auth) : parse("{\"playabilityStatus\": {\"status\": \"LOGIN_REQUIRED\","
+                        + " \"reason\": \"Sign in to confirm you're not a bot\"}}", auth);
+        assertEquals(AppClient.ANDROID_VR, open("vod").getClient());
+        // Returned at ANDROID_VR's turn in the lane (IOS next), before any trip.
+        assertEquals(Arrays.asList("ANDROID_VR", "VISIONOS", "WEB_EMBED"), calls());
+        assertEquals(0L, (long) ReflectionHelpers.<Long>getField(service, "mBotCheckCooldownUntilMs"));
+    }
+
+    /**
+     * ...and a link that dies after ANDROID_VR answered (two timeouts: transport-down) still plays
+     * that answer: it is the one thing the walk established.
+     */
+    @Test
+    public void aStaleLiveCardsServeOutlivesADeadLink() {
+        VideoInfoService.setLiveCardHintEnabled(true);
+        VideoInfoService.noteVideoLive("vod", true);
+        VideoInfoBotWallTest.ShadowWalk.silent.add(AppClient.VISIONOS);
+        VideoInfoBotWallTest.ShadowWalk.silent.add(AppClient.WEB_EMBED);
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.ANDROID_VR
+                ? playable(auth) : null;
+        VideoInfo result = open("vod");
+        assertEquals(Arrays.asList("ANDROID_VR", "VISIONOS", "WEB_EMBED"), calls());
+        assertEquals(AppClient.ANDROID_VR, result.getClient());
+        VideoInfoBotWallTest.ShadowWalk.silent.clear();
+    }
+
     /** Off (the rollback), or never noted, or noted not live: today's live walk. */
     @Test
     public void withoutTheLiveCardTheWalkIsTodays() {
@@ -531,6 +566,21 @@ public class VideoInfoPlannerTest {
         open("kids");
         assertEquals(Arrays.asList("ANDROID_VR", "IOS", "ANDROID_REEL", "MWEB", "WEB", "WEB_SAFARI",
                 "WEB_EMBED"), calls());
+    }
+
+    /**
+     * The Codex review's case: VISIONOS's refusal has the kids shape, but IOS served the video (a
+     * source that never serves a kids video): not a kids video, so its recovery keeps the lane's
+     * order (v20's: the refusers last), rather than putting the failed IOS first.
+     */
+    @Test
+    public void aRecoveryFromASourceThatNeverServesKidsIsNotAKidsRecovery() {
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.IOS
+                ? playable(auth) : unplayable(NOT_AVAILABLE + " " + client, auth);
+        assertEquals(AppClient.IOS, open("music").getClient());
+        recoverFrom(AppClient.IOS);
+        open("music");
+        assertEquals("ANDROID_REEL", calls().get(0));
     }
 
     /** Only a made-for-kids refusal moves the tail: an age gate's recovery keeps the lane's order. */

@@ -105,7 +105,8 @@ public class YtCfgServiceRerollTest {
         cache(new YtCfgService.EmbedIdentity("old-flags", "old-visitor", System.currentTimeMillis() - HOUR));
         assertTrue(YtCfgService.rerollEmbedIdentity("v1"));
         assertNull(cached());
-        assertNull("the persisted copy goes too", store.snapshot);
+        assertNull("the persisted pair goes too", EmbedIdentityPersistence.decode(store.snapshot));
+        assertTrue("its budget stays", EmbedIdentityPersistence.decodeRerolledAtMs(store.snapshot) > 0);
         assertTrue("nothing fetched in the walk", pages.isEmpty());
         assertEquals(1, background.size());
 
@@ -161,6 +162,64 @@ public class YtCfgServiceRerollTest {
         ReflectionHelpers.setStaticField(YtCfgService.class, "lastRerollAtMs", now - 6 * HOUR - 1);
         cache(new YtCfgService.EmbedIdentity("flags", "visitor", now - HOUR));
         assertTrue(YtCfgService.rerollEmbedIdentity("v1"));
+    }
+
+    /**
+     * The Codex review's cases. A SABR-only answer that comes back after the identity was already
+     * replaced (a 152, another walk) re-rolls nothing: the newer pair has said nothing yet.
+     */
+    @Test
+    public void onlyTheIdentityThatGotTheAnswerIsReRolled() {
+        cache(new YtCfgService.EmbedIdentity("flags", "newer-visitor", System.currentTimeMillis()));
+        assertFalse(YtCfgService.rerollEmbedIdentity("v1", "older-visitor"));
+        assertNotNull(cached());
+        assertTrue(YtCfgService.rerollEmbedIdentity("v1", "newer-visitor"));
+    }
+
+    /** The budget is on disk before the new pair: a process that dies in between still knows. */
+    @Test
+    public void theBudgetSurvivesARestartBeforeTheNewPair() {
+        cache(new YtCfgService.EmbedIdentity("old-flags", "old-visitor", System.currentTimeMillis()));
+        assertTrue(YtCfgService.rerollEmbedIdentity("v1", "old-visitor"));
+        assertNotNull(store.snapshot);
+        assertNull("a mark, no pair", EmbedIdentityPersistence.decode(store.snapshot));
+        assertTrue(EmbedIdentityPersistence.decodeRerolledAtMs(store.snapshot) > 0);
+
+        // The process dies before the background fetch; a new one starts.
+        restart();
+        assertNull("no pair to restore", YtCfgService.getEmbedIdentity(null));
+        assertNotNull("the mark stays while its budget holds", store.snapshot);
+        cache(new YtCfgService.EmbedIdentity("fetched-flags", "fetched-visitor", System.currentTimeMillis()));
+        assertFalse(YtCfgService.rerollEmbedIdentity("v2", "fetched-visitor"));
+    }
+
+    /** A 152 after a re-roll drops the pair and keeps the budget on disk. */
+    @Test
+    public void a152KeepsTheBudgetOnDisk() {
+        cache(new YtCfgService.EmbedIdentity("old-flags", "old-visitor", System.currentTimeMillis()));
+        assertTrue(YtCfgService.rerollEmbedIdentity("v1", "old-visitor"));
+        background.get(0).run();
+        YtCfgService.invalidateEmbedIdentity();
+        assertNull(EmbedIdentityPersistence.decode(store.snapshot));
+        assertTrue(EmbedIdentityPersistence.decodeRerolledAtMs(store.snapshot) > 0);
+        restart();
+        YtCfgService.getEmbedIdentity(null);
+        cache(new YtCfgService.EmbedIdentity("f", "fetched-visitor", System.currentTimeMillis()));
+        assertFalse(YtCfgService.rerollEmbedIdentity("v2", "fetched-visitor"));
+    }
+
+    /** Without a re-roll, a 152 clears the disk as before. */
+    @Test
+    public void a152WithoutAReRollClearsTheDisk() {
+        cache(new YtCfgService.EmbedIdentity("flags", "visitor", System.currentTimeMillis()));
+        YtCfgService.invalidateEmbedIdentity();
+        assertNull(store.snapshot);
+    }
+
+    private void restart() {
+        ReflectionHelpers.setStaticField(YtCfgService.class, "cachedEmbedIdentity", null);
+        ReflectionHelpers.setStaticField(YtCfgService.class, "lastRerollAtMs", 0L);
+        EmbedIdentityPersistence.setStore(store);
     }
 
     /** Nothing cached (already dropped by a 152, or never fetched): nothing to re-roll. */
