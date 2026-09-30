@@ -17,8 +17,12 @@ internal data class NavigationEndpointItem(
     val watchPlaylistEndpoint: WatchEndpointItem?,
     val openPopupAction: PopupActionItem?,
     val showEngagementPanelEndpoint: ShowEngagementPanelEndpoint?,
-    val searchEndpoint: SearchEndpoint?
+    val searchEndpoint: SearchEndpoint?,
+    val urlEndpoint: UrlEndpoint? // NEWTUBE(comments-panel): web links inside comments
 ) {
+    data class UrlEndpoint(
+        val url: String?
+    )
     data class SearchEndpoint(
         val query: String?
     )
@@ -164,7 +168,8 @@ internal data class TextItem(
     data class Run(
         val text: String?,
         val emoji: LiveChatEmoji?,
-        val navigationEndpoint: NavigationEndpointItem?
+        val navigationEndpoint: NavigationEndpointItem?,
+        val bold: Boolean? // NEWTUBE(comments-panel): *bold* stretches of a comment
     )
 
     override fun toString(): String {
@@ -687,5 +692,6 @@ internal data class OverlayPanelHeaderRenderer(
 
 internal data class EngagementPanelTitleHeaderRenderer(
     val menu: Menu?,
-    val title: TextItem?
+    val title: TextItem?,
+    val contextualInfo: TextItem? // NEWTUBE(comments-panel): the comments total ("2.4K")
 )

@@ -265,6 +265,14 @@ internal data class MediaItemMetadataImpl(private val watchNextResult: WatchNext
         return commentsKeyItem
     }
 
+    override fun getCommentsCount(): String? {
+        return commentsPanel?.getCommentsCount()
+    }
+
+    override fun getNewestCommentsKey(): String? {
+        return commentsPanel?.getNewCommentsToken()
+    }
+
     override fun isUpcoming(): Boolean {
         return isUpcomingItem
     }

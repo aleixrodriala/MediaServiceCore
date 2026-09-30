@@ -32,6 +32,22 @@ public interface MediaItemMetadata {
     boolean isLive();
     String getLiveChatKey();
     String getCommentsKey();
+
+    /**
+     * NEWTUBE(comments-panel): the comments total as YouTube abbreviates it ("2.4K"), from the
+     * comments panel header of the same /next response, or null when not shown.
+     */
+    default String getCommentsCount() {
+        return null;
+    }
+
+    /**
+     * NEWTUBE(comments-panel): the continuation that loads the first page sorted Newest first.
+     * {@link #getCommentsKey()} is the Top-comments one. Null when YouTube offers no sort.
+     */
+    default String getNewestCommentsKey() {
+        return null;
+    }
     boolean isUpcoming();
     String getChannelId();
     String getParams();
