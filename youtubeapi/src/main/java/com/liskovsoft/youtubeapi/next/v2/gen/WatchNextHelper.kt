@@ -30,7 +30,10 @@ private const val ICON_TYPE_SHUFFLE = "SHUFFLE"
 private fun WatchNextResult.getWatchNextResults() = contents?.singleColumnWatchNextResults
 private fun WatchNextResult.getPlayerOverlays() = playerOverlays?.playerOverlayRenderer
 internal fun WatchNextResult.getSuggestedSections() =
-    getWatchNextResults()?.pivot?.let { it.pivot ?: it.sectionListRenderer }?.contents?.mapNotNull { it?.shelfRenderer }
+    getSuggestedSectionList()?.contents?.mapNotNull { it?.shelfRenderer }
+/** NEWTUBE(related-more): the pivot's own continuation - the next page of shelves (TV: 10 shelves of 3). */
+internal fun WatchNextResult.getSuggestedSectionsContinuation() = getSuggestedSectionList()?.continuations?.getContinuationToken()
+private fun WatchNextResult.getSuggestedSectionList() = getWatchNextResults()?.pivot?.let { it.pivot ?: it.sectionListRenderer }
 internal fun WatchNextResult.getVideoMetadata() = getWatchNextResults()?.results?.results?.contents?.getOrNull(0)
     ?.itemSectionRenderer?.contents?.map { it?.videoMetadataRenderer ?: it?.musicWatchMetadataRenderer }?.firstOrNull()
 

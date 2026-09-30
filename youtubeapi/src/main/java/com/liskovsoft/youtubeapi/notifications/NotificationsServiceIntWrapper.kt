@@ -13,10 +13,25 @@ private const val NONE = 2 // Disable notifications
 internal object NotificationsServiceIntWrapper: NotificationsServiceInt() {
     override fun getItems(): MediaGroup? {
         return try {
-            super.getItems()
+            super.getItems().also {
+                logNetPath("notifications source=inbox items=${it?.mediaItems?.size ?: -1}")
+            }
         } catch (e: IllegalStateException) {
-            NotificationStorage.getChannels()?.let { RssService.getFeed(*it.toTypedArray(), type = MediaGroup.TYPE_NOTIFICATIONS) }
+            // NEWTUBE(notifications): the inbox request carries the TVHTML5 context, which the endpoint
+            // refuses (anonymous probe 2026-09-30: HTTP 400 FAILED_PRECONDITION for TVHTML5, 200 for
+            // WEB). The fallback is an RSS feed of the channels whose bell was set to "All" in this app
+            // (or liked 6+ times) - none for most phone users, hence an empty section. One line, so
+            // an empty Notifications screen tells which of the two it was.
+            val channels = NotificationStorage.getChannels()
+            val feed = channels?.let { RssService.getFeed(*it.toTypedArray(), type = MediaGroup.TYPE_NOTIFICATIONS) }
+            logNetPath("notifications source=rss inbox-error=${e.message?.take(80)} channels=${channels?.size ?: 0} " +
+                    "items=${feed?.mediaItems?.size ?: 0}")
+            feed
         }
+    }
+
+    private fun logNetPath(message: String) {
+        android.util.Log.d("NetPath", message)
     }
 
     override fun modifyNotification(notificationState: NotificationState?) {
