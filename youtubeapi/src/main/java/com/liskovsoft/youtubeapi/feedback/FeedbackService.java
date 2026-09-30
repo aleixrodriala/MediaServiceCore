@@ -3,6 +3,7 @@ package com.liskovsoft.youtubeapi.feedback;
 import com.liskovsoft.googlecommon.common.helpers.RetrofitHelper;
 import com.liskovsoft.mediaserviceinterfaces.data.FeedbackReasons;
 import com.liskovsoft.mediaserviceinterfaces.data.FeedbackReasons.FeedbackItem;
+import com.liskovsoft.mediaserviceinterfaces.data.FeedbackResult;
 import com.liskovsoft.youtubeapi.feedback.models.FeedbackReason;
 import com.liskovsoft.youtubeapi.feedback.models.FeedbackResponse;
 import com.liskovsoft.youtubeapi.track.TrackingService;
@@ -11,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import retrofit2.Call;
+import retrofit2.Response;
 
 public class FeedbackService {
     private static FeedbackService sInstance;
@@ -35,6 +37,30 @@ public class FeedbackService {
         // The same feedback endpoint removes history entries. A later replay must be
         // allowed to create a new record instead of reusing the removed one.
         TrackingService.instance().clearCache();
+    }
+
+    /**
+     * NEWTUBE(not-interested): {@link #markAsNotInterested} that keeps YouTube's answer - the HTTP
+     * status (-1 when no response arrived) and whether the token was processed.
+     */
+    public FeedbackResult sendFeedback(String feedbackToken) {
+        Call<FeedbackResponse> wrapper = mFeedbackApi.setNotInterested(
+                FeedbackApiHelper.getNotInterestedQuery(feedbackToken));
+        Response<FeedbackResponse> response = RetrofitHelper.getResponse(wrapper);
+        int code = response != null ? response.code() : -1;
+        boolean processed = response != null && response.body() != null && response.body().isProcessed();
+
+        return new FeedbackResult() {
+            @Override
+            public int getCode() {
+                return code;
+            }
+
+            @Override
+            public boolean isProcessed() {
+                return processed;
+            }
+        };
     }
 
     public FeedbackReasons getReasons(String feedbackToken) {
