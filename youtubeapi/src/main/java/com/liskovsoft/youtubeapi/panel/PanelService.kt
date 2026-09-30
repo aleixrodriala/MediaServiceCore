@@ -7,6 +7,7 @@ import com.liskovsoft.youtubeapi.next.v2.gen.getMenuItems
 
 internal object PanelService {
     private val mPanelApi = RetrofitHelper.create(PanelApi::class.java)
+    @Volatile
     private var mCachedToken: CachedToken? = null
 
     private data class CachedToken(
@@ -18,8 +19,10 @@ internal object PanelService {
     }
 
     private fun getFeedbackTokens(panelId: String, params: String): List<String>? {
-        if (mCachedToken?.panelId == panelId && mCachedToken?.params == params) {
-            return mCachedToken?.tokens
+        // NEWTUBE(not-interested): one read, so a concurrent store cannot hand back another card's tokens.
+        val cached = mCachedToken
+        if (cached?.panelId == panelId && cached.params == params) {
+            return cached.tokens
         }
 
         val panelResultWrapper = mPanelApi.getPanel(
@@ -29,7 +32,11 @@ internal object PanelService {
 
         val tokens = panelResult?.content?.getMenuItems()?.mapNotNull { it?.getFeedbackToken() }
 
-        mCachedToken = CachedToken(panelId, params, tokens)
+        // NEWTUBE(not-interested): keep only a usable answer (both tokens), so "Try again" after a
+        // failed or partial panel asks YouTube again instead of replaying it from this one-slot cache.
+        if (tokens?.size == 2) {
+            mCachedToken = CachedToken(panelId, params, tokens)
+        }
 
         return tokens
     }

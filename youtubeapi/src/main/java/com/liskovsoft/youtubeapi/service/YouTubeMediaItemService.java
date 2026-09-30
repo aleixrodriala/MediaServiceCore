@@ -8,6 +8,7 @@ import com.liskovsoft.mediaserviceinterfaces.data.DeArrowData;
 import com.liskovsoft.mediaserviceinterfaces.data.DislikeData;
 import com.liskovsoft.mediaserviceinterfaces.data.FeedbackEndpoint;
 import com.liskovsoft.mediaserviceinterfaces.data.FeedbackReasons;
+import com.liskovsoft.mediaserviceinterfaces.data.FeedbackResult;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItem;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemFormatInfo;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaItemMetadata;
@@ -723,6 +724,15 @@ public class YouTubeMediaItemService implements MediaItemService {
     @Override
     public Observable<List<String>> getFeedbackTokensObserve(FeedbackEndpoint endpoint) {
         return RxHelper.fromCallable(() -> getFeedbackTokens(endpoint));
+    }
+
+    @Override
+    public Observable<FeedbackResult> sendFeedbackObserve(String feedbackToken) {
+        return RxHelper.fromCallable(() -> {
+            checkSigned();
+
+            return getFeedbackService().sendFeedback(feedbackToken);
+        });
     }
 
     @Override
