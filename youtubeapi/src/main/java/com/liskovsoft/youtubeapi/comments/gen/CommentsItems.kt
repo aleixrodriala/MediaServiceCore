@@ -28,8 +28,16 @@ internal data class CommentRenderer(
     val isLiked: Boolean?,
     val voteCount: TextItem?,
     val repliesCount: TextItem?,
-    val actionButtons: ActionButtonsWrapper?
+    val actionButtons: ActionButtonsWrapper?,
+    val pinnedCommentBadge: PinnedCommentBadge? // NEWTUBE(comments-panel)
 ) {
+    data class PinnedCommentBadge(
+        val pinnedCommentBadgeRenderer: PinnedCommentBadgeRenderer?
+    ) {
+        data class PinnedCommentBadgeRenderer(
+            val label: TextItem? // "Pinned by @handle"
+        )
+    }
     data class ActionButtonsWrapper(
         val commentActionButtonsRenderer: CommentActionButtonsRenderer?
     ) {
