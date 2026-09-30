@@ -1,6 +1,7 @@
 package com.liskovsoft.youtubeapi.comments
 
 import com.liskovsoft.mediaserviceinterfaces.data.CommentGroup
+import com.liskovsoft.mediaserviceinterfaces.data.CommentItem
 import com.liskovsoft.youtubeapi.comments.gen.getDislikeParams
 import com.liskovsoft.youtubeapi.comments.gen.getLikeParams
 import com.liskovsoft.youtubeapi.comments.gen.getActiveCommentItem
@@ -28,6 +29,19 @@ internal object CommentsServiceInt {
         val likeParam = commentsResult?.getActiveCommentItem()?.getDislikeParams()
         likeParam?.let { getActionResult(it) }
     }
+
+    // NEWTUBE(write-comments): each returns YouTube's answer or throws with its reason.
+
+    fun createComment(videoId: String, commentText: String): CommentItem = CommentWriteAnswers.createdComment(
+        RetrofitHelper.getWithErrors(mApi.createComment(CommentsApiParams.getCreateCommentQuery(videoId, commentText))))
+
+    fun createReply(videoId: String, parentCommentId: String, commentText: String): CommentItem =
+        CommentWriteAnswers.createdComment(RetrofitHelper.getWithErrors(mApi.createCommentReply(
+            CommentsApiParams.getCreateReplyQuery(videoId, parentCommentId, commentText))))
+
+    fun deleteComment(videoId: String, commentId: String) = CommentWriteAnswers.checkDeleted(
+        RetrofitHelper.getWithErrors(mApi.commentActionWithAnswer(CommentsApiParams.getDeleteCommentQuery(videoId, commentId))),
+        commentId)
 
     private fun getCommentsResult(commentsKey: String) = RetrofitHelper.get(mApi.getComments(CommentsApiParams.getCommentsQuery(commentsKey)))
 

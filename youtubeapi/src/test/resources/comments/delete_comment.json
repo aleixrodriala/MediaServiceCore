@@ -1,0 +1,44 @@
+{
+ "responseContext": {
+  "serviceTrackingParams": [
+   {
+    "service": "GFEEDBACK",
+    "params": [
+     {
+      "key": "logged_in",
+      "value": "1"
+     }
+    ]
+   }
+  ],
+  "responseId": "IhMIw9LdmtKWlwMVVdh7AB0vfDH9",
+  "webResponseContextExtensionData": {
+   "hasDecorated": true
+  }
+ },
+ "actions": [
+  {
+   "clickTrackingParams": "IhMIw9LdmtKWlwMVVdh7AB0vfDH9ygEEeYcvkA==",
+   "removeCommentAction": {
+    "commentId": "Ugws8WkM4-stbgyJzI54AaABAg.AbOBNn0tNCeAbOBPW6vShG",
+    "actionResult": {
+     "status": "STATUS_SUCCEEDED",
+     "feedback": "FEEDBACK_REMOVE",
+     "feedbackText": {
+      "runs": [
+       {
+        "text": "Comment deleted"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "clickTrackingParams": "IhMIw9LdmtKWlwMVVdh7AB0vfDH9ygEEeYcvkA==",
+   "openPopupAction": {
+    "popupType": "TOAST"
+   }
+  }
+ ]
+}

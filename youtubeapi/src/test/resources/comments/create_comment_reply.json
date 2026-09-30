@@ -1,0 +1,181 @@
+{
+ "responseContext": {
+  "serviceTrackingParams": [
+   {
+    "service": "GFEEDBACK",
+    "params": [
+     {
+      "key": "logged_in",
+      "value": "1"
+     }
+    ]
+   }
+  ],
+  "responseId": "IhMI-uqTkdKWlwMVQkFPBB3dpBmN",
+  "webResponseContextExtensionData": {
+   "webResponseContextPreloadData": {
+    "preloadMessageNames": [
+     "commentRenderer",
+     "commentThreadRenderer",
+     "engagementPanelSectionListRenderer",
+     "engagementPanelTitleHeaderRenderer",
+     "sectionListRenderer",
+     "itemSectionRenderer"
+    ]
+   },
+   "hasDecorated": true
+  }
+ },
+ "contents": {
+  "commentRenderer": {
+   "trackingParams": "CAcQtnUiEwj66pOR0paXAxVCQU8EHd2kGY0="
+  }
+ },
+ "actions": [
+  {
+   "clickTrackingParams": "CAAQ0esIIhMI-uqTkdKWlwMVQkFPBB3dpBmNygEEeYcvkA==",
+   "changeEngagementPanelVisibilityAction": {
+    "visibility": "ENGAGEMENT_PANEL_VISIBILITY_HIDDEN",
+    "panelIdentifier": {
+     "tag": "PAcomment-compose-voice-input-panel"
+    }
+   }
+  },
+  {
+   "clickTrackingParams": "CAAQ0esIIhMI-uqTkdKWlwMVQkFPBB3dpBmNygEEeYcvkA==",
+   "listMutationCommand": {
+    "operations": {
+     "operations": [
+      {
+       "insertItemSectionContent": {
+        "contents": [
+         {
+          "commentThreadRenderer": {
+           "comment": {
+            "commentRenderer": {
+             "authorText": {
+              "simpleText": "@testaccount"
+             },
+             "authorThumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://yt3.ggpht.com/ytc/TEST_AVATAR=s48-c-k-c0x00ffffff-no-rj",
+                "width": 48,
+                "height": 48
+               },
+               {
+                "url": "https://yt3.ggpht.com/ytc/TEST_AVATAR=s88-c-k-c0x00ffffff-no-rj",
+                "width": 88,
+                "height": 88
+               },
+               {
+                "url": "https://yt3.ggpht.com/ytc/TEST_AVATAR=s176-c-k-c0x00ffffff-no-rj",
+                "width": 176,
+                "height": 176
+               }
+              ],
+              "accessibility": {
+               "accessibilityData": {
+                "label": "@testaccount"
+               }
+              }
+             },
+             "contentText": {
+              "runs": [
+               {
+                "text": "Test reply, deleting soon"
+               }
+              ]
+             },
+             "publishedTimeText": {
+              "simpleText": "0 seconds ago"
+             },
+             "isLiked": false,
+             "commentId": "Ugws8WkM4-stbgyJzI54AaABAg.AbOBNn0tNCeAbOBPW6vShG",
+             "voteStatus": "INDIFFERENT",
+             "trackingParams": "CAIQtnUiEwj66pOR0paXAxVCQU8EHd2kGY0=",
+             "detailViewEndpoint": {
+              "clickTrackingParams": "CAIQtnUiEwj66pOR0paXAxVCQU8EHd2kGY3KAQR5hy-Q",
+              "showEngagementPanelEndpoint": {
+               "engagementPanel": {
+                "engagementPanelSectionListRenderer": {
+                 "header": {
+                  "engagementPanelTitleHeaderRenderer": {
+                   "title": {
+                    "runs": [
+                     {
+                      "text": "Replies"
+                     }
+                    ]
+                   },
+                   "trackingParams": "CAMQ040EIhMI-uqTkdKWlwMVQkFPBB3dpBmN"
+                  }
+                 },
+                 "content": {
+                  "sectionListRenderer": {
+                   "contents": [
+                    {
+                     "itemSectionRenderer": {
+                      "continuations": [
+                       {
+                        "reloadContinuationData": {
+                         "continuation": "Eg0SC2pOUVhBQzlJVlJ3GAYybgoAGmgSMVVnd3M4V2tNNC1zdGJneUp6STU0QWFBQkFnLkFiT0JObjB0TkNlQWJPQlBXNnZTaEciAggAKhhVQzRRb2JVNlNURkIwUDcxUE12T0dONUEyC2pOUVhBQzlJVlJ3SACCAQIIAZABAigA",
+                         "clickTrackingParams": "CAYQxqYCIhMI-uqTkdKWlwMVQkFPBB3dpBmNygEEeYcvkA=="
+                        }
+                       }
+                      ],
+                      "trackingParams": "CAUQuy8YACITCPrqk5HSlpcDFUJBTwQd3aQZjQ==",
+                      "sectionIdentifier": "comment-item-section",
+                      "targetId": "comment-replies-item-section-target-Ugws8WkM4-stbgyJzI54AaABAg.AbOBNn0tNCeAbOBPW6vShG"
+                     }
+                    }
+                   ],
+                   "trackingParams": "CAQQui8iEwj66pOR0paXAxVCQU8EHd2kGY0="
+                  }
+                 },
+                 "veType": 159422
+                }
+               },
+               "identifier": {
+                "surface": "ENGAGEMENT_PANEL_SURFACE_WATCH",
+                "tag": "comment-replies-item-section-Ugws8WkM4-stbgyJzI54AaABAg.AbOBNn0tNCeAbOBPW6vShG"
+               }
+              }
+             },
+             "targetId": "main-comment-view-Ugws8WkM4-stbgyJzI54AaABAg.AbOBNn0tNCeAbOBPW6vShG",
+             "loggingDirectives": {
+              "trackingParams": "CAIQtnUiEwj66pOR0paXAxVCQU8EHd2kGY0="
+             }
+            }
+           },
+           "trackingParams": "CAEQwnUYBCITCPrqk5HSlpcDFUJBTwQd3aQZjQ==",
+           "renderingPriority": "RENDERING_PRIORITY_UNKNOWN",
+           "isModeratedElqComment": false,
+           "targetId": "comment-item-Ugws8WkM4-stbgyJzI54AaABAg.AbOBNn0tNCeAbOBPW6vShG"
+          }
+         }
+        ],
+        "insertByRelativePositionInSection": {
+         "sectionTargetId": "comment-replies-item-section-target-Ugws8WkM4-stbgyJzI54AaABAg",
+         "itemTargetId": "comment-compose-button",
+         "relativePosition": "RELATIVE_INSERTION_POSITION_AFTER"
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "actionResult": {
+  "status": "STATUS_SUCCEEDED",
+  "feedbackText": {
+   "runs": [
+    {
+     "text": "Reply added"
+    }
+   ]
+  }
+ },
+ "trackingParams": "CAAQ0esIIhMI-uqTkdKWlwMVQkFPBB3dpBmNygEEeYcvkA=="
+}
