@@ -24,7 +24,8 @@ internal data class WatchNextResult(
                 val sectionListRenderer: NestedPivot?
             ) {
                 data class NestedPivot(
-                    val contents: List<Content?>?
+                    val contents: List<Content?>?,
+                    val continuations: List<ContinuationItem?>? // NEWTUBE(related-more): the next shelves
                 ) {
                     data class Content(
                         val shelfRenderer: ShelfRenderer?

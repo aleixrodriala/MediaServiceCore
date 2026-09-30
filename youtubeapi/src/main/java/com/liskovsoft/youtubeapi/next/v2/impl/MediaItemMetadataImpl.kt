@@ -14,6 +14,7 @@ import com.liskovsoft.youtubeapi.common.models.impl.mediaitem.ShuffleMediaItem
 import com.liskovsoft.youtubeapi.next.v2.gen.*
 import com.liskovsoft.youtubeapi.browse.v2.gen.getShelfItems
 import com.liskovsoft.youtubeapi.notifications.NotificationStateImplWrapper
+import com.liskovsoft.youtubeapi.next.v2.WatchNextGates
 
 internal data class MediaItemMetadataImpl(private val watchNextResult: WatchNextResult,
                                  private val suggestionsResult: WatchNextResult? = null) : MediaItemMetadata {
@@ -123,14 +124,37 @@ internal data class MediaItemMetadataImpl(private val watchNextResult: WatchNext
                 // Unnamed sections have space in names " ". Remove spaces to improve further parsing
                 title = title?.trim()
             }}
-        if (list?.isNotEmpty() == true)
+        (if (list?.isNotEmpty() == true)
             list
         else
             // In rare cases first chip item contains all shelfs
             suggestedSections?.firstOrNull()?.getChipItems()?.firstOrNull()?.run {
                 val chipTitle = getTitle() // shelfs inside a chip aren't have a titles
                 getShelfItems()?.map { it?.let { SuggestionsGroup(it).apply { title = title ?: chipTitle } } }
-            }
+            }).also { attachSectionsContinuation(it) }
+    }
+
+    /**
+     * NEWTUBE(related-more): the TV pivot is a section list of shelves (10 shelves of 3 videos in
+     * 2026-09) with a continuation of its own - the next 10 shelves - while the shelves themselves have
+     * none. Only shelf keys were read, so the phone's related list ended after 30 videos. The last
+     * row carries the section list's key: continuing that row (the phone pages its last row at the
+     * end of the list) fetches the next shelves through the existing /next continuation parse
+     * (sectionListContinuation). A lone playlist row keeps its own paging. Phone gate, see
+     * [WatchNextGates].
+     */
+    private fun attachSectionsContinuation(groups: List<SuggestionsGroup?>?) {
+        if (!WatchNextGates.suggestionsSectionContinuation) {
+            return
+        }
+
+        val last = groups?.lastOrNull() ?: return
+
+        if (last.nextPageKey != null || (groups.size == 1 && playlistInfo?.title != null)) {
+            return
+        }
+
+        last.nextPageKey = (suggestionsResult ?: watchNextResult).getSuggestedSectionsContinuation()
     }
 
     private val albumName by lazy { videoMetadata?.getAlbumName() }
