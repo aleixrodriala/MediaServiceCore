@@ -462,7 +462,8 @@ internal data class LockupItem(
     val contentImage: ContentImage?, // thumbnail
     val metadata: MetadataItem?, // title, subtitle, channelId
     val rendererContext: RendererContext?, // videoId
-    val contentId: String?
+    val contentId: String?,
+    val contentType: String? // LOCKUP_CONTENT_TYPE_VIDEO, LOCKUP_CONTENT_TYPE_SHORT, ...
 ) {
     data class ContentImage(
         val thumbnailViewModel: ThumbnailViewModel?,

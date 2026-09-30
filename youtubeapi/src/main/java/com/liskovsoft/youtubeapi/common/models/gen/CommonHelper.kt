@@ -268,7 +268,9 @@ internal fun LockupItem.isEmpty() = getPercentWatched() == 100 && getBadgeText()
 internal fun LockupItem.getFeedbackTokens() =
     metadata?.lockupMetadataViewModel?.menuButton?.buttonViewModel?.onTap?.innertubeCommand?.getFeedbackTokens()
 internal fun LockupItem.getChannelId() = rendererContext?.getBrowseId()
-internal fun LockupItem.isShorts() = rendererContext?.getOnTapCommand()?.reelWatchEndpoint != null
+private const val LOCKUP_CONTENT_TYPE_SHORT = "LOCKUP_CONTENT_TYPE_SHORT"
+internal fun LockupItem.isShorts() = contentType == LOCKUP_CONTENT_TYPE_SHORT
+        || rendererContext?.getOnTapCommand()?.reelWatchEndpoint != null
 private fun LockupItem.getBadge() = getOverlays()?.firstNotNullOfOrNull { it?.thumbnailOverlayBadgeViewModel?.thumbnailBadges
     ?: it?.thumbnailBottomOverlayViewModel?.badges }?.firstNotNullOfOrNull { it?.thumbnailBadgeViewModel }
 private fun LockupItem.getOverlays() = getThumbnailView()?.overlays
@@ -338,7 +340,7 @@ internal fun ItemWrapper.isLive() = getVideoItem()?.isLive() ?: getMusicItem()?.
 internal fun ItemWrapper.isUpcoming() = getVideoItem()?.isUpcoming() ?: getMusicItem()?.isUpcoming() ?: getTileItem()?.isUpcoming() ?: false
 internal fun ItemWrapper.isMovie() = getVideoItem()?.isMovie() ?: getTileItem()?.isMovie() ?: false
 // NEWTUBE(shorts): a lockupViewModel Short (search results, the Home/channel Shorts shelves on TVHTML5)
-// carries no Shorts badge or style - only its tap command says it: a reelWatchEndpoint.
+// carries no Shorts badge or style - only its contentType and its tap command (a reelWatchEndpoint) say it.
 internal fun ItemWrapper.isShorts() = reelItemRenderer != null || shortsLockupViewModel != null || getVideoItem()?.isShorts() ?: getTileItem()?.isShorts() ?: false
         || getLockupItem()?.isShorts() == true
 internal fun ItemWrapper.getDescriptionText() = getTileItem()?.getRichTextTileText()

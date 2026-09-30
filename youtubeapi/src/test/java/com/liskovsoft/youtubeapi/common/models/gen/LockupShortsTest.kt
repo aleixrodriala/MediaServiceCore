@@ -8,8 +8,9 @@ import org.junit.Test
 
 /**
  * NEWTUBE(shorts): TVHTML5 search results and Shorts shelves send Shorts as plain lockupViewModel
- * items (contentType LOCKUP_CONTENT_TYPE_SHORT) with no Shorts badge or style; only the tap command,
- * a reelWatchEndpoint, says what they are. Shapes trimmed from a real /search reply (2026-09-30).
+ * items with no Shorts badge or style; only their contentType (LOCKUP_CONTENT_TYPE_SHORT) and their
+ * tap command (a reelWatchEndpoint) say what they are - either one is enough. Shapes trimmed from a
+ * real /search reply (2026-09-30).
  */
 class LockupShortsTest {
     private fun lockup(videoId: String, contentType: String, command: String) = Gson().fromJson("""
@@ -25,6 +26,16 @@ class LockupShortsTest {
     fun lockupOpeningTheReelPlayerIsAShort() {
         val item = lockup("d99vrWc2m7E", "LOCKUP_CONTENT_TYPE_SHORT",
             """{"reelWatchEndpoint": {"videoId": "d99vrWc2m7E"}}""")
+
+        assertTrue(item.isShorts())
+        assertTrue(WrapperMediaItem(item).isShorts())
+    }
+
+    @Test
+    fun shortContentTypeAloneIsEnough() {
+        // A Short whose tap goes through the ordinary watch endpoint still says what it is.
+        val item = lockup("d99vrWc2m7E", "LOCKUP_CONTENT_TYPE_SHORT",
+            """{"watchEndpoint": {"videoId": "d99vrWc2m7E"}}""")
 
         assertTrue(item.isShorts())
         assertTrue(WrapperMediaItem(item).isShorts())
