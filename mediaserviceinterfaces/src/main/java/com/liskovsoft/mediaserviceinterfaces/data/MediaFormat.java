@@ -31,6 +31,12 @@ public interface MediaFormat extends Comparable<MediaFormat> {
     String getOtfInitUrl();
     String getOtfTemplateUrl();
     String getLanguage();
+    /**
+     * NEWTUBE(loudness): this format's loudness in dB relative to the answer's loudness target
+     * (positive = louder than the target), or null when the answer gives none. Answers with
+     * {@code enablePerFormatLoudness} give each itag, DRC variant and dub its own value.
+     */
+    default Float getLoudnessDb() { return null; }
     // DASH LIVE
     int getTargetDurationSec();
     int getMaxDvrDurationSec();

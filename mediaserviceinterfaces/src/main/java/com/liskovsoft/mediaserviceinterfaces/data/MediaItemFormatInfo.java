@@ -47,6 +47,13 @@ public interface MediaItemFormatInfo extends FormatInfoProvision {
     boolean containsUrlFormats();
     boolean hasExtendedHlsFormats();
     float getVolumeLevel();
+    /**
+     * NEWTUBE(loudness): the answer's track loudness in dB relative to its loudness target
+     * (positive = louder than the target), or null when the answer gives none. Unlike
+     * {@link #getVolumeLevel()}, absent is not 0: VISIONOS answers omit {@code audioConfig.loudnessDb}.
+     * See {@link MediaFormat#getLoudnessDb()} for the per-format values.
+     */
+    default Float getAudioLoudnessDb() { return null; }
     InputStream createMpdStream();
     Observable<InputStream> createMpdStreamObservable();
     List<String> createUrlList();

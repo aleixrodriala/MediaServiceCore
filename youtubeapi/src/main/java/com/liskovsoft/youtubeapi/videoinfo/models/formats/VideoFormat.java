@@ -86,6 +86,8 @@ public class VideoFormat {
     private int mMaxDvrDurationSec;
     @JsonPath("$.isDrc")
     private boolean mIsDrc;
+    @JsonPath("$.loudnessDb")
+    private Number mLoudnessDb; // NEWTUBE(loudness): Number, an integral JSON value maps to Integer
     private VideoUrlHolder mUrlHolder;
 
     public String getUrl() {
@@ -114,6 +116,11 @@ public class VideoFormat {
 
     public boolean isDrc() {
         return mIsDrc;
+    }
+
+    /** NEWTUBE(loudness): dB relative to the answer's loudness target, null when not given. */
+    public Float getLoudnessDb() {
+        return mLoudnessDb != null ? mLoudnessDb.floatValue() : null;
     }
 
     public String getContentLength() {

@@ -57,6 +57,7 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
     private int mSegmentDurationUs;
     private boolean mHasExtendedHlsFormats;
     private float mLoudnessDb;
+    private Float mAudioLoudnessDb;
     private boolean mContainsAdaptiveVideoFormats;
     private boolean mIsAuth;
     private boolean mIsSynced;
@@ -157,6 +158,7 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
         formatInfo.mSegmentDurationUs = videoInfo.getSegmentDurationUs();
         formatInfo.mHasExtendedHlsFormats = videoInfo.hasExtendedHlsFormats();
         formatInfo.mLoudnessDb = videoInfo.getLoudnessDb();
+        formatInfo.mAudioLoudnessDb = videoInfo.getAudioLoudnessDb(); // NEWTUBE(loudness)
         formatInfo.mPaidContentText = videoInfo.getPaidContentText();
         formatInfo.mVideoPlaybackUstreamerConfig = videoInfo.getVideoPlaybackUstreamerConfig();
         formatInfo.mServerAbrStreamingUrl = videoInfo.getServerAbrStreamingUrl();
@@ -266,6 +268,9 @@ public class YouTubeMediaItemFormatInfo implements MediaItemFormatInfo {
 
     @Override
     public long getPrerollWaitMs() { return mPrerollWaitMs; }
+
+    @Override
+    public Float getAudioLoudnessDb() { return mAudioLoudnessDb; }
 
     @Override
     public boolean isHlsVodSelected() { return mHlsVodSelected; }

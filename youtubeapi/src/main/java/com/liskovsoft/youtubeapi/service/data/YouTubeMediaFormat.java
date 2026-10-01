@@ -17,6 +17,7 @@ public class YouTubeMediaFormat implements MediaFormat {
     private String mMimeType;
     private String mITag;
     private boolean mIsDrc;
+    private Float mLoudnessDb;
     private String mClen;
     private String mBitrate;
     private String mProjectionType;
@@ -76,6 +77,7 @@ public class YouTubeMediaFormat implements MediaFormat {
         String iTag = format.getITag() == 0 ? "" : String.valueOf(format.getITag());
         mediaFormat.mITag = iTag;
         mediaFormat.mIsDrc = format.isDrc();
+        mediaFormat.mLoudnessDb = format.getLoudnessDb();
         mediaFormat.mXtags = format.getXtags();
         mediaFormat.mAudioTrackId = format.getAudioTrackId();
         mediaFormat.mClen = format.getContentLength();
@@ -109,6 +111,9 @@ public class YouTubeMediaFormat implements MediaFormat {
 
     @Override
     public String getAudioTrackId() { return mAudioTrackId; }
+
+    @Override
+    public Float getLoudnessDb() { return mLoudnessDb; }
     
     public void setUrl(String url) {
         mUrl = url;

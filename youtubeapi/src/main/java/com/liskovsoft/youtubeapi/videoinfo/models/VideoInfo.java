@@ -106,6 +106,18 @@ public class VideoInfo {
     @JsonPath("$.playerConfig.audioConfig.loudnessDb")
     private float mLoudnessDb;
 
+    // NEWTUBE(loudness): the same value able to tell "absent" from 0, and what the answers that omit
+    // it (VISIONOS) send instead. Number, not Float: the adapter maps an integral JSON number such as
+    // the -14 target to Integer, which a Float field silently refuses.
+    @JsonPath("$.playerConfig.audioConfig.loudnessDb")
+    private Number mAudioLoudnessDb;
+
+    @JsonPath("$.playerConfig.audioConfig.perceptualLoudnessDb")
+    private Number mPerceptualLoudnessDb;
+
+    @JsonPath("$.playerConfig.audioConfig.loudnessTargetLkfs")
+    private Number mLoudnessTargetLkfs;
+
     @JsonPath("$.paidContentOverlay.paidContentOverlayRenderer.text")
     private TextItem mPaidContentText;
 
@@ -467,6 +479,22 @@ public class VideoInfo {
 
     public float getLoudnessDb() {
         return mLoudnessDb;
+    }
+
+    /**
+     * NEWTUBE(loudness): the track loudness relative to the answer's target, or null when unknown.
+     * VISIONOS omits {@code loudnessDb} but sends the absolute loudness and the target it is measured
+     * against (-14 LKFS), which give the same number: Rick Astley +0.99 either way.
+     */
+    @Nullable
+    public Float getAudioLoudnessDb() {
+        if (mAudioLoudnessDb != null) {
+            return mAudioLoudnessDb.floatValue();
+        }
+        if (mPerceptualLoudnessDb != null && mLoudnessTargetLkfs != null) {
+            return mPerceptualLoudnessDb.floatValue() - mLoudnessTargetLkfs.floatValue();
+        }
+        return null;
     }
 
     public boolean isStreamSeekable() {
