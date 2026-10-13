@@ -8,5 +8,5 @@ import retrofit2.http.Path
 @WithRegExp
 internal interface UtilsApi {
     @GET("https://www.youtube.com/{oldChannelId}")
-    fun canonicalChannelId(@Path("oldChannelId") altChannelId: String): Call<ChannelId>?
+    fun canonicalChannelId(@Path(value = "oldChannelId", encoded = true) altChannelId: String): Call<ChannelId>?
 }
