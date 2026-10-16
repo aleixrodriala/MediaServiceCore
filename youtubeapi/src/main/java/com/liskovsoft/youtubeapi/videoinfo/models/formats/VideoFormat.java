@@ -162,6 +162,10 @@ public class VideoFormat {
         mXtags = xtags;
     }
 
+    public boolean isAutoDubbed() {
+        return mIsAutoDubbed;
+    }
+
     public int getWidth() {
         return mWidth;
     }
