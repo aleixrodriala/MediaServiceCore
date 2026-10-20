@@ -5,6 +5,7 @@ import com.liskovsoft.mediaserviceinterfaces.data.MediaItem;
 import io.reactivex.rxjava3.core.Observable;
 
 import java.util.List;
+import java.util.Map;
 
 public interface ContentService {
     List<MediaGroup> getSearch(String searchText);
@@ -22,6 +23,24 @@ public interface ContentService {
     MediaGroup getSubscribedChannelsByNewContent();
     MediaGroup getSubscribedChannelsByName();
     MediaGroup getSubscribedChannelsByLastViewed();
+    /**
+     * NEWTUBE(feed-avatars): channel id -> avatar URL of every subscribed channel listed by the last
+     * {@link #getSubscriptions()} response, with no request of its own. The same map comes back until
+     * another response arrives. Null before one arrived for the current account.
+     */
+    Map<String, String> getSubscribedChannelAvatars();
+    /**
+     * NEWTUBE(feed-avatars): the channel's avatar URL, from one small anonymous request (a few KB),
+     * or null when the channel has none. Blocking. Throws on a network failure, so a caller can
+     * tell "no avatar" from "try later".
+     */
+    String getChannelAvatarUrl(String channelId);
+    /**
+     * NEWTUBE(feed-avatars): the channel of a video card that does not carry it (a signed-in Home
+     * tile), from the card's context menu ({@code MediaItem.getFeedbackEndpoint()}), with one small
+     * anonymous request. Null when the menu has no channel. Blocking; throws on a network failure.
+     */
+    String getChannelIdFromMenu(com.liskovsoft.mediaserviceinterfaces.data.FeedbackEndpoint menu);
     MediaGroup getGroup(MediaItem mediaItem);
     MediaGroup getChannelSearch(String channelId, String query);
     /**

@@ -178,6 +178,21 @@ class YouTubeContentService implements ContentService {
     }
 
     @Override
+    public java.util.Map<String, String> getSubscribedChannelAvatars() {
+        return getBrowseService2().getSubscribedChannelAvatars();
+    }
+
+    @Override
+    public String getChannelAvatarUrl(String channelId) {
+        return getBrowseService2().getChannelAvatarUrl(channelId);
+    }
+
+    @Override
+    public String getChannelIdFromMenu(com.liskovsoft.mediaserviceinterfaces.data.FeedbackEndpoint menu) {
+        return com.liskovsoft.youtubeapi.panel.PanelService.INSTANCE.getChannelId(menu);
+    }
+
+    @Override
     public Observable<MediaGroup> getSubscribedChannelsObserve() {
         return RxHelper.fromCallable(this::getSubscribedChannels);
     }

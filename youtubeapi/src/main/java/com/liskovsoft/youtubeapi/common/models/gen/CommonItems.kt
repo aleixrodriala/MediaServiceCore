@@ -471,7 +471,8 @@ internal data class CommandExecutorCommand(
 ) {
     data class Command(
         val continuationCommand: ContinuationCommand?,
-        val feedbackEndpoint: FeedbackEndpoint?
+        val feedbackEndpoint: FeedbackEndpoint?,
+        val browseEndpoint: BrowseEndpoint? // NEWTUBE(feed-avatars): a context menu's "Go to channel"
     )
 }
 

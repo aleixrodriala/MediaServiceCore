@@ -90,4 +90,13 @@ internal interface BrowseApi {
     )
     @POST("https://www.youtube.com/youtubei/v1/reel/reel_watch_sequence")
     fun getReelContinuationResult(@Body reelQuery: String?): Call<ReelContinuationResult?>
+
+    /** NEWTUBE(feed-avatars): a channel's YouTube Music page, read for its header only. */
+    @Headers(
+        "Content-Type: application/json",
+        "User-Agent: " + DefaultHeaders.USER_AGENT_WEB,
+        "Referer: https://music.youtube.com/"
+    )
+    @POST("https://www.youtube.com/youtubei/v1/browse")
+    fun getMusicChannelHeader(@Body browseQuery: String?): Call<MusicChannelHeaderResult?>
 }

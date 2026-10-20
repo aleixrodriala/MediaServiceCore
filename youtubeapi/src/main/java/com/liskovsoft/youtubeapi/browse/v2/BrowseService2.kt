@@ -6,6 +6,8 @@ import com.liskovsoft.youtubeapi.browse.v2.gen.*
 import com.liskovsoft.youtubeapi.common.helpers.AppClient
 import com.liskovsoft.youtubeapi.common.models.impl.mediagroup.*
 import com.liskovsoft.googlecommon.common.helpers.RetrofitHelper
+import com.liskovsoft.googlecommon.common.helpers.RetrofitOkHttpHelper
+import com.liskovsoft.youtubeapi.common.models.gen.getHighResThumbnailUrl
 import com.liskovsoft.youtubeapi.common.helpers.PostDataHelper
 import com.liskovsoft.youtubeapi.common.models.gen.ItemWrapper
 import com.liskovsoft.youtubeapi.common.models.gen.getPlaylistId
@@ -114,14 +116,45 @@ internal open class BrowseService2 {
 
     private fun getSubscriptionsTV(): MediaGroup? {
         val options = MediaGroupOptions.create(MediaGroup.TYPE_SUBSCRIPTIONS)
+        val avatarsGeneration = SubscribedChannelAvatars.generation()
         val browseResult = mBrowseApi.getBrowseResultTV(BrowseApiHelper.getSubscriptionsQuery(options.clientTV))
 
         return RetrofitHelper.get(browseResult)?.let {
+            SubscribedChannelAvatars.put(it.getTabs(), avatarsGeneration)
+
             // Prepare to move LIVE items to the top. Multiple results should be combined first.
             val (overrideItems, overrideKey) = continueIfNeededTV(it.getItems(), it.getContinuationToken(), options)
 
             BrowseMediaGroupTV(it, options, overrideItems = overrideItems, overrideKey = overrideKey)
         }
+    }
+
+    /**
+     * NEWTUBE(feed-avatars): channel id -> avatar URL of the subscribed channels the last Subscriptions
+     * response listed (the TV page's channel column). No request of its own: the feed's response is
+     * 3-5 MB of JSON and the channel list is already in it.
+     */
+    open fun getSubscribedChannelAvatars(): Map<String, String>? = SubscribedChannelAvatars.get()
+
+    /**
+     * NEWTUBE(feed-avatars): one channel's avatar, from the header of its YouTube Music page (see
+     * [MusicChannelHeaderResult]). Sent without the account's token: the TV token belongs to another
+     * client, and a lookup is not something to tie to the account. Null = the page has no image
+     * (a channel that does not exist gets a 200 without header); any refused or failed request
+     * throws instead, so the caller does not remember it as "no avatar".
+     */
+    open fun getChannelAvatarUrl(channelId: String): String? {
+        val call = mBrowseApi.getMusicChannelHeader(BrowseApiHelper.getChannelQuery(AppClient.WEB_MUSIC, channelId))
+        RetrofitOkHttpHelper.addAuthSkip(call.request())
+        val response = try {
+            call.execute()
+        } catch (e: java.io.IOException) {
+            throw IllegalStateException(e)
+        }
+        if (!response.isSuccessful) {
+            throw IllegalStateException("channel avatar HTTP ${response.code()}")
+        }
+        return response.body()?.getAvatarUrl()
     }
 
     open fun getSubscribedChannels(): MediaGroup? {
@@ -678,6 +711,54 @@ internal open class BrowseService2 {
 }
 
 internal typealias HomeRows = Pair<List<MediaGroup?>?, String?>
+
+/**
+ * NEWTUBE(feed-avatars): the channel avatars of the last Subscriptions response, for
+ * [BrowseService2.getSubscribedChannelAvatars]. An account change empties it, and a response that
+ * was requested before the change is not kept (generation check).
+ */
+internal object SubscribedChannelAvatars : SignInService.OnAccountChange {
+    @Volatile
+    private var avatars: Map<String, String>? = null
+    @Volatile
+    private var generation = 0
+    @Volatile
+    private var watchingAccounts = false
+
+    fun generation(): Int {
+        if (!watchingAccounts) {
+            watchingAccounts = true
+            // The account manager holds listeners weakly; this object is a static singleton.
+            YouTubeSignInService.instance().addOnAccountChange(this)
+        }
+        return generation
+    }
+
+    fun put(tabs: List<TabRenderer>?, requestedAt: Int) {
+        if (tabs == null) {
+            return // not a page with a channel column: keep what is known
+        }
+        val result = LinkedHashMap<String, String>(tabs.size * 2)
+        for (tab in tabs) {
+            val channelId = tab.getChannelId() ?: continue
+            val url = tab.getThumbnails()?.getHighResThumbnailUrl() ?: continue
+            result[channelId] = url
+        }
+        synchronized(this) {
+            if (requestedAt == generation) {
+                avatars = java.util.Collections.unmodifiableMap(result)
+            }
+        }
+    }
+
+    fun get(): Map<String, String>? = avatars
+
+    @Synchronized
+    override fun onAccountChanged(account: Account?) {
+        generation++
+        avatars = null
+    }
+}
 
 /**
  * NEWTUBE(home-parallel): signed-out Home. The personalized home query ("probe") is empty for a

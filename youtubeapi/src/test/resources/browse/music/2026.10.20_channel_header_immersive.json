@@ -1,0 +1,49 @@
+{
+ "header": {
+  "musicImmersiveHeaderRenderer": {
+   "title": {
+    "runs": [
+     {
+      "text": "Taylor Swift"
+     }
+    ]
+   },
+   "thumbnail": {
+    "musicThumbnailRenderer": {
+     "thumbnail": {
+      "thumbnails": [
+       {
+        "url": "https://yt3.googleusercontent.com/RCpTA6EXJQyjVFDosWOKa2SMmqkua_lA9mHPDWWciLwgqpZLz-k8rXWRF_367trrQ7up9BUwCbk6kRk=w540-h225-p-l90-rj",
+        "width": 540,
+        "height": 225
+       },
+       {
+        "url": "https://yt3.googleusercontent.com/RCpTA6EXJQyjVFDosWOKa2SMmqkua_lA9mHPDWWciLwgqpZLz-k8rXWRF_367trrQ7up9BUwCbk6kRk=w816-h340-p-l90-rj",
+        "width": 816,
+        "height": 340
+       },
+       {
+        "url": "https://yt3.googleusercontent.com/RCpTA6EXJQyjVFDosWOKa2SMmqkua_lA9mHPDWWciLwgqpZLz-k8rXWRF_367trrQ7up9BUwCbk6kRk=w1440-h600-p-l90-rj",
+        "width": 1440,
+        "height": 600
+       },
+       {
+        "url": "https://yt3.googleusercontent.com/RCpTA6EXJQyjVFDosWOKa2SMmqkua_lA9mHPDWWciLwgqpZLz-k8rXWRF_367trrQ7up9BUwCbk6kRk=w1920-h800-p-l90-rj",
+        "width": 1920,
+        "height": 800
+       },
+       {
+        "url": "https://yt3.googleusercontent.com/RCpTA6EXJQyjVFDosWOKa2SMmqkua_lA9mHPDWWciLwgqpZLz-k8rXWRF_367trrQ7up9BUwCbk6kRk=w2880-h1200-p-l90-rj",
+        "width": 2880,
+        "height": 1200
+       }
+      ]
+     },
+     "thumbnailCrop": "MUSIC_THUMBNAIL_CROP_UNSPECIFIED",
+     "thumbnailScale": "MUSIC_THUMBNAIL_SCALE_ASPECT_FILL",
+     "trackingParams": "CAQQhL8CIhMI6YHj16LJlwMVOOxWAx1s4wOd"
+    }
+   }
+  }
+ }
+}

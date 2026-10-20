@@ -18,6 +18,7 @@ import com.liskovsoft.youtubeapi.common.models.gen.getText
 import com.liskovsoft.youtubeapi.common.models.gen.getTitle
 import com.liskovsoft.youtubeapi.common.models.gen.isLive
 import com.liskovsoft.youtubeapi.common.models.gen.isUpcoming
+import okio.ByteString.Companion.decodeBase64
 import com.liskovsoft.youtubeapi.next.v2.gen.EngagementPanel
 import com.liskovsoft.youtubeapi.next.v2.gen.getChannelName
 import com.liskovsoft.youtubeapi.next.v2.gen.getContinuationToken
@@ -69,6 +70,17 @@ internal fun TabRenderer.getTitle(): String? = title
 internal fun TabRenderer.getBrowseId(): String? = endpoint?.getBrowseId()
 internal fun TabRenderer.getReloadToken(): String? = content?.tvSurfaceContentRenderer?.continuation?.getContinuationToken()
 internal fun TabRenderer.getParams(): String? = endpoint?.getParams()
+/**
+ * NEWTUBE(feed-avatars): a channel tab of the TV Subscriptions page browses FEsubscriptions, so its
+ * browseId is not the channel's. The channel id is inside its params, a base64 protobuf
+ * {49: {1: "UC..."}} (every tab of the 2025-10 and 2026-02 fixtures).
+ */
+internal fun TabRenderer.getChannelId(): String? = getBrowseId()?.takeIf { CHANNEL_ID.matches(it) }
+    ?: getParams()?.let { params ->
+        val bytes = java.net.URLDecoder.decode(params, "UTF-8").decodeBase64()?.toByteArray() ?: return@let null
+        CHANNEL_ID.find(String(bytes, Charsets.ISO_8859_1))?.value
+    }
+private val CHANNEL_ID = Regex("UC[\\w-]{22}")
 internal fun TabRenderer.getThumbnails(): ThumbnailItem? = thumbnail
 internal fun TabRenderer.hasNewContent(): Boolean = presentationStyle?.style == TAB_STYLE_NEW_CONTENT
 internal fun TabRenderer.getNestedShelves(): List<ShelfListWrapper?>? = getListRenderer()?.getNestedShelves()
