@@ -15,7 +15,7 @@ import org.robolectric.annotation.ConscryptMode;
 @ConscryptMode(ConscryptMode.Mode.OFF)
 public class SearchFilterHelperTest {
     @Test
-    public void singleFiltersKeepTheirWireValues() {
+    public void filtersPreserveSingleAndCombinedWireValuesAndOmitDefaults() {
         int[] options = {UPLOAD_DATE_LAST_HOUR, UPLOAD_DATE_TODAY, UPLOAD_DATE_THIS_WEEK,
                 UPLOAD_DATE_THIS_MONTH, UPLOAD_DATE_THIS_YEAR, DURATION_UNDER_4,
                 DURATION_BETWEEN_4_20, DURATION_OVER_20, TYPE_VIDEO, TYPE_CHANNEL,
@@ -28,10 +28,6 @@ public class SearchFilterHelperTest {
         for (int i = 0; i < options.length; i++) {
             assertEquals("Option " + options[i], params[i], SearchFilterHelper.toParams(options[i]));
         }
-    }
-
-    @Test
-    public void combinationsKeepEverySelectedField() {
         // Previously absent from the lookup table: explicit Video plus duration silently lost both.
         assertEquals("EgQQARgB", SearchFilterHelper.toParams(TYPE_VIDEO | DURATION_UNDER_4));
         // Live + HDR previously dropped HDR.
@@ -44,10 +40,6 @@ public class SearchFilterHelperTest {
         assertEquals("CAMSDQgDEAEYAkABcAHIAQE%3D", SearchFilterHelper.toParams(
                 SORT_BY_VIEW_COUNT | UPLOAD_DATE_THIS_WEEK | TYPE_VIDEO | DURATION_OVER_20
                         | FEATURE_LIVE | FEATURE_4K | FEATURE_HDR));
-    }
-
-    @Test
-    public void defaultsDoNotSendAnEmptyFilter() {
         assertNull(SearchFilterHelper.toParams(-1));
         assertNull(SearchFilterHelper.toParams(0));
         assertNull(SearchFilterHelper.toParams(SORT_BY_RELEVANCE));
