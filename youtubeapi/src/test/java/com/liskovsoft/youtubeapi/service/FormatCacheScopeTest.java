@@ -45,6 +45,26 @@ public class FormatCacheScopeTest {
     @After
     public void tearDown() {
         YouTubeMediaItemService.setSingleFlightEnabled(false);
+        YouTubeMediaItemService.setPreferProgressiveFormats(() -> false);
+    }
+
+    @Test
+    public void changingSingleFilePreferenceRejectsPositiveAndNegativeAnswersFromTheOtherMode() {
+        boolean[] progressive = {false};
+        YouTubeMediaItemService.setPreferProgressiveFormats(() -> progressive[0]);
+        for (boolean unplayable : new boolean[] {false, true}) {
+            MediaItemFormatInfo answer = formatInfo("v", unplayable, false);
+            store("v", answer);
+            assertSame(answer, cached("v"));
+            progressive[0] = true;
+            assertNull("do not reuse the adaptive answer after enabling single-file streams", cached("v"));
+
+            store("v", answer);
+            assertSame(answer, cached("v"));
+            progressive[0] = false;
+            assertNull("do not reuse the single-file answer after disabling the option", cached("v"));
+            service.invalidateCache();
+        }
     }
 
     @Test
@@ -102,14 +122,22 @@ public class FormatCacheScopeTest {
                     ReflectionHelpers.loadClass(getClass().getClassLoader(),
                             YouTubeMediaItemService.class.getName() + "$UnplayableEntry"),
                     ClassParameter.from(String.class, videoId),
-                    ClassParameter.from(MediaItemFormatInfo.class, info));
+                    ClassParameter.from(MediaItemFormatInfo.class, info),
+                    ClassParameter.from(boolean.class, preference()));
             ReflectionHelpers.setField(service, "mUnplayableEntry", entry);
         } else {
             ReflectionHelpers.callInstanceMethod(service, "setCachedFormatInfo",
                     ClassParameter.from(String.class, videoId),
                     ClassParameter.from(MediaItemFormatInfo.class, info),
-                    ClassParameter.from(String.class, null));
+                    ClassParameter.from(String.class, null),
+                    ClassParameter.from(boolean.class, preference()));
         }
+    }
+
+    private boolean preference() {
+        java.util.function.BooleanSupplier preference =
+                ReflectionHelpers.getStaticField(YouTubeMediaItemService.class, "sPreferProgressiveFormats");
+        return preference.getAsBoolean();
     }
 
     private static MediaItemFormatInfo formatInfo(String videoId, boolean unplayable,

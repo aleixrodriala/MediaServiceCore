@@ -1635,11 +1635,20 @@ public class VideoInfoService extends VideoInfoServiceBase {
 
     public synchronized VideoInfo getVideoInfo(String videoId, String clickTrackingParams,
             @Nullable CancellationSignal cancellationSignal, WalkRole role) {
+        return getVideoInfo(videoId, clickTrackingParams, cancellationSignal, role, false);
+    }
+
+    private boolean mPreferProgressiveFormats;
+
+    public synchronized VideoInfo getVideoInfo(String videoId, String clickTrackingParams,
+            @Nullable CancellationSignal cancellationSignal, WalkRole role, boolean preferProgressive) {
         mWalkRole = role;
+        mPreferProgressiveFormats = preferProgressive;
         try {
             return getVideoInfoAs(videoId, clickTrackingParams, cancellationSignal);
         } finally {
             mWalkRole = WalkRole.ACTIVE;
+            mPreferProgressiveFormats = false;
         }
     }
 
@@ -1930,7 +1939,7 @@ public class VideoInfoService extends VideoInfoServiceBase {
             visitOrder = PhoneSourcePlanner.order(new PhoneSourcePlanner.Context(
                     lane, recoveryWalk ? lastWinner : null, anonChallenged, accountRouteBenched,
                     sAccountRouteFirst, kidsHinted, recoveryRefused.keySet(), recoveryKids,
-                    liveCardHinted, vodVrLate, walkBenched, walkRefreshed));
+                    liveCardHinted, vodVrLate, walkBenched, walkRefreshed), mPreferProgressiveFormats);
             android.util.Log.d("NetPath", "player-ring plan video=" + videoId
                     + " lane=" + (authenticated ? "signed-in" : "signed-out")
                     + (recoveryWalk ? " suspect=" + lastWinner : "")
