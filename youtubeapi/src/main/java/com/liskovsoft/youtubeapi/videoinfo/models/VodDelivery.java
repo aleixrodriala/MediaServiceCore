@@ -30,6 +30,14 @@ public final class VodDelivery {
         return sHls;
     }
 
+    /** A reviewed muxed route can play even when its adaptive formats are SABR-only. */
+    public static boolean acceptsProgressive(VideoInfo info) {
+        return info != null && "OK".equals(info.getRawPlayabilityStatus()) && !info.isBotCheckRequired()
+                && !info.isLive() && (info.getVideoDetails() == null || !info.getVideoDetails().isLiveContent())
+                && info.getClient() != null && info.containsUsableRegularFormats()
+                && PlayerSourceCatalog.defaultFor(info.getClient()).fallbacks.contains(PlayerSource.Delivery.PROGRESSIVE);
+    }
+
     /**
      * Whether {@code info} - an OK answer for a video that is not live, from a source measured to
      * play its HLS - plays over its HLS manifest when its adaptive formats cannot be used.

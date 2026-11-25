@@ -60,6 +60,12 @@ public class YouTubeMediaItemService implements MediaItemService {
     // real: the tap-time prefetch and the player's own end-of-onCreate fetch share a single round-trip
     // instead of racing into two. Off by default -> TV keeps the exact original single-fetch path.
     private static volatile boolean sSingleFlightEnabled;
+    private static volatile java.util.function.BooleanSupplier sPreferProgressiveFormats = () -> false;
+
+    /** Phone preference, read for each fetch and cache lookup, including profile changes. */
+    public static void setPreferProgressiveFormats(java.util.function.BooleanSupplier preference) {
+        sPreferProgressiveFormats = preference;
+    }
     private final ConcurrentHashMap<String, FormatFlight> mFormatInfoFlights =
             new ConcurrentHashMap<>();
 
@@ -112,16 +118,19 @@ public class YouTubeMediaItemService implements MediaItemService {
 
     private static final class CachedFormatEntry {
         final MediaItemFormatInfo formatInfo;
+        final boolean preferProgressive;
         final long timeMs = android.os.SystemClock.elapsedRealtime();
         // NEWTUBE(botwall): the attachment the URLs were minted on (null off-device / unknown).
         final String networkKey = VideoInfoService.currentNetworkKey();
 
-        CachedFormatEntry(MediaItemFormatInfo formatInfo) {
+        CachedFormatEntry(MediaItemFormatInfo formatInfo, boolean preferProgressive) {
             this.formatInfo = formatInfo;
+            this.preferProgressive = preferProgressive;
         }
 
         boolean isActual() {
             return android.os.SystemClock.elapsedRealtime() - timeMs <= MOBILE_FORMAT_CACHE_TTL_MS
+                    && preferProgressive == sPreferProgressiveFormats.getAsBoolean()
                     && formatInfo.isCacheActual()
                     && isSameAttachment(networkKey, VideoInfoService.currentNetworkKey());
         }
@@ -162,17 +171,20 @@ public class YouTubeMediaItemService implements MediaItemService {
         final String videoId;
         final long timeMs = android.os.SystemClock.elapsedRealtime();
         final MediaItemFormatInfo formatInfo;
+        final boolean preferProgressive;
         // NEWTUBE(botwall): a bot-check verdict was observed on that network attachment; it says
         // nothing about the video, nor about another network.
         final String networkKey = VideoInfoService.currentNetworkKey();
 
-        UnplayableEntry(String videoId, MediaItemFormatInfo formatInfo) {
+        UnplayableEntry(String videoId, MediaItemFormatInfo formatInfo, boolean preferProgressive) {
             this.videoId = videoId;
             this.formatInfo = formatInfo;
+            this.preferProgressive = preferProgressive;
         }
 
         boolean isActual(String videoId) {
             return videoId.equals(this.videoId)
+                    && preferProgressive == sPreferProgressiveFormats.getAsBoolean()
                     && android.os.SystemClock.elapsedRealtime() - timeMs <= UNPLAYABLE_REUSE_MS
                     && (!formatInfo.isBotCheckRequired()
                             || isSameAttachment(networkKey, VideoInfoService.currentNetworkKey()));
@@ -340,14 +352,15 @@ public class YouTubeMediaItemService implements MediaItemService {
 
     private MediaItemFormatInfo fetchFormatInfo(String videoId, String clickTrackingParams,
             @Nullable FormatFlight flight, VideoInfoService.WalkRole role) {
+        boolean preferProgressive = sPreferProgressiveFormats.getAsBoolean();
         checkSigned();
 
         VideoInfo videoInfo = getVideoInfoService().getVideoInfo(videoId, clickTrackingParams,
-                flight != null ? flight::isCanceled : null, role);
+                flight != null ? flight::isCanceled : null, role, preferProgressive);
 
         MediaItemFormatInfo formatInfo = YouTubeMediaItemFormatInfo.from(videoInfo);
 
-        setCachedFormatInfo(videoId, formatInfo, clickTrackingParams);
+        setCachedFormatInfo(videoId, formatInfo, clickTrackingParams, preferProgressive);
         // NEWTUBE(walk-role): an open that reuses this answer adopts it (see adoptIfSpeculative).
         if (videoId != null) {
             if (role == VideoInfoService.WalkRole.SPECULATIVE && formatInfo != null) {
@@ -367,7 +380,7 @@ public class YouTubeMediaItemService implements MediaItemService {
         if (sSingleFlightEnabled && videoId != null && !(role == VideoInfoService.WalkRole.SPECULATIVE
                 && formatInfo != null && formatInfo.isBotCheckRequired())) {
             if (formatInfo != null && formatInfo.isUnplayable()) {
-                mUnplayableEntry = new UnplayableEntry(videoId, formatInfo);
+                mUnplayableEntry = new UnplayableEntry(videoId, formatInfo, preferProgressive);
             } else {
                 UnplayableEntry entry = mUnplayableEntry;
                 if (entry != null && videoId.equals(entry.videoId)) {
@@ -1013,15 +1026,15 @@ public class YouTubeMediaItemService implements MediaItemService {
     }
 
     private void setCachedFormatInfo(String requestedVideoId, MediaItemFormatInfo formatInfo,
-            String clickTrackingParams) {
+            String clickTrackingParams, boolean preferProgressive) {
         mCachedFormatInfo = formatInfo;
 
         if (formatInfo != null) {
             formatInfo.setClickTrackingParams(clickTrackingParams);
             if (sSingleFlightEnabled && requestedVideoId != null && !formatInfo.isUnplayable()
                     && formatInfo.containsMedia()) {
-                mMobileFormatInfoCache.put(requestedVideoId, new CachedFormatEntry(formatInfo));
-                mMobileTrackingCache.put(requestedVideoId, new CachedFormatEntry(formatInfo));
+                mMobileFormatInfoCache.put(requestedVideoId, new CachedFormatEntry(formatInfo, preferProgressive));
+                mMobileTrackingCache.put(requestedVideoId, new CachedFormatEntry(formatInfo, preferProgressive));
                 android.util.Log.d("NetPath", "format-cache store video=" + requestedVideoId
                         + " entries=" + mMobileFormatInfoCache.size());
             }

@@ -265,8 +265,21 @@ public class VideoInfo {
     public boolean isUnplayable() {
         // NEWTUBE(delivery): VodDelivery - a SABR-only answer may still play over its HLS manifest.
         return isUnknownRestricted() || isVisibilityRestricted() || isAgeRestricted()
-                || (isAdaptiveFormatsBroken() && !SabrVodCapability.accepts(this)
+                || (isAdaptiveFormatsBroken() && !VodDelivery.acceptsProgressive(this) && !SabrVodCapability.accepts(this)
                         && !VodDelivery.acceptsHls(this));
+    }
+
+    /** A muxed stream remains playable when the separate streams are SABR-only. */
+    public boolean containsUsableRegularFormats() {
+        if (mRegularFormats != null) {
+            for (RegularVideoFormat format : mRegularFormats) {
+                if (format != null && !format.isBroken() && format.getMimeType() != null
+                        && format.getMimeType().startsWith("video/")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**

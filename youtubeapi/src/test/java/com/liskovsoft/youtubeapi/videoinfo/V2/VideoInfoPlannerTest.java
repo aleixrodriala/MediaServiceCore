@@ -9,6 +9,7 @@ import android.app.Application;
 import com.liskovsoft.googlecommon.common.converters.jsonpath.converter.JsonPathConverterFactory;
 import com.liskovsoft.youtubeapi.common.helpers.AppClient;
 import com.liskovsoft.youtubeapi.videoinfo.models.VideoInfo;
+import com.liskovsoft.youtubeapi.videoinfo.V2.sources.PhoneSourcePlanner;
 
 import org.junit.After;
 import org.junit.Before;
@@ -42,6 +43,57 @@ import retrofit2.Converter;
 public class VideoInfoPlannerTest {
     private static final String NOT_AVAILABLE = "This video is not available";
     private VideoInfoService service;
+
+    @Test
+    public void singleFileModeSelectsMuxedReelAndKeepsFallbackRestrictionsLiveAndRecovery() {
+        String streams = "\"streamingData\":{\"adaptiveFormats\":[{\"itag\":137,\"mimeType\":\"video/mp4\"}],"
+                + "\"formats\":[{\"itag\":18,\"mimeType\":\"video/mp4\",\"url\":\"https://media.test/?itag=18\"}]}";
+        VideoInfo muxed = parse("{\"playabilityStatus\":{\"status\":\"OK\"}," + streams + "}", false);
+        muxed.setClient(AppClient.ANDROID_REEL);
+        assertFalse("SABR-only adaptive formats must not hide a usable muxed stream", muxed.isUnplayable());
+        assertTrue(muxed.containsUsableRegularFormats());
+        muxed.setClient(AppClient.WEB_SAFARI);
+        assertTrue("unreviewed progressive routes remain rejected", muxed.isUnplayable());
+        muxed.setClient(AppClient.ANDROID_REEL);
+        for (String status : Arrays.asList("UNPLAYABLE", "LOGIN_REQUIRED", "ERROR")) {
+            assertTrue(parse("{\"playabilityStatus\":{\"status\":\"" + status + "\"}," + streams + "}", false)
+                    .isUnplayable());
+        }
+        assertTrue(parse("{\"playabilityStatus\":{\"status\":\"OK\"},"
+                + streams.replace(",\"url\":\"https://media.test/?itag=18\"", "") + "}", false).isUnplayable());
+
+        ReflectionHelpers.setField(service, "mPreferProgressiveFormats", true);
+        for (boolean signedIn : new boolean[] {false, true}) {
+            VideoInfoBotWallTest.ShadowWalk.signedIn = signedIn;
+            VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.ANDROID_REEL
+                    ? muxed : playable(auth);
+            assertEquals(AppClient.ANDROID_REEL, open("muxed").getClient());
+            assertEquals(Collections.singletonList("ANDROID_REEL"), calls());
+            assertFalse("the Reel route stays anonymous", muxed.isAuth());
+        }
+        VideoInfoBotWallTest.ShadowWalk.signedIn = false;
+        VideoInfoBotWallTest.ShadowWalk.script = (client, auth) -> client == AppClient.ANDROID_REEL
+                ? unplayable(NOT_AVAILABLE, auth) : playable(auth);
+        assertEquals(AppClient.TV_TIZEN, open("fallback").getClient());
+        assertEquals(Arrays.asList("ANDROID_REEL", "TV_TIZEN"), calls());
+        ReflectionHelpers.setField(service, "mPreferProgressiveFormats", false);
+        assertEquals(AppClient.VISIONOS, open("normal").getClient());
+        assertEquals(Collections.singletonList("VISIONOS"), calls());
+
+        PhoneSourcePlanner.Lane lane =
+                PhoneSourcePlanner.Lane.SIGNED_OUT;
+        PhoneSourcePlanner.Context live =
+                new PhoneSourcePlanner.Context(lane, null,
+                        false, false, false, false, Collections.emptySet(), false, true);
+        assertEquals(AppClient.ANDROID_VR,
+                PhoneSourcePlanner.order(live, true).get(0));
+        PhoneSourcePlanner.Context recovery =
+                new PhoneSourcePlanner.Context(lane,
+                        AppClient.ANDROID_REEL, false, false);
+        List<AppClient> order = PhoneSourcePlanner.order(recovery, true);
+        assertEquals(AppClient.VISIONOS, order.get(0));
+        assertEquals(AppClient.ANDROID_REEL, order.get(order.size() - 1));
+    }
 
     @Before
     public void setUp() {

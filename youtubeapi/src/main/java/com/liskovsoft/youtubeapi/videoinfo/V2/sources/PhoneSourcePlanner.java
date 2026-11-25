@@ -239,6 +239,11 @@ public final class PhoneSourcePlanner {
     /** The order for a walk that starts now. Never empty. */
     @NonNull
     public static List<AppClient> order(@NonNull Context context) {
+        return order(context, false);
+    }
+
+    @NonNull
+    public static List<AppClient> order(@NonNull Context context, boolean preferProgressive) {
         List<AppClient> order = new ArrayList<>(ORDER);
 
         // Signed out the account route is admitted by a content refusal, not planned; signed in it
@@ -286,6 +291,13 @@ public final class PhoneSourcePlanner {
                 && context.recoverySuspect == null) {
             order.remove(ACCOUNT_ROUTE);
             order.add(0, ACCOUNT_ROUTE);
+        }
+
+        // ANDROID_REEL supplies muxed 360p when the ordinary VOD head supplies adaptive URLs only.
+        // Live/kids hints and the recovery/health ordering below retain priority.
+        if (preferProgressive && !context.liveCardHinted && !context.accountRouteHinted) {
+            order.remove(AppClient.ANDROID_REEL);
+            order.add(0, AppClient.ANDROID_REEL);
         }
 
         // NEWTUBE(live-card): the item the app opened says live. Every live walk used to ask
